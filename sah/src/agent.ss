@@ -38,14 +38,14 @@
      (let-values (((out is-error) (call-tool name args)))
        (session-append! session (make-message-entry session `(msg tool ,id ,name ,out)))
        (emit `(ev tool-end ,id ,name ,is-error ,out)))]
-    [,other (error 'run-tool "bad tool call: ~s" other)]))
+    [,other (error 'run-tool (format "bad tool call: ~s" other))]))
 
 (define (run-agent session config prompt)
   (session-append! session (make-message-entry session `(msg user ,prompt)))
   (emit '(ev agent-start))
   (let loop ((steps 0))
     (when (>= steps (assq-ref config 'max-steps))
-      (error 'agent "max steps (~a) exceeded" (assq-ref config 'max-steps)))
+      (error 'agent (format "max steps (~a) exceeded" (assq-ref config 'max-steps))))
     (let* ((system-msg `(msg system ,(assq-ref config 'system)))
            (messages (cons system-msg (session-messages session)))
            (reply (llm-chat config messages (all-tools))))
@@ -60,7 +60,7 @@
              (begin
                (for-each (lambda (c) (run-tool session c)) calls)
                (loop (+ steps 1))))]
-        [,other (error 'agent "unexpected reply: ~s" other)]))))
+        [,other (error 'agent (format "unexpected reply: ~s" other))]))))
 
 ;;----------------------------------------------------------------------------
 ;; A default event handler that prints to stdout (print / repl modes).

@@ -53,7 +53,7 @@ hello.scm prints 42.
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-...")
  (model    . "deepseek-chat")
- (max-steps . 20))
+ (max-steps . 100))
 ```
 
 从源码运行（所有命令都在 `sah/` 目录里执行）：
@@ -86,7 +86,7 @@ sah [options] [--] [prompt | @file ...]
 | `--key <key>` | API key（覆盖配置和环境变量） |
 | `--model <id>` | 模型 id（默认 `deepseek-chat`） |
 | `--base-url <url>` | API base URL |
-| `--max-steps <n>` | agent 循环最大轮数（默认 20） |
+| `--max-steps <n>` | agent 循环最大轮数（默认 100） |
 | `-H`, `--usage` | 显示帮助 |
 | `--` | 停止解析选项，后面都当作 prompt |
 | `@file` | 把文件内容并入 prompt |
@@ -106,7 +106,7 @@ sah [options] [--] [prompt | @file ...]
 | `base-url` | `https://api.deepseek.com` | API base URL |
 | `api-key` | `""` | API key |
 | `model` | `deepseek-chat` | 模型 id |
-| `max-steps` | `20` | agent 循环最大轮数 |
+| `max-steps` | `100` | agent 循环最大轮数 |
 | `system` | 见下 | system prompt 覆盖 |
 
 ### API key

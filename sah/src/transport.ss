@@ -23,7 +23,7 @@
     (dynamic-wind
       (lambda () #t)
       (lambda ()
-        (guard (e (#t (error 'transport "failed to run curl: ~a" (err->string e))))
+        (guard (e (#t (error 'transport (format "failed to run curl: ~a" (err->string e)))))
           (let-values (((proc from to err) (open-process-ports cmd 'block (native-transcoder))))
             (let ((out (get-string-all from)))
               (guard (e2 (#t #t)) (close-port from))

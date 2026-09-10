@@ -213,7 +213,7 @@
              (write-json (car l) port)
              (loop (cdr l) #f)))
          (put-string port "]"))
-        (else (error 'write-json "cannot encode ~s" d))))
+        (else (error 'write-json (format "cannot encode ~s" d)))))
 
 (define (write-json-string d)
   (with-output-to-string (lambda () (write-json d (current-output-port)))))

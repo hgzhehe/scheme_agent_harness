@@ -27,7 +27,7 @@
        (type . "function")
        (function . ((name . ,(symbol->string name))
                     (arguments . ,(write-json-string args)))))]
-    [,other (error 'call->openai "bad tool call: ~s" other)]))
+    [,other (error 'call->openai (format "bad tool call: ~s" other))]))
 
 (define (string-content x)
   (if (string? x) x ""))
@@ -48,7 +48,7 @@
     [(msg ,role ,content)
      `((role . ,(symbol->string role))
        (content . ,(string-content content)))]
-    [,other (error 'message->openai "bad message: ~s" other)]))
+    [,other (error 'message->openai (format "bad message: ~s" other))]))
 
 (define (tool->openai t)
   (match t
@@ -57,7 +57,7 @@
        (function . ((name . ,(symbol->string name))
                     (description . ,description)
                     (parameters . ,parameters))))]
-    [,other (error 'tool->openai "bad tool: ~s" other)]))
+    [,other (error 'tool->openai (format "bad tool: ~s" other))]))
 
 (define (build-chat-request model messages tools)
   `((model . ,model)
@@ -120,7 +120,7 @@
      `(msg tool ,id ,name ,content)]
     [((role . ,role) (content . ,content))
      `(msg ,role ,content)]
-    [,other (error 'normalize-message "unrecognized message: ~s" other)]))
+    [,other (error 'normalize-message (format "unrecognized message: ~s" other))]))
 
 ;;----------------------------------------------------------------------------
 ;; provider call
@@ -138,7 +138,7 @@
           (error 'llm (format "API error: ~a" (write-json-string err)))))
       (let ((choices (assq-ref json 'choices)))
         (if (or (not choices) (= (vector-length choices) 0))
-            (error 'llm "no choices in response: ~a" resp)
+            (error 'llm (format "no choices in response: ~a" resp))
             (let* ((choice (vector-ref choices 0))
                    (rawmsg (assq-ref choice 'message))
                    (finish (assq-ref choice 'finish_reason))

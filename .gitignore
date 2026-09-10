@@ -14,3 +14,7 @@ miniKanren-with-symbolic-constraints-master/
 *~
 \#*\#
 .\#*
+
+# Chez compiler temporaries
+_cps_def.tmp
+cpser.ss

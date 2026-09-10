@@ -85,7 +85,7 @@
     (let ((path (expand-home (assq-ref args 'path))))
       (if (file-exists? path)
           (file->string path)
-          (error 'read "file not found: ~a" path)))))
+          (error 'read (format "file not found: ~a" path))))))
 
 (register-tool! 'write
   "Write content to a file, overwriting it if it exists. Creates parent directories."
