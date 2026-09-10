@@ -122,7 +122,8 @@ sah --usage
 
 ## 4. Configure
 
-Create `~/.sah/config.scm` (see [`config.example.scm`](config.example.scm)):
+sah reads its configuration from `~/.sah/config.scm` (see
+[`config.example.scm`](config.example.scm)):
 
 ```scheme
 ((provider . deepseek)
@@ -132,14 +133,48 @@ Create `~/.sah/config.scm` (see [`config.example.scm`](config.example.scm)):
  (max-steps . 20))
 ```
 
-Or set the key through the environment:
+### API key
 
-```bash
-set DEEPSEEK_API_KEY=sk-...          # Windows
-export DEEPSEEK_API_KEY=sk-...       # POSIX
+Three ways to provide the key, highest priority first:
+
+1. `sah --key sk-xxx "hello"` — one run only.
+2. environment variable — `SAH_API_KEY` (canonical) or `DEEPSEEK_API_KEY`.
+3. `api-key` in `~/.sah/config.scm` (recommended: persistent, no shell setup).
+
+Full precedence (low → high): built-in defaults → `config.scm` →
+`SAH_API_KEY` / `DEEPSEEK_API_KEY` → `--key`.
+
+**Windows PowerShell**
+
+```powershell
+$env:SAH_API_KEY = "sk-xxx"      # current session only
+setx SAH_API_KEY "sk-xxx"       # persist for new shells
 ```
 
-Or pass it per run: `sah --key sk-... "hello"`.
+**Windows cmd.exe**
+
+```bat
+set SAH_API_KEY=sk-xxx          :: current session only
+setx SAH_API_KEY "sk-xxx"       :: persist for new shells
+```
+
+**Git Bash / Linux / macOS**
+
+```bash
+export SAH_API_KEY=sk-xxx                                   # current session
+echo 'export SAH_API_KEY=sk-xxx' >> ~/.bashrc               # persist (bash)
+echo 'export SAH_API_KEY=sk-xxx' >> ~/.zshrc                # persist (zsh)
+```
+
+Notes:
+
+- `setx` and shell-rc edits only affect **new** terminals. Open a new one, or
+  set the variable in the current shell as shown.
+- Environment variables override `config.scm`. A key exported in an old shell
+  session silently wins over the file — pick one method.
+- Check what is visible to sah: `echo $SAH_API_KEY` (bash) or
+  `echo $env:SAH_API_KEY` (PowerShell). An empty result means it is not set.
+- Never commit keys. `~/.sah/` lives outside your repositories.
 
 Set `SAH_HOME` to relocate config, system prompt and sessions (default
 `~/.sah`).
@@ -149,6 +184,8 @@ Check everything is wired up:
 ```bash
 sah "Reply with exactly: ok"
 ```
+
+For a step-by-step walkthrough see [`../docs/TUTORIAL.md`](../docs/TUTORIAL.md).
 
 ---
 

@@ -10,6 +10,7 @@ and session history are all Scheme.
 |------|----------|
 | [`sah/`](sah/README.md) | The implementation: agent loop, tools, sessions, build script |
 | [`docs/PLAN.md`](docs/PLAN.md) | Long-term architecture and v0 plan (English; [`PLAN.zh.md`](docs/PLAN.zh.md) for Chinese) |
+| [`docs/TUTORIAL.md`](docs/TUTORIAL.md) | Bilingual step-by-step tutorial (install → API key → first run) |
 | [`docs/`](docs/README.md) | Documentation index |
 | [`pi-agent-architecture/`](pi-agent-architecture/) | Collected architecture notes for pi v0.84.3 (reference) |
 

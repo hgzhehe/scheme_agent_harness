@@ -4,6 +4,7 @@
 
 | Document | Language | Contents |
 |----------|----------|----------|
+| [`TUTORIAL.md`](TUTORIAL.md) | English + Chinese | Step-by-step walkthrough: install, get and configure an API key, first run, REPL, sessions, tools, `eval`, build |
 | [`../sah/README.md`](../sah/README.md) | English | Overview, features, quick start, CLI, configuration, tools, session format, source layout |
 | [`../sah/INSTALL.md`](../sah/INSTALL.md) | English | Build, install, configure, uninstall, troubleshooting, updating |
 | [`../sah/SYSTEM.md`](../sah/SYSTEM.md) | English | The built-in system prompt |

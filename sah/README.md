@@ -106,10 +106,59 @@ evaluated). Keys:
 | `max-steps` | `20` | agent loop iteration cap |
 | `system` | (see below) | system prompt override |
 
-Precedence (low → high): built-in defaults, `config.scm`, `DEEPSEEK_API_KEY` /
-`SAH_API_KEY` environment variables, CLI flags.
+### API key
+
+sah needs an API key for the provider. There are three ways to provide it,
+listed highest priority first:
+
+1. **CLI flag** — `sah --key sk-xxx "hello"` (applies to one run).
+2. **Environment variable** — `SAH_API_KEY` (canonical) or the
+   provider-specific `DEEPSEEK_API_KEY`.
+3. **Config file** — the `api-key` key in `~/.sah/config.scm` (recommended:
+   persistent, no shell setup).
+
+Full precedence (low → high): built-in defaults → `config.scm` →
+`SAH_API_KEY` / `DEEPSEEK_API_KEY` → `--key`.
+
+Set the environment variable per shell:
+
+```powershell
+# Windows PowerShell — current session
+$env:SAH_API_KEY = "sk-xxx"
+# Windows PowerShell — persist for new shells
+setx SAH_API_KEY "sk-xxx"
+```
+
+```bat
+:: Windows cmd.exe — current session
+set SAH_API_KEY=sk-xxx
+:: persist for new shells
+setx SAH_API_KEY "sk-xxx"
+```
+
+```bash
+# Git Bash / Linux / macOS — current session
+export SAH_API_KEY=sk-xxx
+# persist (bash)
+echo 'export SAH_API_KEY=sk-xxx' >> ~/.bashrc
+# persist (zsh)
+echo 'export SAH_API_KEY=sk-xxx' >> ~/.zshrc
+```
+
+Notes:
+
+- `setx` and shell-rc edits take effect in **new** terminals only; the current
+  shell keeps its old value.
+- Environment variables override `config.scm`, so a stale exported key silently
+  wins over the file. Pick one method.
+- sah never writes your key anywhere. Keep it out of version control.
+- Verify what sah actually resolved: `sah --usage` shows the CLI; run
+  `sah -- --debug` is not supported, so check with `echo $SAH_API_KEY` (bash) or
+  `echo $env:SAH_API_KEY` (PowerShell).
 
 `SAH_HOME` relocates everything sah keeps (default `~/.sah`).
+
+See [`../docs/TUTORIAL.md`](../docs/TUTORIAL.md) for a step-by-step walkthrough.
 
 ### System prompt
 
