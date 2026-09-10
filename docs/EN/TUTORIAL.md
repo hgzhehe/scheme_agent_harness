@@ -126,7 +126,7 @@ survives reboots, and works the same on every platform.
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-xxx")
  (model    . "deepseek-chat")
- (max-steps . 100))
+ (max-steps . 1000))
 ```
 
 Or start from the sample:

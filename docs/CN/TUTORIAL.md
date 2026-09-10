@@ -124,7 +124,7 @@ echo %SAH_API_KEY%         # Windows cmd.exe
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-xxx")
  (model    . "deepseek-chat")
- (max-steps . 20))
+ (max-steps . 1000))
 ```
 
 也可以从样例复制：

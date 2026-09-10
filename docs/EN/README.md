@@ -56,7 +56,7 @@ Create a config file `~/.sah/config.scm`:
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-...")
  (model    . "deepseek-chat")
- (max-steps . 100))
+ (max-steps . 1000))
 ```
 
 Run from source (all commands are run inside the `sah/` directory):
@@ -89,7 +89,7 @@ sah [options] [--] [prompt | @file ...]
 | `--key <key>` | API key (overrides config and env) |
 | `--model <id>` | model id (default `deepseek-chat`) |
 | `--base-url <url>` | API base URL |
-| `--max-steps <n>` | max agent loop iterations (default 100) |
+| `--max-steps <n>` | max agent loop iterations (default 1000) |
 | `-H`, `--usage` | show help |
 | `--` | stop option parsing; the rest are prompt text |
 | `@file` | include a file's contents in the prompt |
@@ -110,7 +110,7 @@ evaluated). Keys:
 | `base-url` | `https://api.deepseek.com` | API base URL |
 | `api-key` | `""` | API key |
 | `model` | `deepseek-chat` | model id |
-| `max-steps` | `100` | agent loop iteration cap |
+| `max-steps` | `1000` | agent loop iteration cap |
 | `system` | (see below) | system prompt override |
 
 ### API key

@@ -11,7 +11,7 @@
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-REPLACE_ME")
  (model    . "deepseek-chat")
- (max-steps . 100)
+ (max-steps . 1000)
  ;; (shell . "pwsh")   ; override the detected shell (pwsh | bash | cmd)
  ;; (system . "You are sah. Be brief.")
  )

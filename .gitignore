@@ -18,3 +18,7 @@ miniKanren-with-symbolic-constraints-master/
 # Chez compiler temporaries
 _cps_def.tmp
 cpser.ss
+
+# loose scratch files at the repo root (not part of the project)
+/*.ss
+/*.scm
