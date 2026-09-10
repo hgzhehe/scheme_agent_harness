@@ -14,8 +14,8 @@ $ sah "create hello.scm that prints 42 and run it"
 [sah] session=1E3DE567 model=deepseek-chat
   -> write ((path . "hello.scm") (content . "(display 42)\n(newline)\n"))
   <- write
-  -> bash ((command . "scheme --script hello.scm"))
-  <- bash
+  -> shell ((command . "scheme --script hello.scm"))
+  <- shell
 hello.scm prints 42.
 ```
 
@@ -25,7 +25,7 @@ hello.scm prints 42.
 
 - **Agent 循环** —— 构建上下文、调用模型、执行工具、重复。
 - **单 provider** —— DeepSeek（OpenAI 兼容的 chat completions）。
-- **四个工具** —— `read`、`write`、`bash`、`eval`。
+- **四个工具** —— `read`、`write`、`shell`、`eval`。
 - **模式匹配内核** —— 消息、事件、entry、工具都是位置化 tagged list；
   `llm.ss` / `agent.ss` / `session.ss` / `tools.ss` 用 `match` 分发
   （[`src/match.ss`](../../sah/src/match.ss)）。
@@ -41,7 +41,8 @@ hello.scm prints 42.
 
 - [Chez Scheme](https://cisco.github.io/ChezScheme/) 10.x（开发于 10.5）
 - `curl`（作为 HTTP 传输）
-- Windows 上：`bash` 工具想要 POSIX 语法需要 **Git Bash**（否则退回 `cmd.exe`）
+- Windows 上：命令在启动 sah 的那个 shell 里执行（PowerShell / cmd /
+  Git Bash），终端里能用的这里也能用
 
 ## 快速开始
 
@@ -174,7 +175,7 @@ echo 'export SAH_API_KEY=sk-xxx' >> ~/.zshrc
 |------|------|------|
 | `read` | `path` | 返回文件内容 |
 | `write` | `path`、`content` | 写文件；自动创建父目录 |
-| `bash` | `command` | 执行 shell 命令，返回合并后的 stdout/stderr。Windows 上有 Git Bash 就用它，否则 `cmd.exe`。无输出 → `(no output)` |
+| `shell` | `command` | 在启动 sah 的终端 shell 里执行命令（PowerShell / cmd / bash）；返回合并后的 stdout/stderr。无输出 → `(no output)` |
 | `eval` | `code` | 在本进程里求值一个或多个 Scheme 表达式；返回捕获的输出和打印的值 |
 
 `eval` 是这个项目的重点。因为它和 agent 在同一个进程里运行，定义可以跨轮存活，

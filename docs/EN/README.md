@@ -16,8 +16,8 @@ $ sah "create hello.scm that prints 42 and run it"
 [sah] session=1E3DE567 model=deepseek-chat
   -> write ((path . "hello.scm") (content . "(display 42)\n(newline)\n"))
   <- write
-  -> bash ((command . "scheme --script hello.scm"))
-  <- bash
+  -> shell ((command . "scheme --script hello.scm"))
+  <- shell
 hello.scm prints 42.
 ```
 
@@ -27,7 +27,7 @@ hello.scm prints 42.
 
 - **Agent loop** — build context, call the model, run requested tools, repeat.
 - **One provider** — DeepSeek (OpenAI-compatible chat completions).
-- **Four tools** — `read`, `write`, `bash`, `eval`.
+- **Four tools** — `read`, `write`, `shell`, `eval`.
 - **Pattern-matched core** — messages, events, entries and tools are positional
   tagged lists; `llm.ss` / `agent.ss` / `session.ss` / `tools.ss` dispatch with
   `match` ([`src/match.ss`](../../sah/src/match.ss)).
@@ -44,8 +44,8 @@ hello.scm prints 42.
 
 - [Chez Scheme](https://cisco.github.io/ChezScheme/) 10.x (developed on 10.5)
 - `curl` (used as the HTTP transport)
-- On Windows: **Git Bash** for POSIX shell syntax in the `bash` tool
-  (falls back to `cmd.exe` otherwise)
+- On Windows: commands run in the shell that launched sah (PowerShell, cmd,
+  or Git Bash), so whatever works in your terminal works here
 
 ## Quick start
 
@@ -181,7 +181,7 @@ Loaded in order, first match wins; the working directory is appended:
 |------|-----------|----------|
 | `read` | `path` | return file contents |
 | `write` | `path`, `content` | write a file; creates parent directories |
-| `bash` | `command` | run a shell command, return combined stdout/stderr. Git Bash on Windows when available, else `cmd.exe`. Empty output → `(no output)` |
+| `shell` | `command` | run a command in the shell sah was launched from (PowerShell, cmd, or bash); returns combined stdout/stderr. Empty output → `(no output)` |
 | `eval` | `code` | evaluate one or more Scheme expressions in this process; returns captured output plus printed values |
 
 `eval` is the point of the project. Because it runs in the same process as the

@@ -351,7 +351,7 @@ agent 运行时生成/修改工具与提示并热重载；结构化 S-expr 编�
 ## 8. v0 实现规格（第一版）
 
 > **落地说明。** 实际实现的 v0（见 [`README.md`](README.md)）选了 **DeepSeek**
-> （OpenAI 兼容）而非 Anthropic，工具是 `read` / `write` / `bash` / `eval`，prompt
+> （OpenAI 兼容）而非 Anthropic，工具是 `read` / `write` / `shell` / `eval`，prompt
 > 用 `SYSTEM.md`，会话在 `~/.sah/sessions/`；并把规范内部形式从 symbol 键 alist 改为
 > **位置化 tagged list**、全面用 `match` 解构（见 README 的「数据约定」），旧会话加载时
 > 自动迁移。下面各小节是原始计划；如有出入，以 README 为准。

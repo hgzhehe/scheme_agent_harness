@@ -425,7 +425,7 @@ execution; embedded SDK (Chez as a library called by other Schemes/hosts).
 
 > **As-built note.** The implemented v0 (see [`README.md`](README.md))
 > chose **DeepSeek** (OpenAI-compatible) instead of Anthropic, ships the tools
-> `read` / `write` / `bash` / `eval`, uses `SYSTEM.md` for the prompt, and stores
+> `read` / `write` / `shell` / `eval`, uses `SYSTEM.md` for the prompt, and stores
 > sessions under `~/.sah/sessions/`. The canonical internal forms were also
 > changed from symbol-keyed alists to **positional tagged lists** destructured
 > with `match` (see the README's *Data conventions*); old sessions are migrated

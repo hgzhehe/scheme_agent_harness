@@ -28,8 +28,8 @@ first prompt, use the REPL, and understand sessions and tools.
 - `curl` on `PATH` (sah uses it as the HTTP transport).
 - A DeepSeek API key — create one at <https://platform.deepseek.com> →
   *API keys*.
-- On Windows, [Git Bash](https://git-scm.com/downloads) is recommended so the
-  `bash` tool gets a real POSIX shell.
+- On Windows, commands run in the shell that launched sah (PowerShell, cmd,
+  or Git Bash) — whatever your terminal is.
 
 ## 2. Install
 
@@ -217,7 +217,7 @@ to find them via `-C`. `SAH_HOME` changes the root.
 |---|---|---|
 | `read` | `path` | return file contents |
 | `write` | `path`, `content` | write a file, creating parent dirs |
-| `bash` | `command` | run a shell command (Git Bash on Windows) |
+| `shell` | `command` | run a command in your terminal's shell (PowerShell, cmd, or bash) |
 | `eval` | `code` | evaluate Scheme in this process |
 
 The `bash` tool runs from a temporary script, so quoting, pipes and heredocs

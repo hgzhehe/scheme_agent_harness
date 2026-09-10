@@ -15,10 +15,10 @@
    "Tools:\n"
    "- read  {path}             -> file contents\n"
    "- write {path, content}    -> write a file\n"
-   "- bash  {command}          -> run a shell command (Git Bash on Windows)\n"
+   "- shell {command}          -> run a command in your terminal's shell\n"
    "- eval  {code}             -> evaluate Scheme in this process\n"
    "\n"
-   "Act, don't narrate: inspect with read/bash, change with write, compute with eval.\n"
+   "Act, don't narrate: inspect with read/shell, change with write, compute with eval.\n"
    "Verify your work. Be brief.\n"))
 
 ;; System prompt is loaded from a file when present:
@@ -138,6 +138,7 @@
          (prompt (cadr parsed))
          (cwd (current-directory))
          (config (apply-cli (load-config cwd) opts)))
+    (set! *shell-override* (assq-ref config 'shell))
     (cond
       ((assq-ref opts 'help) (print-usage) (exit 0))
       ((string=? (or (assq-ref config 'api-key) "") "")

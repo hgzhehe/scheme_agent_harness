@@ -28,8 +28,7 @@
 - `curl` 在 `PATH` 里（sah 用它发 HTTP 请求）。
 - 一个 DeepSeek API key —— 在 <https://platform.deepseek.com> 的 *API keys*
   页面创建。
-- Windows 上建议安装 [Git Bash](https://git-scm.com/downloads)，这样 `bash`
-  工具用的是真正的 POSIX shell，而不是 `cmd.exe`。
+- Windows 上，命令在启动 sah 的那个 shell（PowerShell / cmd / Git Bash）里执行。
 
 ## 2. 安装
 
@@ -216,7 +215,7 @@ EOF
 |---|---|---|
 | `read` | `path` | 返回文件内容 |
 | `write` | `path`、`content` | 写文件，自动建父目录 |
-| `bash` | `command` | 执行 shell 命令（Windows 上用 Git Bash） |
+| `shell` | `command` | 在你终端所用的 shell 里执行命令（PowerShell / cmd / bash） |
 | `eval` | `code` | 在本进程里求值 Scheme |
 
 `bash` 工具把命令写进临时脚本再执行，所以引号、管道、heredoc 都像在真 shell

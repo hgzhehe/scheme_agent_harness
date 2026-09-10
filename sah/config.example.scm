@@ -12,5 +12,6 @@
  (api-key  . "sk-REPLACE_ME")
  (model    . "deepseek-chat")
  (max-steps . 20)
+ ;; (shell . "pwsh")   ; override the detected shell (pwsh | bash | cmd)
  ;; (system . "You are sah. Be brief.")
  )

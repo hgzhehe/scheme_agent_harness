@@ -22,6 +22,7 @@
 (load (string-append *root* "/src/json.ss"))
 (load (string-append *root* "/src/transport.ss"))
 (load (string-append *root* "/src/llm.ss"))
+(load (string-append *root* "/src/shell.ss"))
 (load (string-append *root* "/src/tools.ss"))
 (load (string-append *root* "/src/session.ss"))
 (load (string-append *root* "/src/agent.ss"))

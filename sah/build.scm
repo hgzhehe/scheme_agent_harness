@@ -86,6 +86,7 @@
     "src/util.ss"
     "src/json.ss"
     "src/transport.ss"
+    "src/shell.ss"
     "src/llm.ss"
     "src/tools.ss"
     "src/session.ss"

@@ -15,6 +15,7 @@
 (load (string-append *root* "/src/json.ss"))
 (load (string-append *root* "/src/transport.ss"))
 (load (string-append *root* "/src/llm.ss"))
+(load (string-append *root* "/src/shell.ss"))
 (load (string-append *root* "/src/tools.ss"))
 (load (string-append *root* "/src/session.ss"))
 (load (string-append *root* "/src/agent.ss"))
@@ -136,25 +137,36 @@
 ;;----------------------------------------------------------------------------
 (printf "== shell ==~%")
 
-(call-with-values
-  (lambda () (call-tool 'bash (list (cons 'command "echo sah-bash-ok"))))
-  (lambda (out err)
-    (check "bash: echo works" #t (and (not err) (string-contains? "sah-bash-ok" out)))))
+(check "shell: detect-shell returns a shell"
+       #t
+       (match (detect-shell)
+         [(shell ,kind ,exe) (and (memq kind '(bash pwsh cmd)) (string? exe))]
+         [,other #f]))
 
 (call-with-values
-  (lambda () (call-tool 'bash (list (cons 'command "echo $((6*7))"))))
+  (lambda () (call-tool 'shell (list (cons 'command "echo sah-shell-ok"))))
   (lambda (out err)
-    (check "bash: POSIX arithmetic" #t (and (not err) (string-contains? "42" out)))))
+    (check "shell: echo works" #t (and (not err) (string-contains? "sah-shell-ok" out)))))
+
+;; force bash for the POSIX-syntax checks so the suite is deterministic
+(set! *shell-override* "bash")
 
 (call-with-values
-  (lambda () (call-tool 'bash (list (cons 'command "true"))))
+  (lambda () (call-tool 'shell (list (cons 'command "echo $((6*7))"))))
   (lambda (out err)
-    (check "bash: empty output is not eof" "(no output)" out)))
+    (check "shell: POSIX arithmetic" #t (and (not err) (string-contains? "42" out)))))
 
 (call-with-values
-  (lambda () (call-tool 'bash (list (cons 'command "echo boom >&2; exit 3"))))
+  (lambda () (call-tool 'shell (list (cons 'command "true"))))
   (lambda (out err)
-    (check "bash: stderr captured" #t (and (not err) (string-contains? "boom" out)))))
+    (check "shell: empty output is not eof" "(no output)" out)))
+
+(call-with-values
+  (lambda () (call-tool 'shell (list (cons 'command "echo boom >&2; exit 3"))))
+  (lambda (out err)
+    (check "shell: stderr captured" #t (and (not err) (string-contains? "boom" out)))))
+
+(set! *shell-override* #f)
 
 ;;----------------------------------------------------------------------------
 (printf "== eval ==~%")

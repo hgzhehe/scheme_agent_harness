@@ -14,7 +14,7 @@ This document covers the executable.
 |-------------|-------|
 | [Chez Scheme](https://cisco.github.io/ChezScheme/) 10.x | `scheme` must be on `PATH`. Developed on 10.5. |
 | `curl` | Used as the HTTP transport; must be on `PATH`. |
-| Git Bash (Windows only) | Optional, but required for POSIX shell syntax in the `bash` tool. |
+| Git Bash (Windows only) | Optional; the `shell` tool follows whatever launched sah (PowerShell, cmd, or bash). |
 | `petite`/`scheme` boot files | Shipped with Chez; `build.scm` locates them automatically. |
 
 Verify:
@@ -230,7 +230,7 @@ rm -rf build dist
 | `cannot find compatible sah.boot in search path` | `sah.boot` is missing or not next to `sah.exe`, or the names do not match. Keep the pair together. |
 | Build: `... is in use -- close any running sah.exe` | A running instance holds the exe. Close it and rebuild. |
 | `error: no API key` | Set `DEEPSEEK_API_KEY` / `SAH_API_KEY`, add `api-key` to `~/.sah/config.scm`, or pass `--key`. |
-| `bash` behaves like `cmd.exe` (no `$(( ))`, no heredocs) | Git Bash was not found. Install it or add `bash.exe` to `PATH`. |
+| `shell` runs cmd instead of bash (or vice versa) | It follows the shell that launched sah. Run sah from the terminal you want, or set `shell` in `~/.sah/config.scm` (e.g. `(shell . "bash")`). |
 | `-c` / `-h` / `--help` do nothing useful in the compiled exe | The Chez runtime consumes those. Use `-C`/`--continue` and `-H`/`--usage`. |
 | `eval` cannot see sah's own functions | Build with `build.scm` (it embeds the source); a bare `compile-program` alone does not. |
 | Sessions from another directory are missing | Sessions are grouped by working directory under `~/.sah/sessions/<cwd-slug>/`. Run `sah` from the same directory, or set `SAH_HOME`. |

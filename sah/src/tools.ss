@@ -50,56 +50,8 @@
                         props))
     (required . ,(list->vector (map car props)))))
 
-(define (path-directories)
-  (string-split (or (getenv "PATH") "") (if (memv #\; (string->list (or (getenv "PATH") ";"))) ";" ":")))
-
-(define (find-in-path name)
-  (let loop ((ds (path-directories)))
-    (cond ((null? ds) #f)
-          ((file-exists? (path-join (car ds) name)) (path-join (car ds) name))
-          (else (loop (cdr ds))))))
-
-;; Prefer a real POSIX shell so `bash` behaves like bash, not cmd.exe.
-;; When bash is reachable through PATH we invoke it by name: cmd.exe mishandles a
-;; quoted absolute path that contains spaces (e.g. C:/Program Files/Git/...).
-(define (find-bash)
-  (cond ((find-in-path "bash.exe") "bash")
-        ((find-in-path "bash") "bash")
-        ((file-exists? "/bin/bash") "/bin/bash")
-        ((file-exists? "/usr/bin/bash") "/usr/bin/bash")
-        (else #f)))
-
-(define (run-process cmd)
-  (call-with-values
-    (lambda () (open-process-ports cmd 'block (native-transcoder)))
-    (lambda (proc from to err)
-      (let ((out (get-string-all from)))
-        (guard (e (#t #t)) (close-port from))
-        (guard (e (#t #t)) (close-port to))
-        (guard (e (#t #t)) (close-port err))
-        (if (eof-object? out) "" out)))))
-
-;; Commands are written to a temporary script and executed, which avoids all
-;; quoting layers. With Git Bash available, full POSIX syntax works (arithmetic,
-;; heredocs, pipes); otherwise fall back to cmd.exe.
-(define (run-shell command)
-  (let* ((bash (find-bash))
-         (ext (if bash ".sh" ".bat"))
-         (script (path-join (temp-dir) (string-append "sah-cmd-" (short-id) ext)))
-         (out ""))
-    (write-string-lf script command)
-    (dynamic-wind
-      (lambda () #t)
-      (lambda ()
-        (set! out
-              (run-process
-               (if bash
-                   ;; `bash` is a bare name (no spaces), so leave it unquoted:
-                   ;; cmd.exe strips a leading quoted token and would mangle it.
-                   (string-append bash " \"" script "\" 2>&1")
-                   (string-append "cmd /c \"" script "\" 2>&1")))))
-      (lambda () (guard (e (#t #t)) (delete-file script))))
-    (if (string=? out "") "(no output)" out)))
+;; Command execution lives in shell.ss: it detects the shell the user launched
+;; sah from and runs commands there.
 
 ;;----------------------------------------------------------------------------
 ;; eval: expose the host Scheme
@@ -151,14 +103,14 @@
         (string->file path content)
         (format "wrote ~a characters to ~a" (string-length content) path)))))
 
-(register-tool! 'bash
-  "Run a shell command and return its combined stdout/stderr. On Windows the command runs under Git Bash when available, otherwise cmd.exe."
+(register-tool! 'shell
+  "Run a command in the shell of the terminal sah was launched from (PowerShell, cmd, or bash) and return its combined stdout/stderr."
   (schema '((command "string" "Shell command to run")))
   (lambda (args)
     (let ((cmd (assq-ref args 'command)))
       (if (string? cmd)
           (run-shell cmd)
-          (error 'bash "missing command")))))
+          (error 'shell "missing command")))))
 
 (register-tool! 'eval
   "Evaluate Scheme code in the running sah process (Chez Scheme) and return captured output plus printed values. Use it to compute, transform data, or inspect the host."

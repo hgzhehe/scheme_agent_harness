@@ -13,7 +13,7 @@
 |------|------|
 | [Chez Scheme](https://cisco.github.io/ChezScheme/) 10.x | `scheme` 必须在 `PATH` 里。开发于 10.5。 |
 | `curl` | 作为 HTTP 传输；必须在 `PATH` 里。 |
-| Git Bash（仅 Windows） | 可选，但 `bash` 工具要用 POSIX 语法就需要它。 |
+| Git Bash（仅 Windows） | 可选；`shell` 工具跟随启动 sah 的 shell（PowerShell、cmd 或 bash）。 |
 | `petite`/`scheme` 的 boot 文件 | Chez 自带；`build.scm` 会自动定位。 |
 
 验证：
@@ -224,7 +224,7 @@ rm -rf build dist
 | `cannot find compatible sah.boot in search path` | `sah.boot` 丢了、不在 `sah.exe` 旁边，或者名字对不上。把两个文件放一起。 |
 | 构建报 `... is in use -- close any running sah.exe` | 有实例正在运行占着 exe。关掉再重建。 |
 | `error: no API key` | 设 `DEEPSEEK_API_KEY` / `SAH_API_KEY`，或在 `~/.sah/config.scm` 里加 `api-key`，或传 `--key`。 |
-| `bash` 行为像 `cmd.exe`（没有 `$(( ))`、没有 heredoc） | 没找到 Git Bash。装一下，或把 `bash.exe` 加入 `PATH`。 |
+| `shell` 用了 cmd 而不是 bash（或相反） | 它跟随启动 sah 的 shell。从你想要的终端启动 sah，或在 `~/.sah/config.scm` 里设 `shell`（如 `(shell . "bash")`）。 |
 | 编译版里 `-c` / `-h` / `--help` 没用 | 这些被 Chez 运行时吃掉了。用 `-C`/`--continue` 和 `-H`/`--usage`。 |
 | `eval` 看不到 sah 自己的函数 | 要用 `build.scm` 构建（它嵌入了源码）；单纯 `compile-program` 不行。 |
 | 别的目录的会话找不到 | 会话按工作目录分组，位于 `~/.sah/sessions/<cwd-slug>/`。在同一目录运行 `sah`，或设 `SAH_HOME`。 |

@@ -41,7 +41,7 @@ Start with the [tutorial](docs/EN/TUTORIAL.md) or the
 
 `sah` runs an agent loop (build context → call the model → run requested tools →
 repeat) against DeepSeek (OpenAI-compatible). It ships four tools — `read`,
-`write`, `bash`, `eval` — and keeps everything as plain Scheme data: sessions
+`write`, `shell`, `eval` — and keeps everything as plain Scheme data: sessions
 are `SexprL` (one readable datum per line), config is an alist, and the `eval`
 tool evaluates Scheme in the agent's own process, so definitions persist across
 turns. Built with Chez Scheme; the production artifact is `sah.exe` + `sah.boot`.
