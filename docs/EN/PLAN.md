@@ -1,8 +1,10 @@
 # sah — a pi-style agent in Chez Scheme: long-term architecture and v0 plan
 
+> Chinese: [`../CN/PLAN.md`](../CN/PLAN.md)
+
 > Working name **sah** (Scheme Agent Harness). This document is the long-term
 > system architecture plus the specification for the first implementation.
-> Reference: `pi-agent-architecture/` in this repository (complete architecture
+> Reference: `../ext-ref/` in this repository (complete architecture
 > notes for pi v0.84.3).
 > Baseline environment: Chez Scheme 10.5 (`scheme --script`), Windows / POSIX.
 
@@ -421,7 +423,7 @@ execution; embedded SDK (Chez as a library called by other Schemes/hosts).
 
 ## 8. v0 implementation spec (first version)
 
-> **As-built note.** The implemented v0 (see [`../sah/README.md`](../sah/README.md))
+> **As-built note.** The implemented v0 (see [`README.md`](README.md))
 > chose **DeepSeek** (OpenAI-compatible) instead of Anthropic, ships the tools
 > `read` / `write` / `bash` / `eval`, uses `SYSTEM.md` for the prompt, and stores
 > sessions under `~/.sah/sessions/`. The subsections below are the original plan;
@@ -730,7 +732,7 @@ K ∈ session|message|model-change|thinking-change|compaction|branch-summary
 
 ## 11. Immediate next steps (suggested order)
 
-1. Create the `sah/` directory, put this document at `docs/PLAN.md`, and write a
+1. Create the `sah/` directory, put this document at `docs/EN/PLAN.md`, and write a
    `README.md` describing the vision.
 2. Implement `(sah json)` and `tests/json-test.ss`; get
    `scheme --script tests/run-tests.ss` passing.

@@ -1,7 +1,9 @@
 # sah — 用 Chez Scheme 实现的 pi 风格 agent：长期架构与 v0 实现规划
 
+> English: [`../EN/PLAN.md`](../EN/PLAN.md)
+
 > 工作代号 **sah**（Scheme Agent Harness）。本文是长期系统架构 + 第一版实现规格。
-> 参考对象：本仓 `pi-agent-architecture/`（pi v0.84.3 的完整架构资料）。
+> 参考对象：本仓 `../ext-ref/`（pi v0.84.3 的完整架构资料）。
 > 基线环境：Chez Scheme 10.5（`scheme --script`），Windows / POSIX 均可。
 
 ---
@@ -620,7 +622,7 @@ K ∈ session|message|model-change|thinking-change|compaction|branch-summary
 
 ## 11. 立即的下一步（建议执行顺序）
 
-1. 建目录 `scheme-agent/`（或最终名），放入本文为 `docs/PLAN.md`，写 `README.md` 记录愿景。
+1. 建目录 `scheme-agent/`（或最终名），放入本文为 `docs/CN/PLAN.md`，写 `README.md` 记录愿景。
 2. 实现 `(sah json)` 与 `tests/json-test.ss`，`scheme --script tests/run-tests.ss` 通过。
 3. 实现 `(sah transport)`（curl）+ `(sah llm)` + anthropic 适配，`print` 模式跑通一次真实对话。
 4. 实现 `define-tool` + `read`/`write`/`bash`，接上 agent loop。

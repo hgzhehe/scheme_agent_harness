@@ -1,31 +1,41 @@
 # Scheme Agent Harness
 
-A research workspace for building a minimal, **pi-style** coding agent in
-Chez Scheme, where the agent's middle language, data structures, configuration
-and session history are all Scheme.
+A research workspace for building a minimal, **pi-style** coding agent in Chez
+Scheme, where the agent's middle language, data structures, configuration and
+session history are all Scheme.
+
+**Documentation** — English: [`docs/EN/`](docs/EN/README.md) · 中文: [`docs/CN/`](docs/CN/README.md)
 
 ## Layout
 
 | Path | Contents |
 |------|----------|
 | [`sah/`](sah/README.md) | The implementation: agent loop, tools, sessions, build script |
-| [`docs/PLAN.md`](docs/PLAN.md) | Long-term architecture and v0 plan (English; [`PLAN.zh.md`](docs/PLAN.zh.md) for Chinese) |
-| [`docs/TUTORIAL.md`](docs/TUTORIAL.md) | Bilingual step-by-step tutorial (install → API key → first run) |
-| [`docs/`](docs/README.md) | Documentation index |
-| [`pi-agent-architecture/`](pi-agent-architecture/) | Collected architecture notes for pi v0.84.3 (reference) |
+| [`docs/EN/`](docs/EN/README.md) | Full English documentation |
+| [`docs/CN/`](docs/CN/README.md) | Full Chinese documentation / 完整中文文档 |
+| [`docs/ext-ref/`](docs/ext-ref/) | External reference: collected architecture notes for pi v0.84.3 |
+
+## Documentation
+
+| | English | 中文 |
+|---|---|---|
+| Overview | [`docs/EN/README.md`](docs/EN/README.md) | [`docs/CN/README.md`](docs/CN/README.md) |
+| Install / build / uninstall | [`docs/EN/INSTALL.md`](docs/EN/INSTALL.md) | [`docs/CN/INSTALL.md`](docs/CN/INSTALL.md) |
+| Tutorial | [`docs/EN/TUTORIAL.md`](docs/EN/TUTORIAL.md) | [`docs/CN/TUTORIAL.md`](docs/CN/TUTORIAL.md) |
+| Long-term plan | [`docs/EN/PLAN.md`](docs/EN/PLAN.md) | [`docs/CN/PLAN.md`](docs/CN/PLAN.md) |
 
 ## Quick start
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss          # offline tests
+scheme --script tests/run-tests.ss          # offline tests (34 checks)
 scheme --script sah.ss -- "hello"            # run from source
 scheme --script build.scm                    # build dist/sah.exe + dist/sah.boot
 ./dist/sah.exe "hello"                       # run the standalone executable
 ```
 
-See [`sah/README.md`](sah/README.md) for usage and
-[`sah/INSTALL.md`](sah/INSTALL.md) for building, installing and uninstalling.
+Start with the [tutorial](docs/EN/TUTORIAL.md) or the
+[overview](docs/EN/README.md).
 
 ## `sah` in one paragraph
 

@@ -1,5 +1,7 @@
 # Building, installing and uninstalling sah
 
+> Chinese: [`../CN/INSTALL.md`](../CN/INSTALL.md)
+
 `sah` (Scheme Agent Harness) runs two ways: directly from source with
 `scheme --script sah.ss`, or as a standalone executable built by `build.scm`.
 This document covers the executable.
@@ -123,7 +125,7 @@ sah --usage
 ## 4. Configure
 
 sah reads its configuration from `~/.sah/config.scm` (see
-[`config.example.scm`](config.example.scm)):
+[`config.example.scm`](../../sah/config.example.scm)):
 
 ```scheme
 ((provider . deepseek)
@@ -185,7 +187,7 @@ Check everything is wired up:
 sah "Reply with exactly: ok"
 ```
 
-For a step-by-step walkthrough see [`../docs/TUTORIAL.md`](../docs/TUTORIAL.md).
+For a step-by-step walkthrough see [`TUTORIAL.md`](TUTORIAL.md).
 
 ---
 
