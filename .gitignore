@@ -1,0 +1,16 @@
+# build artifacts
+sah/build/
+sah/dist/
+sah/demo/
+sah/tmp/
+
+# scratch
+hello.scm
+
+# third-party clone (not part of this project)
+miniKanren-with-symbolic-constraints-master/
+
+# editor junk
+*~
+\#*\#
+.\#*
