@@ -54,7 +54,7 @@
     [,other #f]))
 
 (define (make-message-entry s msg)
-  (list 'message (short-id) (session-last-id s) (now-ms) msg))
+  `(message ,(short-id) ,(session-last-id s) ,(now-ms) ,msg))
 
 (define (session-new cwd model)
   (let* ((dir (session-dir cwd))
@@ -62,7 +62,7 @@
          (file (path-join dir (string-append (number->string (now-ms)) "_" id ".ss"))))
     (ensure-dir! dir)
     (let ((s (make-session id cwd file '() (now-ms) model)))
-      (session-append! s (list 'session 1 id cwd (now-ms) model))
+      (session-append! s `(session 1 ,id ,cwd ,(now-ms) ,model))
       s)))
 
 (define (read-entries path)
@@ -79,13 +79,13 @@
 (define (normalize-entry e)
   (match e
     [(session ,version ,id ,cwd ,created ,model) e]
-    [(message ,id ,parent ,ts ,msg) (list 'message id parent ts (normalize-message msg))]
+    [(message ,id ,parent ,ts ,msg) `(message ,id ,parent ,ts ,(normalize-message msg))]
     [((kind . session) (version . ,v) (id . ,id) (cwd . ,cwd) (created . ,created) (model . ,model))
-     (list 'session v id cwd created model)]
+     `(session ,v ,id ,cwd ,created ,model)]
     [((kind . session) (version . ,v) (id . ,id) (cwd . ,cwd) (created . ,created))
-     (list 'session v id cwd created "")]
+     `(session ,v ,id ,cwd ,created "")]
     [((kind . message) (id . ,id) (parent . ,parent) (ts . ,ts) (msg . ,msg))
-     (list 'message id parent ts (normalize-message msg))]
+     `(message ,id ,parent ,ts ,(normalize-message msg))]
     [,other other]))
 
 (define (session-load path)

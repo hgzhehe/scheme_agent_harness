@@ -23,11 +23,10 @@
 (define (call->openai c)
   (match c
     [(call ,id ,name ,args)
-     (list (cons 'id id)
-           (cons 'type "function")
-           (cons 'function
-                 (list (cons 'name (symbol->string name))
-                       (cons 'arguments (write-json-string args)))))]
+     `((id . ,id)
+       (type . "function")
+       (function . ((name . ,(symbol->string name))
+                    (arguments . ,(write-json-string args)))))]
     [,other (error 'call->openai "bad tool call: ~s" other)]))
 
 (define (string-content x)
@@ -37,36 +36,35 @@
   (match m
     [(msg assistant ,content ,calls ,stop ,usage)
      (if (null? calls)
-         (list (cons 'role "assistant")
-               (cons 'content (string-content content)))
-         (list (cons 'role "assistant")
-               (cons 'content (string-content content))
-               (cons 'tool_calls (list->vector (map call->openai calls)))))]
+         `((role . "assistant")
+           (content . ,(string-content content)))
+         `((role . "assistant")
+           (content . ,(string-content content))
+           (tool_calls . ,(list->vector (map call->openai calls)))))]
     [(msg tool ,call-id ,name ,content)
-     (list (cons 'role "tool")
-           (cons 'tool_call_id call-id)
-           (cons 'content (string-content content)))]
+     `((role . "tool")
+       (tool_call_id . ,call-id)
+       (content . ,(string-content content)))]
     [(msg ,role ,content)
-     (list (cons 'role (symbol->string role))
-           (cons 'content (string-content content)))]
+     `((role . ,(symbol->string role))
+       (content . ,(string-content content)))]
     [,other (error 'message->openai "bad message: ~s" other)]))
 
 (define (tool->openai t)
   (match t
     [(tool ,name ,description ,parameters ,handler)
-     (list (cons 'type "function")
-           (cons 'function
-                 (list (cons 'name (symbol->string name))
-                       (cons 'description description)
-                       (cons 'parameters parameters))))]
+     `((type . "function")
+       (function . ((name . ,(symbol->string name))
+                    (description . ,description)
+                    (parameters . ,parameters))))]
     [,other (error 'tool->openai "bad tool: ~s" other)]))
 
 (define (build-chat-request model messages tools)
-  (list (cons 'model model)
-        (cons 'messages (list->vector (map message->openai messages)))
-        (cons 'tools (list->vector (map tool->openai tools)))
-        (cons 'max_tokens 8192)
-        (cons 'stream #f)))
+  `((model . ,model)
+    (messages . ,(list->vector (map message->openai messages)))
+    (tools . ,(list->vector (map tool->openai tools)))
+    (max_tokens . 8192)
+    (stream . #f)))
 
 ;;----------------------------------------------------------------------------
 ;; decode: OpenAI/DeepSeek JSON datum -> internal message
@@ -74,11 +72,11 @@
 
 (define (decode-usage u)
   (if u
-      (list (cons 'input (or (assq-ref u 'prompt_tokens) 0))
-            (cons 'output (or (assq-ref u 'completion_tokens) 0))
-            (cons 'cache-read (or (assq-ref u 'prompt_cache_hit_tokens) 0))
-            (cons 'cache-write 0))
-      (list (cons 'input 0) (cons 'output 0) (cons 'cache-read 0) (cons 'cache-write 0))))
+      `((input . ,(or (assq-ref u 'prompt_tokens) 0))
+        (output . ,(or (assq-ref u 'completion_tokens) 0))
+        (cache-read . ,(or (assq-ref u 'prompt_cache_hit_tokens) 0))
+        (cache-write . 0))
+      '((input . 0) (output . 0) (cache-read . 0) (cache-write . 0))))
 
 (define (parse-arguments a)
   (if (string? a)
@@ -88,10 +86,9 @@
 (define (raw-tool-call->internal tc)
   (let* ((fn (assq-ref tc 'function))
          (name (assq-ref fn 'name)))
-    (list 'call
-          (assq-ref tc 'id)
-          (if (string? name) (string->symbol name) name)
-          (parse-arguments (assq-ref fn 'arguments)))))
+    `(call ,(assq-ref tc 'id)
+           ,(if (string? name) (string->symbol name) name)
+           ,(parse-arguments (assq-ref fn 'arguments)))))
 
 (define (decode-assistant rawmsg finish usage)
   (let* ((c (assq-ref rawmsg 'content))
@@ -99,7 +96,7 @@
          (tcs (assq-ref rawmsg 'tool_calls))
          (calls (if tcs (map raw-tool-call->internal (vector->list tcs)) '()))
          (stop (if (and (string? finish) (string=? finish "tool_calls")) 'tool-use 'stop)))
-    (list 'msg 'assistant content calls stop (decode-usage usage))))
+    `(msg assistant ,content ,calls ,stop ,(decode-usage usage))))
 
 ;;----------------------------------------------------------------------------
 ;; migration: messages from session files written before the positional form
@@ -108,7 +105,7 @@
 (define (normalize-call c)
   (match c
     [(call ,id ,name ,args) c]
-    [((id . ,id) (name . ,name) (arguments . ,args)) (list 'call id name args)]
+    [((id . ,id) (name . ,name) (arguments . ,args)) `(call ,id ,name ,args)]
     [,other other]))
 
 (define (normalize-message m)
@@ -118,11 +115,11 @@
     [(msg ,role ,content) m]
     [((role . ,role) (content . ,content)
       (tool-calls . ,tcs) (stop . ,stop) (usage . ,usage))
-     (list 'msg role content (if tcs (map normalize-call (vector->list tcs)) '()) stop usage)]
+     `(msg ,role ,content ,(if tcs (map normalize-call (vector->list tcs)) '()) ,stop ,usage)]
     [((role . tool) (tool-call-id . ,id) (name . ,name) (content . ,content))
-     (list 'msg 'tool id name content)]
+     `(msg tool ,id ,name ,content)]
     [((role . ,role) (content . ,content))
-     (list 'msg role content)]
+     `(msg ,role ,content)]
     [,other (error 'normalize-message "unrecognized message: ~s" other)]))
 
 ;;----------------------------------------------------------------------------
@@ -134,7 +131,7 @@
          (auth (string-append "Bearer " (assq-ref config 'api-key)))
          (body (write-json-string
                 (build-chat-request (assq-ref config 'model) messages tools)))
-         (resp (http-post-json url (list (cons "Authorization" auth)) body)))
+         (resp (http-post-json url `(("Authorization" . ,auth)) body)))
     (let ((json (read-json-string resp)))
       (let ((err (assq-ref json 'error)))
         (when err

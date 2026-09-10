@@ -10,7 +10,7 @@
 
 (define (register-tool! name description parameters handler)
   (set! *tools*
-        (cons (list 'tool name description parameters handler)
+        (cons `(tool ,name ,description ,parameters ,handler)
               (filter (lambda (t)
                         (match t
                           [(tool ,n ,d ,p ,h) (not (eq? n name))]
@@ -42,14 +42,13 @@
 ;; Build a JSON-schema object from compact prop specs:
 ;;   (schema '((path "string" "File path") (limit "integer" "Max lines")))
 (define (schema props)
-  (list (cons 'type "object")
-        (cons 'properties
-              (map (lambda (p)
-                     (cons (car p)
-                           (list (cons 'type (cadr p))
-                                 (cons 'description (caddr p)))))
-                   props))
-        (cons 'required (list->vector (map car props)))))
+  `((type . "object")
+    (properties . ,(map (lambda (p)
+                          (cons (car p)
+                                `((type . ,(cadr p))
+                                  (description . ,(caddr p)))))
+                        props))
+    (required . ,(list->vector (map car props)))))
 
 (define (path-directories)
   (string-split (or (getenv "PATH") "") (if (memv #\; (string->list (or (getenv "PATH") ";"))) ";" ":")))

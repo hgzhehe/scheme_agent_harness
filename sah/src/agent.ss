@@ -34,28 +34,28 @@
 (define (run-tool session call)
   (match call
     [(call ,id ,name ,args)
-     (emit (list 'ev 'tool-start id name args))
+     (emit `(ev tool-start ,id ,name ,args))
      (let-values (((out is-error) (call-tool name args)))
-       (session-append! session (make-message-entry session (list 'msg 'tool id name out)))
-       (emit (list 'ev 'tool-end id name is-error out)))]
+       (session-append! session (make-message-entry session `(msg tool ,id ,name ,out)))
+       (emit `(ev tool-end ,id ,name ,is-error ,out)))]
     [,other (error 'run-tool "bad tool call: ~s" other)]))
 
 (define (run-agent session config prompt)
-  (session-append! session (make-message-entry session (list 'msg 'user prompt)))
-  (emit (list 'ev 'agent-start))
+  (session-append! session (make-message-entry session `(msg user ,prompt)))
+  (emit '(ev agent-start))
   (let loop ((steps 0))
     (when (>= steps (assq-ref config 'max-steps))
       (error 'agent "max steps (~a) exceeded" (assq-ref config 'max-steps)))
-    (let* ((system-msg (list 'msg 'system (assq-ref config 'system)))
+    (let* ((system-msg `(msg system ,(assq-ref config 'system)))
            (messages (cons system-msg (session-messages session)))
            (reply (llm-chat config messages (all-tools))))
       (session-append! session (make-message-entry session reply))
-      (emit (list 'ev 'message-end reply))
+      (emit `(ev message-end ,reply))
       (match reply
         [(msg assistant ,content ,calls ,stop ,usage)
          (if (null? calls)
              (begin
-               (emit (list 'ev 'agent-end))
+               (emit '(ev agent-end))
                reply)
              (begin
                (for-each (lambda (c) (run-tool session c)) calls)
