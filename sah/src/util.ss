@@ -62,8 +62,14 @@
       (string-append (home-dir) (substring path 1 (string-length path)))
       path))
 
+(define windows? (and (getenv "COMSPEC") #t))
+
 (define (normalize-slashes s)
-  (list->string (map (lambda (c) (if (char=? c #\\) #\/ c)) (string->list s))))
+  ;; backslashes are path separators only on Windows; on POSIX they are legal
+  ;; filename characters and must be preserved
+  (if windows?
+      (list->string (map (lambda (c) (if (char=? c #\\) #\/ c)) (string->list s)))
+      s))
 
 (define (path-join . parts)
   (let loop ((ps parts) (acc ""))
@@ -98,13 +104,16 @@
   (call-with-output-file path (lambda (p) (put-string p s))))
 
 (define (ensure-dir! path)
-  ;; Create every component of `path` (ignoring "already exists").
+  ;; Create every component of `path` (ignoring "already exists"). Handles both
+  ;; "C:/a/b" and "/a/b" as well as relative paths.
   (let* ((p (expand-home path))
-         (parts (string-split p "/")))
-    (let loop ((acc "") (ps parts))
+         (absolute? (and (> (string-length p) 0) (char=? (string-ref p 0) #\/)))
+         (parts (filter (lambda (s) (not (string=? s ""))) (string-split p "/"))))
+    (let loop ((acc (if absolute? "/" "")) (ps parts))
       (if (null? ps) #t
-          (let ((next (if (string=? acc "") (car ps)
-                          (string-append acc "/" (car ps)))))
+          (let ((next (cond ((string=? acc "") (car ps))
+                            ((string=? acc "/") (string-append "/" (car ps)))
+                            (else (string-append acc "/" (car ps))))))
             (guard (e (#t #t)) (mkdir next))
             (loop next (cdr ps)))))))
 

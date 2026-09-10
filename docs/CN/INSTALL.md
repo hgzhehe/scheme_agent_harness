@@ -240,3 +240,28 @@ scheme --script build.scm    # 重新构建
 ```
 
 配置、system prompt 和会话历史不会被更新影响。
+
+---
+
+## 8. 可移植性
+
+`sah` 能在 Chez Scheme 支持的任何平台运行（Windows / Linux / macOS；x86-64 / ARM 等）。
+平台相关的部分被隔离在少数地方：
+
+- **`shell` 工具**在启动 sah 的那个 shell 里执行命令。Windows 上用 ntdll/kernel32
+  的 FFI 沿进程树探测，并**在运行时校验结构体布局**，不匹配时（如非 x64）自动退回
+  `$SHELL` / `MSYSTEM` / `COMSPEC`；POSIX 上直接用 `$SHELL`。
+- 其余部分（JSON、消息、会话、agent 循环、`eval`）都是可移植的 Scheme，不依赖
+  操作系统或指令集。
+- 构建脚本通过检索 `PATH` 和若干常见目录来定位 Chez 可执行文件与 boot 文件。
+
+| 变量 | 用途 |
+|------|------|
+| `SAH_SHELL` | 强制指定 shell：`bash`、`pwsh`、`cmd` 或路径 |
+| `SAH_RUNTIME` | `scheme`（默认）或 `petite` |
+| `SAH_RUNTIME_EXE` | 显式指定 Chez 可执行文件路径 |
+| `SAH_RUNTIME_BOOT` | 显式指定基础 `.boot`（用于自包含构建） |
+| `SAH_BOOT_DIR` | 搜索基础 `.boot` 的目录 |
+
+如果某发行版把 boot 编进了可执行文件，构建仍会成功，但会提示 `dist/sah.boot`
+是按名字引用运行时的；设置 `SAH_RUNTIME_BOOT` 可得到完全自包含的构建。

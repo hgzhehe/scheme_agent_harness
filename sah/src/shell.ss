@@ -11,8 +11,6 @@
 
 (define *shell-override* #f)
 
-(define windows? (and (getenv "COMSPEC") #t))
-
 (define (basename p)
   (let loop ((i (- (string-length p) 1)))
     (cond ((< i 0) p)
@@ -32,6 +30,7 @@
 ;;----------------------------------------------------------------------------
 
 (define get-current-process #f)
+(define get-current-pid #f)
 (define nt-query #f)
 (define open-process #f)
 (define query-image #f)
@@ -42,6 +41,7 @@
     (load-shared-object "ntdll.dll")
     (load-shared-object "kernel32.dll")
     (set! get-current-process (foreign-procedure "GetCurrentProcess" () void*))
+    (set! get-current-pid (foreign-procedure "GetCurrentProcessId" () unsigned-32))
     (set! nt-query (foreign-procedure "NtQueryInformationProcess"
                                       (void* unsigned-32 void* unsigned-32 void*) int))
     (set! open-process (foreign-procedure "OpenProcess" (unsigned-32 int unsigned-32) void*))
@@ -56,11 +56,17 @@
           (list->string (reverse acc))
           (loop (+ i 1) (cons (integer->char c) acc))))))
 
-;; parent pid of the process identified by handle h (0x1000 = limited info)
-(define (handle-parent-pid h)
+;; parent pid of the process identified by handle h (0x1000 = limited info).
+;; PROCESS_BASIC_INFORMATION offsets depend on the pointer size, so we verify
+;; the process-id field matches the pid we expect; if the layout differs (a
+;; non-x64 build, a future Windows change, ...) we return #f and the caller
+;; falls back to environment-based detection instead of guessing wrong.
+(define (handle-parent-pid h expected-pid)
   (let ((pbi (foreign-alloc 64)))
     (nt-query h 0 pbi 64 (foreign-alloc 4))
-    (foreign-ref 'unsigned-64 pbi 48)))
+    (if (= (foreign-ref 'unsigned-64 pbi 40) expected-pid)
+        (foreign-ref 'unsigned-64 pbi 48)
+        #f)))
 
 (define (open-pid pid)
   (open-process #x1000 0 (bitwise-and pid #xFFFFFFFF)))
@@ -88,8 +94,10 @@
       (let loop ((pid #f) (n 0))
         (if (> n 8)
             (windows-shell-fallback)
-            (let ((ppid (guard (e (#t #f))
-                          (handle-parent-pid (if pid (open-pid pid) (get-current-process))))))
+            (let* ((h (if pid (open-pid pid) (get-current-process)))
+                   (expected (if pid pid (get-current-pid)))
+                   (ppid (guard (e (#t #f))
+                           (and h (not (= h 0)) (handle-parent-pid h expected)))))
               (if (not ppid)
                   (windows-shell-fallback)
                   (let* ((img (pid-image ppid))
@@ -97,7 +105,9 @@
                     (if sh sh (loop ppid (+ n 1))))))))))
 
 (define (detect-posix-shell)
-  (list 'shell 'bash (or (getenv "SHELL") "/bin/sh")))
+  (let ((sh (getenv "SHELL")))
+    (or (and sh (not (string=? sh "")) (shell-from-name sh))
+        (list 'shell 'bash "/bin/sh"))))
 
 (define (detect-shell)
   (or (and *shell-override* (shell-from-name *shell-override*))

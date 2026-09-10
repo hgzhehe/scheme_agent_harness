@@ -246,3 +246,31 @@ scheme --script build.scm    # rebuild
 ```
 
 Config, system prompt and session history are untouched by an update.
+
+---
+
+## 8. Portability
+
+`sah` runs on any platform Chez Scheme supports (Windows, Linux, macOS;
+x86-64, ARM, …). Platform-specific behaviour is isolated:
+
+- The **`shell` tool** runs commands in the shell that launched sah. On Windows
+  it detects the parent process via ntdll/kernel32 FFI, validating the struct
+  layout at runtime and falling back to `$SHELL` / `MSYSTEM` / `COMSPEC` if it
+  does not match (e.g. a non-x64 build). On POSIX it uses `$SHELL`.
+- Everything else — JSON, messages, sessions, the agent loop, `eval` — is
+  portable Scheme with no OS or instruction-set assumptions.
+- The build script locates the Chez executable and boot files by searching
+  `PATH` and several common layouts.
+
+| Variable | Purpose |
+|----------|---------|
+| `SAH_SHELL` | force the shell: `bash`, `pwsh`, `cmd`, or a path |
+| `SAH_RUNTIME` | `scheme` (default) or `petite` |
+| `SAH_RUNTIME_EXE` | explicit path to the Chez executable |
+| `SAH_RUNTIME_BOOT` | explicit base `.boot` (for a self-contained build) |
+| `SAH_BOOT_DIR` | directory to search for base `.boot` files |
+
+If a distro embeds the boot file in the executable, the build still succeeds but
+prints a note that `dist/sah.boot` references the runtime by name; set
+`SAH_RUNTIME_BOOT` for a fully self-contained build.
