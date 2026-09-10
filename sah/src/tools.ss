@@ -1,7 +1,7 @@
 ;;; tools.ss -- built-in tools and the tiny registry.
 ;;;
-;;; A tool is a plain alist:
-;;;   ((name . read) (description . "...") (parameters . <json-schema>) (handler . fn))
+;;; A tool is a positional tagged list, destructured with `match`:
+;;;   (tool NAME DESCRIPTION PARAMS HANDLER)
 ;;;
 ;;; `parameters` uses the same alist/vector JSON mapping as everything else, so
 ;;; it can be handed to the provider with no conversion.
@@ -10,18 +10,22 @@
 
 (define (register-tool! name description parameters handler)
   (set! *tools*
-        (cons (list (cons 'name name)
-                    (cons 'description description)
-                    (cons 'parameters parameters)
-                    (cons 'handler handler))
-              (filter (lambda (t) (not (eq? (assq-ref t 'name) name))) *tools*))))
+        (cons (list 'tool name description parameters handler)
+              (filter (lambda (t)
+                        (match t
+                          [(tool ,n ,d ,p ,h) (not (eq? n name))]
+                          [,other #t]))
+                      *tools*))))
 
 (define (all-tools) (reverse *tools*))
 
 (define (find-tool name)
   (let loop ((l *tools*))
     (cond ((null? l) #f)
-          ((eq? (assq-ref (car l) 'name) name) (car l))
+          ((match (car l)
+             [(tool ,n ,d ,p ,h) (eq? n name)]
+             [,other #f])
+           (car l))
           (else (loop (cdr l))))))
 
 (define (call-tool name args)
@@ -30,8 +34,10 @@
     (if (not t)
         (values (format "error: unknown tool ~a" name) #t)
         (guard (e (#t (values (format "error: ~a" (err->string e)) #t)))
-          (let ((out ((assq-ref t 'handler) (if (list? args) args '()))))
-            (values (if (string? out) out (format "~s" out)) #f))))))
+          (match t
+            [(tool ,n ,description ,parameters ,handler)
+             (let ((out (handler (if (list? args) args '()))))
+               (values (if (string? out) out (format "~s" out)) #f))])))))
 
 ;; Build a JSON-schema object from compact prop specs:
 ;;   (schema '((path "string" "File path") (limit "integer" "Max lines")))

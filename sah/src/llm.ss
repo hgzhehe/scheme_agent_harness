@@ -1,55 +1,65 @@
 ;;; llm.ss -- OpenAI-compatible chat completions (DeepSeek by default)
 ;;;
-;;; Internal (canonical) message = alist with SYMBOL keys:
+;;; Internal (canonical) messages are POSITIONAL tagged lists so they can be
+;;; destructured directly with `match`:
 ;;;
-;;;   ((role . user)      (content . "hi"))
-;;;   ((role . assistant) (content . "hi") (tool-calls . #(TC ...)))
-;;;   ((role . tool)      (tool-call-id . "call_1") (name . read) (content . "..."))
+;;;   (msg user      CONTENT)
+;;;   (msg system    CONTENT)
+;;;   (msg assistant CONTENT CALLS STOP USAGE)
+;;;   (msg tool      CALL-ID NAME CONTENT)
 ;;;
-;;;   TC = ((id . "call_1") (name . read) (arguments . ((path . "a.scm"))))
+;;;   CALL = (call ID NAME ARGS)      ; ARGS is parsed Scheme data
 ;;;
 ;;; `arguments` stays parsed Scheme data internally and is only stringified when
 ;;; crossing the wire. This is the canonical-form idea in miniature.
+;;;
+;;; The provider boundary (JSON) is the only place that speaks alists, because
+;;; JSON object key order is not guaranteed and therefore unsafe to pattern match.
 
 ;;----------------------------------------------------------------------------
 ;; encode: internal -> OpenAI/DeepSeek JSON datum
 ;;----------------------------------------------------------------------------
 
-(define (tc->openai tc)
-  (list (cons 'id (assq-ref tc 'id))
-        (cons 'type "function")
-        (cons 'function
-              (list (cons 'name (symbol->string (assq-ref tc 'name)))
-                    (cons 'arguments (write-json-string (assq-ref tc 'arguments)))))))
+(define (call->openai c)
+  (match c
+    [(call ,id ,name ,args)
+     (list (cons 'id id)
+           (cons 'type "function")
+           (cons 'function
+                 (list (cons 'name (symbol->string name))
+                       (cons 'arguments (write-json-string args)))))]
+    [,other (error 'call->openai "bad tool call: ~s" other)]))
 
 (define (string-content x)
   (if (string? x) x ""))
 
 (define (message->openai m)
-  (let ((role (assq-ref m 'role))
-        (content (assq-ref m 'content))
-        (tcs (assq-ref m 'tool-calls)))
-    (cond
-      (tcs
-       (list (cons 'role (symbol->string role))
-             (cons 'content (string-content content))
-             (cons 'tool_calls
-                   (list->vector
-                    (map tc->openai (vector->list tcs))))))
-      ((eq? role 'tool)
-       (list (cons 'role "tool")
-             (cons 'tool_call_id (assq-ref m 'tool-call-id))
-             (cons 'content (string-content content))))
-      (else
-       (list (cons 'role (symbol->string role))
-             (cons 'content (string-content content)))))))
+  (match m
+    [(msg assistant ,content ,calls ,stop ,usage)
+     (if (null? calls)
+         (list (cons 'role "assistant")
+               (cons 'content (string-content content)))
+         (list (cons 'role "assistant")
+               (cons 'content (string-content content))
+               (cons 'tool_calls (list->vector (map call->openai calls)))))]
+    [(msg tool ,call-id ,name ,content)
+     (list (cons 'role "tool")
+           (cons 'tool_call_id call-id)
+           (cons 'content (string-content content)))]
+    [(msg ,role ,content)
+     (list (cons 'role (symbol->string role))
+           (cons 'content (string-content content)))]
+    [,other (error 'message->openai "bad message: ~s" other)]))
 
 (define (tool->openai t)
-  (list (cons 'type "function")
-        (cons 'function
-              (list (cons 'name (symbol->string (assq-ref t 'name)))
-                    (cons 'description (assq-ref t 'description))
-                    (cons 'parameters (assq-ref t 'parameters))))))
+  (match t
+    [(tool ,name ,description ,parameters ,handler)
+     (list (cons 'type "function")
+           (cons 'function
+                 (list (cons 'name (symbol->string name))
+                       (cons 'description description)
+                       (cons 'parameters parameters))))]
+    [,other (error 'tool->openai "bad tool: ~s" other)]))
 
 (define (build-chat-request model messages tools)
   (list (cons 'model model)
@@ -78,23 +88,42 @@
 (define (raw-tool-call->internal tc)
   (let* ((fn (assq-ref tc 'function))
          (name (assq-ref fn 'name)))
-    (list (cons 'id (assq-ref tc 'id))
-          (cons 'name (if (string? name) (string->symbol name) name))
-          (cons 'arguments (parse-arguments (assq-ref fn 'arguments))))))
+    (list 'call
+          (assq-ref tc 'id)
+          (if (string? name) (string->symbol name) name)
+          (parse-arguments (assq-ref fn 'arguments)))))
 
 (define (decode-assistant rawmsg finish usage)
   (let* ((c (assq-ref rawmsg 'content))
          (content (if (string? c) c ""))
          (tcs (assq-ref rawmsg 'tool_calls))
-         (calls (if tcs
-                    (list->vector (map raw-tool-call->internal (vector->list tcs)))
-                    #f))
+         (calls (if tcs (map raw-tool-call->internal (vector->list tcs)) '()))
          (stop (if (and (string? finish) (string=? finish "tool_calls")) 'tool-use 'stop)))
-    (list (cons 'role 'assistant)
-          (cons 'content content)
-          (cons 'tool-calls calls)
-          (cons 'stop stop)
-          (cons 'usage (decode-usage usage)))))
+    (list 'msg 'assistant content calls stop (decode-usage usage))))
+
+;;----------------------------------------------------------------------------
+;; migration: messages from session files written before the positional form
+;;----------------------------------------------------------------------------
+
+(define (normalize-call c)
+  (match c
+    [(call ,id ,name ,args) c]
+    [((id . ,id) (name . ,name) (arguments . ,args)) (list 'call id name args)]
+    [,other other]))
+
+(define (normalize-message m)
+  (match m
+    [(msg assistant ,content ,calls ,stop ,usage) m]
+    [(msg tool ,call-id ,name ,content) m]
+    [(msg ,role ,content) m]
+    [((role . ,role) (content . ,content)
+      (tool-calls . ,tcs) (stop . ,stop) (usage . ,usage))
+     (list 'msg role content (if tcs (map normalize-call (vector->list tcs)) '()) stop usage)]
+    [((role . tool) (tool-call-id . ,id) (name . ,name) (content . ,content))
+     (list 'msg 'tool id name content)]
+    [((role . ,role) (content . ,content))
+     (list 'msg role content)]
+    [,other (error 'normalize-message "unrecognized message: ~s" other)]))
 
 ;;----------------------------------------------------------------------------
 ;; provider call

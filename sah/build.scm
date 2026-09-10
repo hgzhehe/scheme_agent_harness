@@ -82,7 +82,8 @@
           (if petite (list petite main) (list main))))))
 
 (define src-files
-  '("src/util.ss"
+  '("src/match.ss"
+    "src/util.ss"
     "src/json.ss"
     "src/transport.ss"
     "src/llm.ss"

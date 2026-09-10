@@ -10,6 +10,7 @@
 
 (define *root* (string-append (here-dir) "/.."))
 
+(load (string-append *root* "/src/match.ss"))
 (load (string-append *root* "/src/util.ss"))
 (load (string-append *root* "/src/json.ss"))
 (load (string-append *root* "/src/transport.ss"))
@@ -69,23 +70,18 @@
 
 (check "llm: message->openai (user)"
        '((role . "user") (content . "hi"))
-       (message->openai '((role . user) (content . "hi"))))
+       (message->openai '(msg user "hi")))
 
 (check "llm: message->openai (tool result)"
        '((role . "tool") (tool_call_id . "c1") (content . "out"))
-       (message->openai '((role . tool) (tool-call-id . "c1") (name . read) (content . "out"))))
+       (message->openai '(msg tool "c1" read "out")))
 
 (check "llm: assistant tool-calls stringify arguments"
        '((path . "a.scm"))
-       (let* ((m '((role . assistant)
-                   (content . "")
-                   (tool-calls . #(((id . "c1") (name . read)
-                                    (arguments . ((path . "a.scm"))))))))
+       (let* ((m '(msg assistant "" ((call "c1" read ((path . "a.scm")))) tool-use (usage)))
               (encoded (message->openai m))
-              (tcs (assq-ref encoded 'tool_calls))
-              (tc0 (vector-ref tcs 0))
-              (fn (assq-ref tc0 'function))
-              (args-str (assq-ref fn 'arguments)))
+              (tc0 (vector-ref (assq-ref encoded 'tool_calls) 0))
+              (args-str (assq-ref (assq-ref tc0 'function) 'arguments)))
          (read-json-string args-str)))
 
 (check "llm: decode assistant with tool_calls"
@@ -94,11 +90,21 @@
                     "{\"content\":\"look\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"a.scm\\\"}\"}}]}"))
               (msg (decode-assistant raw "tool_calls"
                                      (read-json-string "{\"prompt_tokens\":10,\"completion_tokens\":5}"))))
-         (and (eq? (assq-ref msg 'role) 'assistant)
-              (eq? (assq-ref msg 'stop) 'tool-use)
-              (let ((tc (vector-ref (assq-ref msg 'tool-calls) 0)))
-                (and (eq? (assq-ref tc 'name) 'read)
-                     (equal? (assq-ref tc 'arguments) '((path . "a.scm"))))))))
+         (match msg
+           [(msg assistant ,content ,calls ,stop ,usage)
+            (and (equal? content "look")
+                 (eq? stop 'tool-use)
+                 (match calls
+                   [((call ,id ,name ,args))
+                    (and (string=? id "call_1")
+                         (eq? name 'read)
+                         (equal? args '((path . "a.scm"))))]
+                   [,other #f]))]
+           [,other #f])))
+
+(check "llm: legacy alist message migrates to positional"
+       '(msg tool "c1" read "out")
+       (normalize-message '((role . tool) (tool-call-id . "c1") (name . read) (content . "out"))))
 
 ;;----------------------------------------------------------------------------
 (printf "== tools ==~%")
@@ -174,10 +180,18 @@
 
 (set! *sah-home-override* (path-join tmp "sah-home"))
 (define s (session-new "/some/project" "deepseek-chat"))
-(session-append! s (make-message-entry s '((role . user) (content . "hi"))))
-(session-append! s (make-message-entry s '((role . assistant) (content . "yo"))))
+(session-append! s (make-message-entry s '(msg user "hi")))
+(session-append! s (make-message-entry s '(msg assistant "yo" () stop (usage))))
 
-(define (session-id-of-first s) (assq-ref (car (session-entries s)) 'id))
+(define (entry-id e)
+  (match e
+    [(message ,id ,parent ,ts ,msg) id]
+    [(session ,v ,id ,cwd ,created ,model) id]
+    [,other #f]))
+(define (entry-parent e)
+  (match e
+    [(message ,id ,parent ,ts ,msg) parent]
+    [,other #f]))
 
 (define s2 (session-load (session-file s)))
 (check "session: header id preserved" (session-id s) (session-id s2))
@@ -185,14 +199,16 @@
        (session-entries s)
        (session-entries s2))
 (check "session: messages extracted"
-       '(((role . user) (content . "hi")) ((role . assistant) (content . "yo")))
+       '((msg user "hi") (msg assistant "yo" () stop (usage)))
        (session-messages s2))
 (check "session: message parent points to header"
-       (session-id-of-first s)
-       (assq-ref (cadr (session-entries s2)) 'parent))
+       (session-id s)
+       (entry-parent (cadr (session-entries s2))))
 (check "session: entries are readable as plain data"
        #t
-       (eq? (assq-ref (car (session-entries s2)) 'kind) 'session))
+       (match (car (session-entries s2))
+         [(session ,v ,id ,cwd ,created ,model) #t]
+         [,other #f]))
 
 ;;----------------------------------------------------------------------------
 (printf "== agent loop (mock model) ==~%")
@@ -205,35 +221,33 @@
       (lambda (config messages tools)
         (set! *calls* (+ *calls* 1))
         (if (= *calls* 1)
-            (list (cons 'role 'assistant)
-                  (cons 'content '("let me look"))
-                  (cons 'tool-calls (vector (list (cons 'id "c1")
-                                                  (cons 'name 'read)
-                                                  (cons 'arguments (list (cons 'path tf2))))))
-                  (cons 'stop 'tool-use)
-                  (cons 'usage '((input 1) (output 1))))
-            (list (cons 'role 'assistant)
-                  (cons 'content "done")
-                  (cons 'tool-calls #f)
-                  (cons 'stop 'stop)
-                  (cons 'usage '((input 1) (output 1)))))))
+            (list 'msg 'assistant "let me look"
+                  (list (list 'call "c1" 'read (list (cons 'path tf2))))
+                  'tool-use '((input . 1) (output . 1)))
+            (list 'msg 'assistant "done" '() 'stop '((input . 1) (output . 1))))))
 
 (define s3 (session-new tmp "mock-model"))
 (define cfg (list (cons 'system "test") (cons 'max-steps 5) (cons 'model "mock")
                   (cons 'api-key "x") (cons 'base-url "")))
 (define events '())
-(on-event! (lambda (ev) (set! events (cons (assq-ref ev 'kind) events))))
+(on-event! (lambda (ev) (set! events (cons (match ev [(ev ,kind . ,rest) kind]) events))))
 
 (run-agent s3 cfg "what is in the file?")
 
 (define msgs (session-messages s3))
 (check "agent: 4 messages (user/assistant/tool/assistant)" 4 (length msgs))
-(check "agent: first is user" 'user (assq-ref (car msgs) 'role))
+(check "agent: first is user" '(msg user "what is in the file?") (car msgs))
 (check "agent: second is assistant with tool call"
-       'read (assq-ref (vector-ref (assq-ref (cadr msgs) 'tool-calls) 0) 'name))
+       'read
+       (match (cadr msgs)
+         [(msg assistant ,c ,calls ,stop ,usage)
+          (match (car calls) [(call ,id ,name ,args) name] [,other #f])]
+         [,other #f]))
 (check "agent: third is tool result with file content"
-       "the-answer" (assq-ref (caddr msgs) 'content))
-(check "agent: fourth is final assistant" "done" (assq-ref (cadddr msgs) 'content))
+       "the-answer"
+       (match (caddr msgs) [(msg tool ,id ,name ,content) content] [,other #f]))
+(check "agent: fourth is final assistant" "done"
+       (match (cadddr msgs) [(msg assistant ,c ,calls ,stop ,usage) c] [,other #f]))
 (check-true "agent: emitted tool-start/tool-end"
             (and (memq 'tool-start events) (memq 'tool-end events)))
 
@@ -241,10 +255,9 @@
 (set! *calls* 0)
 (set! *chat-impl*
       (lambda (config messages tools)
-        (list (cons 'role 'assistant) (cons 'content "")
-              (cons 'tool-calls (vector (list (cons 'id "cx") (cons 'name 'read)
-                                              (cons 'arguments (list (cons 'path tf2))))))
-              (cons 'stop 'tool-use) (cons 'usage '()))))
+        (list 'msg 'assistant ""
+              (list (list 'call "cx" 'read (list (cons 'path tf2))))
+              'tool-use '())))
 (define s4 (session-new tmp "mock"))
 (check "agent: max-steps enforced"
        #t

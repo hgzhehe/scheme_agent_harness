@@ -26,6 +26,9 @@ hello.scm prints 42.
 - **Agent 循环** —— 构建上下文、调用模型、执行工具、重复。
 - **单 provider** —— DeepSeek（OpenAI 兼容的 chat completions）。
 - **四个工具** —— `read`、`write`、`bash`、`eval`。
+- **模式匹配内核** —— 消息、事件、entry、工具都是位置化 tagged list；
+  `llm.ss` / `agent.ss` / `session.ss` / `tools.ss` 用 `match` 分发
+  （[`src/match.ss`](../../sah/src/match.ss)）。
 - **Scheme 原生会话** —— `SexprL`：每行一个 Scheme datum，可用 `read` 读回，
   结构是树形（`id`/`parent`），以后加分叉不用改格式。
 - **Scheme 原生配置** —— `~/.sah/config.scm` 就是一个 alist。
@@ -194,14 +197,11 @@ sah> 再算 fact 40
 datum：
 
 ```scheme
-((kind . session) (version . 1) (id . "1e3de567") (cwd . "F:/proj") (created . 1789022830878) (model . "deepseek-chat"))
-((kind . message) (id . "a1b2c3d4") (parent . "1e3de567") (ts . 1789022830900)
-                  (msg (role . user) (content . "hi")))
-((kind . message) (id . "b2c3d4e5") (parent . "a1b2c3d4") (ts . 1789022831000)
-                  (msg (role . assistant) (content . "...")
-                       (tool-calls . #(((id . "call_1") (name . read)
-                                        (arguments ((path . "a.scm"))))))
-                       (stop . tool-use) (usage (input . 492) (output . 68))))
+(session 1 "1e3de567" "F:/proj" 1789022830878 "deepseek-chat")
+(message "a1b2c3d4" "1e3de567" 1789022830900
+         (msg user "hi"))
+(message "b2c3d4e5" "a1b2c3d4" 1789022831000
+         (msg assistant "..." ((call "call_1" read ((path . "a.scm")))) tool-use (usage ...)))
 ```
 
 用 Scheme reader 读取任意会话：
@@ -218,13 +218,36 @@ EOF
 
 ## 数据约定
 
-凡是跨边界的东西都是普通 Scheme datum：
+凡是跨边界的东西都是普通 Scheme datum。
+
+**内部值是位置化 tagged list**，所以可以用 `match` 干净地解构：
+
+```scheme
+(msg user "hi")
+(msg system "You are sah...")
+(msg assistant "let me look" ((call "c1" read ((path . "a.scm")))) tool-use (usage ...))
+(msg tool "c1" read "file contents")
+
+(ev tool-start "c1" read ((path . "a.scm")))
+(ev tool-end   "c1" read #f "file contents")
+
+(session 1 "1e3de567" "F:/proj" 1700000000000 "deepseek-chat")   ; header entry
+(message "a1b2c3d4" "1e3de567" 1700000000001 (msg user "hi"))    ; message entry
+
+(tool read "Read a file" PARAMS HANDLER)
+```
+
+**JSON 映射**只发生在 provider/JSON 边界（那里对象键序不保证）：
 
 - JSON object ↔ **symbol 作键**的 alist
 - JSON array ↔ **vector**（所以 `()` = `{}`、`#()` = `[]`，二者可区分）
 - JSON `null` ↔ 符号 `null`；布尔 ↔ `#t`/`#f`
 - 工具调用的 `arguments` 内部保持为解析好的 Scheme 数据，只在过 wire 时才
   stringify 成 JSON
+
+模式匹配由 [`src/match.ss`](../../sah/src/match.ss) 提供
+（Friedman / Hilsdale / Dybvig，MIT）。`llm.ss`、`agent.ss`、`session.ss`、
+`tools.ss` 基本都写成对这些形状的 `match` 分支。
 
 ## 源码结构
 

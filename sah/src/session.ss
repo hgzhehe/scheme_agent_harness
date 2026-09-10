@@ -3,13 +3,14 @@
 ;;; Files live under:
 ;;;   ~/.sah/sessions/<cwd-slug>/<unix-ms>_<id>.ss
 ;;;
-;;; Every line is a Scheme datum readable with `read`:
-;;;   (kind session)  header: version/id/cwd/created/model
-;;;   (kind message)  id/parent/ts/msg  <- the conversation
+;;; Every line is a Scheme datum readable with `read`. Entries are positional
+;;; tagged lists, destructured with `match`:
+;;;   (session VERSION ID CWD CREATED MODEL)   header
+;;;   (message ID PARENT TS MSG)               conversation
 ;;;
 ;;; v0 rewrites the whole file on append (sessions are small). The on-disk form
-;;; is already the canonical tree shape (id/parent), so branches can land later
-;;; without a format change.
+;;; is a tree via id/parent, so branches can land later without a format change.
+;;; Entries written by older versions (alists) are migrated on load.
 
 (define-record-type session
   (fields (immutable id) (immutable cwd) (immutable file)
@@ -46,17 +47,14 @@
   s)
 
 (define (session-last-id s)
-  (let loop ((es (reverse (session-entries s))))
-    (cond ((null? es) #f)
-          ((assq-ref (car es) 'id) (assq-ref (car es) 'id))
-          (else (loop (cdr es))))))
+  (match (reverse (session-entries s))
+    [() #f]
+    [((message ,id ,parent ,ts ,msg) . ,rest) id]
+    [((session ,version ,id ,cwd ,created ,model) . ,rest) id]
+    [,other #f]))
 
 (define (make-message-entry s msg)
-  (list (cons 'kind 'message)
-        (cons 'id (short-id))
-        (cons 'parent (session-last-id s))
-        (cons 'ts (now-ms))
-        (cons 'msg msg)))
+  (list 'message (short-id) (session-last-id s) (now-ms) msg))
 
 (define (session-new cwd model)
   (let* ((dir (session-dir cwd))
@@ -64,29 +62,40 @@
          (file (path-join dir (string-append (number->string (now-ms)) "_" id ".ss"))))
     (ensure-dir! dir)
     (let ((s (make-session id cwd file '() (now-ms) model)))
-      (session-append! s (list (cons 'kind 'session)
-                               (cons 'version 1)
-                               (cons 'id id)
-                               (cons 'cwd cwd)
-                               (cons 'created (now-ms))
-                               (cons 'model model)))
+      (session-append! s (list 'session 1 id cwd (now-ms) model))
       s)))
 
+(define (read-entries path)
+  (call-with-input-file
+    path
+    (lambda (p)
+      (let loop ((acc '()))
+        (let ((d (guard (e (#t (eof-object))) (read p))))
+          (if (eof-object? d)
+              (reverse acc)
+              (loop (cons d acc))))))))
+
+;; migration: entries written by older versions used alists
+(define (normalize-entry e)
+  (match e
+    [(session ,version ,id ,cwd ,created ,model) e]
+    [(message ,id ,parent ,ts ,msg) (list 'message id parent ts (normalize-message msg))]
+    [((kind . session) (version . ,v) (id . ,id) (cwd . ,cwd) (created . ,created) (model . ,model))
+     (list 'session v id cwd created model)]
+    [((kind . session) (version . ,v) (id . ,id) (cwd . ,cwd) (created . ,created))
+     (list 'session v id cwd created "")]
+    [((kind . message) (id . ,id) (parent . ,parent) (ts . ,ts) (msg . ,msg))
+     (list 'message id parent ts (normalize-message msg))]
+    [,other other]))
+
 (define (session-load path)
-  (let* ((entries (call-with-input-file
-                    path
-                    (lambda (p)
-                      (let loop ((acc '()))
-                        (let ((d (guard (e (#t (eof-object))) (read p))))
-                          (if (eof-object? d)
-                              (reverse acc)
-                              (loop (cons d acc))))))))
-         (header (if (pair? entries) (car entries) '()))
-         (id (or (assq-ref header 'id) (short-id)))
-         (cwd (or (assq-ref header 'cwd) (current-directory)))
-         (model (or (assq-ref header 'model) ""))
-         (created (or (assq-ref header 'created) (now-ms))))
-    (make-session id cwd path entries created model)))
+  (let* ((entries (map normalize-entry (read-entries path)))
+         (header (if (pair? entries) (car entries) '())))
+    (match header
+      [(session ,version ,id ,cwd ,created ,model)
+       (make-session id cwd path entries created model)]
+      [,other
+       (make-session (short-id) (current-directory) path entries (now-ms) "")])))
 
 (define (session-latest cwd)
   (let ((dir (session-dir cwd)))
@@ -99,9 +108,11 @@
               #f
               (session-load (path-join dir (car (reverse sorted)))))))))
 
+(define (entries->messages es)
+  (match es
+    [() '()]
+    [((message ,id ,parent ,ts ,msg) . ,rest) (cons msg (entries->messages rest))]
+    [(,other . ,rest) (entries->messages rest)]))
+
 (define (session-messages s)
-  (let loop ((es (session-entries s)) (acc '()))
-    (cond ((null? es) (reverse acc))
-          ((eq? (assq-ref (car es) 'kind) 'message)
-           (loop (cdr es) (cons (assq-ref (car es) 'msg) acc)))
-          (else (loop (cdr es) acc)))))
+  (entries->messages (session-entries s)))

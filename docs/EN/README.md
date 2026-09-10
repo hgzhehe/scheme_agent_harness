@@ -28,6 +28,9 @@ hello.scm prints 42.
 - **Agent loop** — build context, call the model, run requested tools, repeat.
 - **One provider** — DeepSeek (OpenAI-compatible chat completions).
 - **Four tools** — `read`, `write`, `bash`, `eval`.
+- **Pattern-matched core** — messages, events, entries and tools are positional
+  tagged lists; `llm.ss` / `agent.ss` / `session.ss` / `tools.ss` dispatch with
+  `match` ([`src/match.ss`](../../sah/src/match.ss)).
 - **Scheme-native sessions** — `SexprL`: one Scheme datum per line, readable
   with `read`, tree-shaped (`id`/`parent`) so branching can land later.
 - **Scheme-native config** — `~/.sah/config.scm` is an alist datum.
@@ -201,14 +204,11 @@ Stored as `SexprL` under `~/.sah/sessions/<cwd-slug>/<ms>_<id>.ss` — one Schem
 datum per line:
 
 ```scheme
-((kind . session) (version . 1) (id . "1e3de567") (cwd . "F:/proj") (created . 1789022830878) (model . "deepseek-chat"))
-((kind . message) (id . "a1b2c3d4") (parent . "1e3de567") (ts . 1789022830900)
-                  (msg (role . user) (content . "hi")))
-((kind . message) (id . "b2c3d4e5") (parent . "a1b2c3d4") (ts . 1789022831000)
-                  (msg (role . assistant) (content . "...")
-                       (tool-calls . #(((id . "call_1") (name . read)
-                                        (arguments ((path . "a.scm"))))))
-                       (stop . tool-use) (usage (input . 492) (output . 68))))
+(session 1 "1e3de567" "F:/proj" 1789022830878 "deepseek-chat")
+(message "a1b2c3d4" "1e3de567" 1789022830900
+         (msg user "hi"))
+(message "b2c3d4e5" "a1b2c3d4" 1789022831000
+         (msg assistant "..." ((call "call_1" read ((path . "a.scm")))) tool-use (usage ...)))
 ```
 
 Read any session with the Scheme reader:
@@ -226,13 +226,38 @@ without a format change.
 
 ## Data conventions
 
-Everything that crosses a boundary is a plain Scheme datum:
+Everything that crosses a boundary is a plain Scheme datum.
+
+**Internal values are positional tagged lists**, so they destructure cleanly with
+`match`:
+
+```scheme
+(msg user "hi")
+(msg system "You are sah...")
+(msg assistant "let me look" ((call "c1" read ((path . "a.scm")))) tool-use (usage ...))
+(msg tool "c1" read "file contents")
+
+(ev tool-start "c1" read ((path . "a.scm")))
+(ev tool-end   "c1" read #f "file contents")
+
+(session 1 "1e3de567" "F:/proj" 1700000000000 "deepseek-chat")   ; header entry
+(message "a1b2c3d4" "1e3de567" 1700000000001 (msg user "hi"))    ; message entry
+
+(tool read "Read a file" PARAMS HANDLER)
+```
+
+**JSON mapping** happens only at the provider/JSON boundary, where object key
+order is not guaranteed:
 
 - JSON object ↔ alist with **symbol** keys
 - JSON array ↔ **vector** (so `()` = `{}` and `#()` = `[]` are distinct)
 - JSON `null` ↔ the symbol `null`; booleans ↔ `#t`/`#f`
 - tool-call `arguments` stay parsed Scheme data internally and are stringified
   to JSON only on the wire
+
+Pattern matching is provided by [`src/match.ss`](../../sah/src/match.ss)
+(Friedman / Hilsdale / Dybvig, MIT). `llm.ss`, `agent.ss`, `session.ss` and
+`tools.ss` are largely written as `match` clauses over these shapes.
 
 ## Source layout
 

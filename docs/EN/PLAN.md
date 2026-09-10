@@ -426,8 +426,11 @@ execution; embedded SDK (Chez as a library called by other Schemes/hosts).
 > **As-built note.** The implemented v0 (see [`README.md`](README.md))
 > chose **DeepSeek** (OpenAI-compatible) instead of Anthropic, ships the tools
 > `read` / `write` / `bash` / `eval`, uses `SYSTEM.md` for the prompt, and stores
-> sessions under `~/.sah/sessions/`. The subsections below are the original plan;
-> where they differ, the README is the source of truth for the as-built state.
+> sessions under `~/.sah/sessions/`. The canonical internal forms were also
+> changed from symbol-keyed alists to **positional tagged lists** destructured
+> with `match` (see the README's *Data conventions*); old sessions are migrated
+> on load. The subsections below are the original plan; where they differ, the
+> README is the source of truth for the as-built state.
 
 ### 8.1 Scope
 - **Modes**: only `print` (one-shot) and a minimal `repl` (read a line → reply,
