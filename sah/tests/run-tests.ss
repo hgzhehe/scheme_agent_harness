@@ -13,6 +13,7 @@
 (define (load-src rel) (load (string-append *root* "/src/" rel)))
 
 (load-src "vendor/match.ss")
+(load-src "fp/measured-vector.ss")
 (load-src "core/util.ss")
 (load-src "core/json.ss")
 (load-src "core/event.ss")
@@ -21,6 +22,7 @@
 (load-src "core/config.ss")
 (load-src "ai/providers/openai-compatible.ss")
 (load-src "ai/chat.ss")
+(load-src "session/log.ss")
 (load-src "session/manager.ss")
 (load-src "session/discovery.ss")
 (load-src "tools/registry.ss")
@@ -204,18 +206,8 @@
 
 (set! *sah-home-override* (path-join tmp "sah-home"))
 (define s (session-new "/some/project" "deepseek-flash"))
-(session-append! s (make-message-entry s '(msg user "hi")))
-(session-append! s (make-message-entry s '(msg assistant "yo" () stop (usage))))
-
-(define (entry-id e)
-  (match e
-    [(message ,id ,parent ,ts ,msg) id]
-    [(session ,v ,id ,cwd ,created ,model) id]
-    [,other #f]))
-(define (entry-parent e)
-  (match e
-    [(message ,id ,parent ,ts ,msg) parent]
-    [,other #f]))
+(session-add-message! s '(msg user "hi"))
+(session-add-message! s '(msg assistant "yo" () stop (usage)))
 
 (define s2 (session-load (session-file s)))
 (check "session: header id preserved" (session-id s) (session-id s2))
@@ -225,14 +217,18 @@
 (check "session: messages extracted"
        '((msg user "hi") (msg assistant "yo" () stop (usage)))
        (session-messages s2))
-(check "session: message parent points to header"
-       (session-id s)
-       (entry-parent (cadr (session-entries s2))))
+(check "session: entry ids are log indices" '(0 1) (map entry-id (session-entries s2)))
+(check "session: first entry is a root" #f (entry-parent (car (session-entries s2))))
 (check "session: entries are readable as plain data"
        #t
        (match (car (session-entries s2))
-         [(session ,v ,id ,cwd ,created ,model) #t]
+         [(message ,id ,parent ,ts ,msg) #t]
          [,other #f]))
+(check "session: log measure is the sum of entry estimates"
+       (total-tokens (session-entries s2))
+       (log-tokens (session-log s2)))
+(check "session: log cursor sits at the newest entry"
+       1 (log-leaf (session-log s2)))
 
 ;;----------------------------------------------------------------------------
 (printf "== agent loop (mock model) ==~%")
@@ -306,11 +302,11 @@
 (define s5 (session-new tmp "mock"))
 (for-each
  (lambda (i)
-   (session-append! s5 (make-message-entry s5 `(msg user ,(string-append "q" (number->string i)))))
-   (session-append! s5 (make-message-entry
-                        s5 `(msg assistant ,(string-append "a" (number->string i))
-                                      ((call ,(string-append "c" (number->string i)) read ((path . "a.scm"))))
-                                      stop ((input . 100) (output . 1))))))
+   (session-add-message! s5 `(msg user ,(string-append "q" (number->string i))))
+   (session-add-message!
+    s5 `(msg assistant ,(string-append "a" (number->string i))
+                       ((call ,(string-append "c" (number->string i)) read ((path . "a.scm"))))
+                       stop ((input . 100) (output . 1)))))
  '(0 1 2 3 4 5))
 
 (define ccfg (list (cons 'compact #t) (cons 'context-window 64000)
@@ -344,11 +340,11 @@
 ;; auto-compaction: window 200, reserve 0 => last usage (100) < 200 so no
 ;; trigger; window 50 => triggers
 (define s6 (session-new tmp "mock"))
-(session-append! s6 (make-message-entry s6 '(msg user "hi")))
-(session-append! s6 (make-message-entry s6 '(msg assistant "yo" ()
-                                                          stop ((input . 100) (output . 1)))))
-(session-append! s6 (make-message-entry s6 '(msg user "again")))
-(session-append! s6 (make-message-entry s6 '(msg user "more")))
+(session-add-message! s6 '(msg user "hi"))
+(session-add-message! s6 '(msg assistant "yo" ()
+                                       stop ((input . 100) (output . 1))))
+(session-add-message! s6 '(msg user "again"))
+(session-add-message! s6 '(msg user "more"))
 (maybe-auto-compact! s6 (list (cons 'compact #t) (cons 'context-window 50)
                               (cons 'reserve-tokens 0) (cons 'keep-recent-tokens 1)))
 (check "compaction: auto-trigger adds a compaction entry"
@@ -357,6 +353,116 @@
          (cond ((null? es) #f)
                ((eq? (entry-kind (car es)) 'compaction) #t)
                (else (loop (cdr es))))))
+
+;;----------------------------------------------------------------------------
+(printf "== fp: persistent measured vector ==~%")
+
+(define (iota n) (let loop ((i 0) (a '())) (if (= i n) (reverse a) (loop (+ i 1) (cons i a)))))
+(define (take n l) (if (or (= n 0) (null? l)) '() (cons (car l) (take (- n 1) (cdr l)))))
+(define (drop n l) (if (or (= n 0) (null? l)) l (drop (- n 1) (cdr l))))
+(define (sum-list l) (fold-left + 0 l))
+
+;; structural invariants of the 32-way trie
+(define (check-vnode mon node level)
+  (let ((cs (vnode-children node)))
+    (check "fp: node level" level (vnode-level node))
+    (check "fp: node measure is the combine of its children"
+           (pv-children-measure mon level cs) (vnode-m node))
+    (let loop ((k 0) (seen-empty #f) (n 0))
+      (when (< k 32)
+        (let ((child (vector-ref cs k)))
+          (when (and seen-empty child) (check "fp: only the right spine is partial" #f #t))
+          (loop (+ k 1) (not child)
+                (if child (if (= level 0) (+ n 1) n) n)))))
+    (let loop ((k 0) (n 0))
+      (if (= k 32)
+          n
+          (let ((child (vector-ref cs k)))
+            (cond ((not child) (loop (+ k 1) n))
+                  ((= level 0) (loop (+ k 1) (+ n 1)))
+                  (else (loop (+ k 1) (+ n (check-vnode mon child (- level 5)))))))))))
+
+;; the whole structure against a list model: count decomposition, tail measure,
+;; trie contents, element order, total measure
+(define (check-model name mon v model)
+  (check (string-append name ": count = root-count + tail-len")
+         (pvec-count v) (+ (pvec-root-count v) (pvec-tail-len v)))
+  (check (string-append name ": root-count is a multiple of 32")
+         0 (modulo (pvec-root-count v) 32))
+  (check (string-append name ": total = combine(root, tail)")
+         (pvec-measure v)
+         ((monoid-combine mon)
+          (if (pvec-root v) (vnode-m (pvec-root v)) (monoid-id mon))
+          (pvec-tail-m v)))
+  (when (pvec-root v)
+    (check (string-append name ": trie holds exactly root-count elements")
+           (pvec-root-count v) (check-vnode mon (pvec-root v) (pvec-shift v))))
+  (check (string-append name ": elements") model (pvec->list v))
+  (check (string-append name ": measure") (sum-list model) (pvec-measure v))
+  (check (string-append name ": every prefix measure")
+         #t
+         (let loop ((i 0))
+           (cond ((> i (length model)) #t)
+                 ((= (pvec-prefix-measure v i) (sum-list (take i model))) (loop (+ i 1)))
+                 (else #f)))))
+
+(define fmon (monoid-sum-of (lambda (x) x)))
+
+;; sizes chosen around every transition: empty, tail only, tail full, first
+;; push, trie partially full, trie full at shift 5, and one level up
+(for-each (lambda (n) (check-model (format "fp n=~a" n) fmon (pvec-from-list fmon (iota n)) (iota n)))
+          '(0 1 5 31 32 33 63 64 65 95 96 97 100 1023 1024 1025 1055 1056 1057 3000))
+
+(define fvec (pvec-from-list fmon (iota 3000)))
+(define flist (iota 3000))
+(check "fp: nth" 1234 (pvec-ref fvec 1234))
+(check "fp: last / first" (list 0 2999) (list (pvec-first fvec) (pvec-last fvec)))
+(check "fp: range->list" (take 5 (drop 1495 flist)) (pvec-range->list fvec 1495 1500))
+(check "fp: measure-boundary is a binary search for the token cut"
+       (let loop ((i 0)) (if (and (< i 3000) (<= (pvec-prefix-measure fvec (+ i 1)) 5000)) (loop (+ i 1)) i))
+       (pvec-measure-boundary fvec (lambda (m) (<= m 5000))))
+(check "fp: trie grows a level only when a full tail has to be pushed and the trie is full"
+       '(0 5 5 5 10)
+       (map (lambda (n) (pvec-shift (pvec-from-list fmon (iota n)))) '(32 33 1024 1025 1057)))
+(check "fp: conj is persistent (old value survives)"
+       '(5 10 6)
+       (let* ((a (pvec-from-list fmon (iota 5)))
+              (b (pvec-conj a 99)))
+         (list (pvec-count a) (pvec-measure a) (pvec-count b))))
+
+;;----------------------------------------------------------------------------
+(printf "== session tree (branches) ==~%")
+
+(define sb (session-new tmp "mock"))
+(session-add-message! sb '(msg user "first"))
+(session-add-message! sb '(msg assistant "first-answer" '() stop ()))
+(define after-first (log-leaf (session-log sb)))
+(session-add-message! sb '(msg user "second"))
+(session-add-message! sb '(msg assistant "second-answer" '() stop ()))
+(define tip (log-leaf (session-log sb)))
+
+;; move the cursor back to entry 1 and append: that is a branch
+(session-log-set! sb (log-set-leaf (session-log sb) after-first))
+(session-add-message! sb '(msg user "another-second"))
+
+(check "tree: both branches still on disk (nothing is destroyed)"
+       5 (session-count sb))
+(check "tree: the new leaf hangs off the branch point"
+       (list 1 4) (list after-first (log-leaf (session-log sb))))
+(check "tree: a branch's context is the path root->leaf"
+       '("first" "first-answer" "another-second")
+       (map (lambda (m) (match m [(msg user ,c) c] [(msg assistant ,c ,a ,s ,u) c] [,o ""]))
+            (session-context-messages sb)))
+(check "tree: the abandoned branch tip is still reachable"
+       '("first" "first-answer" "second" "second-answer")
+       (map (lambda (m) (match m [(msg user ,c) c] [(msg assistant ,c ,a ,s ,u) c] [,o ""]))
+            (log-context-messages (session-log sb) tip)))
+(check "tree: branching shares structure (the prefix objects are identical)"
+       #t
+       (let* ((lg (session-log sb))
+              (dot (log-ref lg tip)))
+         ;; entry 3 is only reachable through the abandoned branch
+         (and (eq? (log-ref lg 3) dot) (not (equal? (log-leaf lg) tip)))))
 
 ;;----------------------------------------------------------------------------
 (printf "~%---~%~a passed, ~a failed~%" *pass* *fail*)

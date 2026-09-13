@@ -55,6 +55,13 @@
           ((memv (string-ref path i) (list #\/ #\\)) (substring path 0 i))
           (else (loop (- i 1))))))
 
+(define (basename path)
+  (let loop ((i (- (string-length path) 1)))
+    (cond ((< i 0) path)
+          ((memv (string-ref path i) (list #\/ #\\))
+           (substring path (+ i 1) (string-length path)))
+          (else (loop (- i 1))))))
+
 (define (home-dir)
   (or (getenv "HOME")
       (getenv "USERPROFILE")

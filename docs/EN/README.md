@@ -223,12 +223,18 @@ Stored as `SexprL` under `~/.sah/sessions/<cwd-slug>/<ms>_<id>.ss` — one Schem
 datum per line:
 
 ```scheme
-(session 1 "1e3de567" "F:/proj" 1789022830878 "deepseek-flash")
-(message "a1b2c3d4" "1e3de567" 1789022830900
+(session 2 "1e3de567" "F:/proj" 1789022830878 "deepseek-flash")
+(message 0 #f 1789022830900
          (msg user "hi"))
-(message "b2c3d4e5" "a1b2c3d4" 1789022831000
+(message 1 0 1789022831000
          (msg assistant "..." ((call "call_1" read ((path . "a.scm")))) tool-use (usage ...)))
 ```
+
+Entry ids are integer indices into the session log and `parent` is the index the
+entry descends from (`#f` for the first one). Because ids *are* positions, the
+in-memory tree needs no id lookup table, and `(message 1 0 ...)` reads as "entry
+1, whose parent is entry 0". (Version 1 files used random hex ids; they are
+migrated on load — see [`DESIGN.md`](DESIGN.md).)
 
 Read any session with the Scheme reader:
 
@@ -240,14 +246,19 @@ scheme -q <<'EOF'
 EOF
 ```
 
-Sessions form a tree via `id`/`parent`, so in-place branching can be added
-without a format change.
+Sessions form a tree via `id`/`parent`: the file is append-only and each entry
+points at the entry it descends from. Moving the cursor back to an earlier entry
+and continuing (`/tree` inside the REPL) creates a branch **in the same file**,
+sharing every entry above the branch point — nothing is copied or destroyed.
 
 Resume with `-C` / `--continue` (most recent for this directory), `-r` /
 `--resume` (pick from a list), or `--session <id|path>` (a full or partial
 session id, or a `.ss` file path). On exiting the REPL, sah prints
 `To resume this session: sah --session <id>`. With no prompt, `sah`, `sah -r`
 and `sah --session <id>` all enter the REPL.
+
+Inside the REPL: `/compact [instructions]`, `/context` (what the next request
+would carry) and `/tree` (list entries, move the cursor).
 
 ## Data conventions
 
@@ -265,8 +276,9 @@ Everything that crosses a boundary is a plain Scheme datum.
 (ev tool-start "c1" read ((path . "a.scm")))
 (ev tool-end   "c1" read #f "file contents")
 
-(session 1 "1e3de567" "F:/proj" 1700000000000 "deepseek-flash")   ; header entry
-(message "a1b2c3d4" "1e3de567" 1700000000001 (msg user "hi"))    ; message entry
+(session 2 "1e3de567" "F:/proj" 1700000000000 "deepseek-flash")   ; header line
+(message 0 #f 1700000000001 (msg user "hi"))                     ; entry, id = index
+(message 1 0 1700000000002 (msg assistant "hi" '() stop (usage)))
 
 (tool read "Read a file" PARAMS HANDLER)
 ```
@@ -291,25 +303,31 @@ Inside [`sah/`](../../sah/):
 ```
 sah.ss              development entry point; loads src/ and calls main
 build.scm           compiles src/ into dist/sah.exe + dist/sah.boot
-SYSTEM.md           the system prompt (overridable; see config.ss)
+SYSTEM.md           the system prompt (overridable; see core/config.ss)
 config.example.scm  sample ~/.sah/config.scm
 src/vendor/         third-party match.ss (+ LICENSE)
+src/fp/             measured-vector.ss: persistent vector with a monoid measure
 src/core/           util.ss json.ss event.ss data.ss transport.ss config.ss
 src/ai/             chat.ss + providers/openai-compatible.ss
-src/session/        manager.ss (SexprL store) + discovery.ss (find/pick)
+src/session/        log.ss (immutable entry tree) + manager.ss (SexprL files)
+                    + discovery.ss (find/pick)
 src/tools/          registry.ss + read.ss write.ss shell.ss eval.ss
 src/agent/          agent.ss (loop) + context.ss + compaction.ss
 src/modes/          cli.ss + print.ss + repl.ss
 src/main.ss         entry point
 tests/run-tests.ss  offline test suite
+bench/bench-fp.ss   data-structure measurements
 ```
 
-`src/` is split by layer (core → ai → session → tools → agent → modes), and
-files are loaded in that order (`sah.ss`, `build.scm`). Inside `core/`:
+`src/` is split by layer (fp → core → ai → session → tools → agent → modes),
+and files are loaded in that order (`sah.ss`, `build.scm`). Inside `core/`:
 `util` = paths/files/ids, `json` = JSON ↔ datum, `event` = the event bus,
 `data` = canonical message/entry shapes, `transport` = curl, `config` = settings
 and the system prompt. Tool implementations register themselves into the
 registry when loaded, so adding a tool is a new file plus one load line.
+
+[`DESIGN.md`](DESIGN.md) explains the core mechanisms, the data structures
+behind them, and how they compare with pi's.
 
 Data flow:
 
@@ -327,7 +345,8 @@ main → run-agent ──► build context (context.ss: system + session context
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss   # 43 checks, offline (mock model)
+scheme --script tests/run-tests.ss   # 830 checks, offline (mock model)
+scheme --script bench/bench-fp.ss    # data-structure measurements
 scheme --script sah.ss --repl        # run from source
 ```
 
@@ -336,5 +355,6 @@ standalone executable, and [`PLAN.md`](PLAN.md) for the roadmap.
 
 ## Not here yet
 
-Streaming, `edit`, session tree navigation, multiple providers, extensions,
-RPC/JSON modes, TUI, sandboxing. See the roadmap.
+Streaming, `edit`, multiple providers, extension hooks, a session-tree *UI*
+(the data model and `/tree` already exist), RPC/JSON modes, TUI, sandboxing.
+See the roadmap.

@@ -11,12 +11,6 @@
 
 (define *shell-override* #f)
 
-(define (basename p)
-  (let loop ((i (- (string-length p) 1)))
-    (cond ((< i 0) p)
-          ((memv (string-ref p i) (list #\/ #\\)) (substring p (+ i 1) (string-length p)))
-          (else (loop (- i 1))))))
-
 ;; map a shell executable name/path to (shell KIND EXEC)
 (define (shell-from-name s)
   (let ((b (string-downcase (basename s))))

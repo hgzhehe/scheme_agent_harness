@@ -1,4 +1,4 @@
-;;; compact.ss -- context compaction: summarize older messages into a
+;;; compaction.ss -- context compaction: summarize older messages into a
 ;;; structured checkpoint while keeping recent messages verbatim.
 ;;;
 ;;; Modeled on pi's compaction (docs/ext-ref/docs/compaction.md):
@@ -7,11 +7,17 @@
 ;;;   - cut at a user message, so a tool call is never split from its result
 ;;;   - structured summary (Goal / Constraints / Progress / Decisions / Next
 ;;;     Steps / Critical Context), updated iteratively on repeated compaction
-;;;   - a (compaction ...) entry records summary + first-kept entry id +
+;;;   - a (compaction ...) entry records summary + first-kept entry index +
 ;;;     tokens-before + cumulative file operations
 ;;;
-;;; The summary is stored in the session, so the full history stays on disk and
-;;; `--tree`-style revisiting would still see it.
+;;; The summary is an ordinary entry in the log, so the full history stays on
+;;; disk and moving the cursor back to an earlier entry restores the longer
+;;; context. Nothing is destroyed.
+;;;
+;;; Where this differs from pi: the cut point is found by binary search over the
+;;; log's cached token measure (pvec-measure-boundary) instead of a backward
+;;; scan. The search is O(log^2 n); the O(n) part is building the measured view
+;;; of the context path, which only happens when a compaction actually fires.
 
 (define SUMMARIZATION-PROMPT
   (string-append
@@ -37,11 +43,8 @@
    "Use the same EXACT format as before."))
 
 ;;----------------------------------------------------------------------------
-;; token estimate + serialization (same heuristic as pi: ~4 chars per token)
+;; serialization (for the summarization prompt)
 ;;----------------------------------------------------------------------------
-
-(define (estimate-tokens-text s)
-  (quotient (+ (string-length s) 3) 4))
 
 (define (truncate-text s n)
   (if (> (string-length s) n)
@@ -96,55 +99,51 @@
 
 (define (last-assistant-usage session)
   (let loop ((ms (reverse (session-messages session))))
-    (cond ((null? ms) #f)
-          ((eq? (car (car ms)) 'msg)
-           (match (car ms)
-             [(msg assistant ,content ,calls ,stop ,usage) usage]
-             [,other (loop (cdr ms))]))
-          (else (loop (cdr ms))))))
+    (if (null? ms)
+        #f
+        (match (car ms)
+          [(msg assistant ,content ,calls ,stop ,usage) usage]
+          [,other (loop (cdr ms))]))))
 
 ;; The provider reports the size of the prompt it received; that is the real
-;; context size. Fall back to estimating from the serialized conversation.
+;; context size. Without one we fall back to the log's cached per-entry token
+;; measure: O(1) while no compaction is in play (so the per-turn auto-compact
+;; check costs nothing), O(context) once a summary has replaced a prefix.
 (define (context-tokens session config)
   (let ((u (last-assistant-usage session)))
     (if u
         (+ (or (assq-ref u 'input) 0) (or (assq-ref u 'cache-read) 0))
-        (estimate-tokens-text (serialize-conversation (session-context-messages session))))))
+        (let-values (((summary kept) (log-context-parts (session-log session) #f)))
+          (if (not summary)
+              (log-tokens (session-log session))
+              (+ (entry-tokens summary) (total-tokens kept)))))))
 
 ;;----------------------------------------------------------------------------
-;; cut point: keep the newest `keep` tokens, cut at a user message
+;; cut point
 ;;----------------------------------------------------------------------------
 
-(define (message-entry? e) (eq? (entry-kind e) 'message))
 (define (user-message-entry? e)
-  (and (message-entry? e)
-       (match (list-ref e 4) [(msg user ,content) #t] [,other #f])))
+  (and (eq? (entry-kind e) 'message)
+       (match (entry-message e) [(msg user ,content) #t] [,other #f])))
 
-;; returns the entry id to keep from, or #f if there is nothing worth compacting
-(define (find-first-kept-id session keep force)
-  (let* ((es (session-entries session))
-         (n (length es))
-         (idx->e (lambda (i) (list-ref es i))))
-    (let loop ((i (- n 1)) (acc 0) (cut #f))
-      (cond
-        ((< i 0)
-         (or cut
-             ;; manual/overflow compaction: keep the last turn, summarize the rest
-             (and force
-                  (let loop2 ((j 0) (l es) (last #f))
-                    (cond ((null? l) last)
-                          ((and (> j 0) (user-message-entry? (car l)))
-                           (loop2 (+ j 1) (cdr l) (entry-id (car l))))
-                          (else (loop2 (+ j 1) (cdr l) last)))))))
-        (else
-         (let* ((e (idx->e i))
-                (t (if (message-entry? e)
-                       (estimate-tokens-text (serialize-message (list-ref e 4)))
-                       0))
-                (acc2 (+ acc t)))
-           (if (and (>= acc2 keep) (user-message-entry? e))
-               (entry-id e)                          ; first user msg within budget
-               (loop (- i 1) acc2 cut))))))))
+;; Index of the first entry to keep verbatim, or #f if there is nothing worth
+;; compacting. `toks` is the root->leaf path as a measured vector.
+;;
+;; `keep` is a token budget for the tail. pvec-measure-boundary binary-searches
+;; the cached per-entry token measure for the largest prefix that fits in
+;; (total - keep), i.e. the smallest suffix that still holds `keep` tokens.
+;; We then step back to the nearest user-message boundary so that a tool call is
+;; never separated from its result. `force` (manual /compact, or a provider
+;; overflow) keeps the last turn even when it is under budget.
+(define (find-first-kept toks keep force)
+  (let ((total (pvec-measure toks))
+        (cut (pvec-measure-boundary toks (lambda (m) (<= m (- (pvec-measure toks) keep))))))
+    (define (user-at-or-before j)
+      (cond ((< j 1) #f)
+            ((user-message-entry? (pvec-ref toks j)) j)
+            (else (user-at-or-before (- j 1)))))
+    (or (user-at-or-before cut)
+        (and force (user-at-or-before (- (pvec-count toks) 1))))))
 
 ;;----------------------------------------------------------------------------
 ;; cumulative file tracking
@@ -205,53 +204,39 @@
                      `(msg user ,text))))
     (assistant-text (llm-chat config msgs '()))))
 
+(define (last-compaction-details es)
+  (let ((c (last-compaction-of es)))
+    (if c
+        (list (cons 'summary (list-ref c 4)) (cons 'details (list-ref c 7)))
+        '())))
+
 ;; compact the session in place; returns #t if a compaction entry was added
 (define (compact! session config reason custom-instructions)
   (let* ((settings (compaction-settings config))
          (keep (assq-ref settings 'keep-recent-tokens))
-         (first-kept (find-first-kept-id session keep (if (memq reason '(manual overflow)) #t #f))))
+         (toks (log-path-measured (session-log session) #f))
+         (first-kept (find-first-kept toks keep (if (memq reason '(manual overflow)) #t #f))))
     (if (not first-kept)
         (begin (printf "[sah] nothing to compact~%") #f)
-        (let* ((es (session-entries session))
-               (fk-index (let loop ((i 0) (l es))
-                           (cond ((null? l) #f)
-                                 ((equal? (entry-id (car l)) first-kept) i)
-                                 (else (loop (+ i 1) (cdr l))))))
-               (to-summarize (entries->messages (take fk-index es)))
-               (prev (last-compaction-details es))
-               (ops (collect-file-ops to-summarize (assq-ref prev 'details)))
-               (conversation (serialize-conversation to-summarize))
+        (let* ((to-summarize (pvec-range->list toks 0 first-kept))
+               (messages (entries->messages to-summarize))
+               (prev (last-compaction-details to-summarize))
+               (ops (collect-file-ops messages (assq-ref prev 'details)))
+               (conversation (serialize-conversation messages))
                (prev-summary (assq-ref prev 'summary))
                (tokens-before (context-tokens session config))
                (reason-name (match reason [manual "manual"] [threshold "threshold"] [overflow "overflow"] [,o "auto"])))
-          (printf "[sah] compacting (~a): summarizing ~a messages, keeping from ~a~%"
-                  reason-name (length to-summarize) first-kept)
+          (printf "[sah] compacting (~a): folding ~a entr~a into a summary, keeping from #~a~%"
+                  reason-name (length to-summarize)
+                  (if (= (length to-summarize) 1) "y" "ies") first-kept)
           (emit (list 'ev 'compaction-start))
           (let* ((summary (summarize config conversation (and (string? prev-summary) prev-summary) custom-instructions))
                  (summary+ (string-append summary (render-file-lists ops))))
-            (session-append! session
-                             (make-compaction-entry session summary+ first-kept tokens-before ops))
+            (session-add-compaction! session summary+ first-kept tokens-before ops)
             (emit (list 'ev 'compaction-end tokens-before))
             (printf "[sah] compacted: ~a tokens before, summary ~a chars~%"
                     tokens-before (string-length summary+))
             #t)))))
-
-(define (take n lst)
-  (if (or (= n 0) (null? lst)) '() (cons (car lst) (take (- n 1) (cdr lst)))))
-
-(define (last-compaction session-or-entries)
-  (let loop ((l (if (pair? session-or-entries) session-or-entries (session-entries session-or-entries)))
-             (last #f))
-    (cond ((null? l) last)
-          ((eq? (entry-kind (car l)) 'compaction) (loop (cdr l) (car l)))
-          (else (loop (cdr l) last)))))
-
-(define (last-compaction-details es)
-  (let ((c (last-compaction es)))
-    (if c
-        (list (cons 'summary (list-ref c 4))
-              (cons 'details (list-ref c 7)))
-        '())))
 
 ;;----------------------------------------------------------------------------
 ;; auto-compaction hook used by the agent loop

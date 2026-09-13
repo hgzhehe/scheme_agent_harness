@@ -43,19 +43,19 @@
     [(call ,id ,name ,args)
      (emit `(ev tool-start ,id ,name ,args))
      (let-values (((out is-error) (call-tool name args)))
-       (session-append! session (make-message-entry session `(msg tool ,id ,name ,out)))
+       (session-add-message! session `(msg tool ,id ,name ,out))
        (emit `(ev tool-end ,id ,name ,is-error ,out)))]
     [,other (error 'run-tool (format "bad tool call: ~s" other))]))
 
 (define (run-agent session config prompt)
-  (session-append! session (make-message-entry session `(msg user ,prompt)))
+  (session-add-message! session `(msg user ,prompt))
   (emit '(ev agent-start))
   (let loop ((steps 0))
     (when (>= steps (assq-ref config 'max-steps))
       (error 'agent (format "max steps (~a) exceeded" (assq-ref config 'max-steps))))
     (maybe-auto-compact! session config)
     (let ((reply (chat-with-recovery session config (all-tools))))
-      (session-append! session (make-message-entry session reply))
+      (session-add-message! session reply)
       (emit `(ev message-end ,reply))
       (match reply
         [(msg assistant ,content ,calls ,stop ,usage)

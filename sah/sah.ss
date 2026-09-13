@@ -8,7 +8,7 @@
 ;;; For a compiled standalone executable, see build.scm and INSTALL.md.
 ;;;
 ;;; Load order mirrors the module layering (see docs/EN/PLAN.md):
-;;;   vendor -> core -> ai -> session -> tools -> agent -> modes -> main
+;;;   vendor -> fp -> core -> ai -> session -> tools -> agent -> modes -> main
 
 (define (sah-script-dir)
   (let ((p (car (command-line))))
@@ -24,6 +24,9 @@
 ;; vendor (third-party)
 (load-src "vendor/match.ss")
 
+;; fp: persistent data structures
+(load-src "fp/measured-vector.ss")
+
 ;; core: primitives and canonical data
 (load-src "core/util.ss")
 (load-src "core/json.ss")
@@ -36,7 +39,8 @@
 (load-src "ai/providers/openai-compatible.ss")
 (load-src "ai/chat.ss")
 
-;; session: persistence and discovery
+;; session: the log, persistence, discovery
+(load-src "session/log.ss")
 (load-src "session/manager.ss")
 (load-src "session/discovery.ss")
 

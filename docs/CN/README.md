@@ -30,7 +30,7 @@ hello.scm prints 42.
   `ai/` / `agent/` / `session/` / `tools/` 用 `match` 分发
   （[`src/vendor/match.ss`](../../sah/src/vendor/match.ss)）。
 - **Scheme 原生会话** —— `SexprL`：每行一个 Scheme datum，可用 `read` 读回，
-  结构是树形（`id`/`parent`），以后加分叉不用改格式。
+  结构是树形（`id`/`parent`，id 即下标），移动游标就是分叉。
 - **Scheme 原生配置** —— `~/.sah/config.scm` 就是一个 alist。
 - **`eval`** —— 在运行中的进程里求值 Scheme；能用基础 Chez，也能调到 sah 自己的
   定义。状态跨轮存活。
@@ -214,12 +214,17 @@ REPL 里用 `/compact` 手动压缩（可 `/compact <instructions>` 指定摘要
 datum：
 
 ```scheme
-(session 1 "1e3de567" "F:/proj" 1789022830878 "deepseek-flash")
-(message "a1b2c3d4" "1e3de567" 1789022830900
+(session 2 "1e3de567" "F:/proj" 1789022830878 "deepseek-flash")
+(message 0 #f 1789022830900
          (msg user "hi"))
-(message "b2c3d4e5" "a1b2c3d4" 1789022831000
+(message 1 0 1789022831000
          (msg assistant "..." ((call "call_1" read ((path . "a.scm")))) tool-use (usage ...)))
 ```
+
+entry 的 id 就是它在会话日志里的下标，`parent` 是它所从属的 entry 下标（第一个为
+`#f`）。因为 id 就是位置，内存里的树不需要任何 id 查找表，而 `(message 1 0 ...)`
+读起来就是“entry 1，父节点是 entry 0”。（version 1 的文件用随机 hex id，加载时
+自动迁移，见 [`DESIGN.md`](DESIGN.md)。）
 
 用 Scheme reader 读取任意会话：
 
@@ -231,12 +236,17 @@ scheme -q <<'EOF'
 EOF
 ```
 
-会话通过 `id`/`parent` 构成树，所以以后原地分叉不需要改格式。
+会话通过 `id`/`parent` 构成树：文件只追加，每个 entry 指向它所从属的 entry。把游标
+移回较早的 entry 再继续对话（REPL 里的 `/tree`）就在**同一个文件里**分叉，分支点之上
+的所有 entry 都是共享的——不复制、不销毁任何东西。
 
 续接方式：`-C` / `--continue`（本目录最近一次）、`-r` / `--resume`（从列表里选）、
 `--session <id|path>`（完整或部分会话 id，或 `.ss` 文件路径）。退出 REPL 时 sah 会
 打印 `To resume this session: sah --session <id>`。不带 prompt 时，`sah`、`sah -r`、
 `sah --session <id>` 都会直接进入 REPL。
+
+REPL 内：`/compact [instructions]`、`/context`（下一次请求会带什么）、`/tree`
+（列出 entry 并移动游标）。
 
 ## 数据约定
 
@@ -253,8 +263,9 @@ EOF
 (ev tool-start "c1" read ((path . "a.scm")))
 (ev tool-end   "c1" read #f "file contents")
 
-(session 1 "1e3de567" "F:/proj" 1700000000000 "deepseek-flash")   ; header entry
-(message "a1b2c3d4" "1e3de567" 1700000000001 (msg user "hi"))    ; message entry
+(session 2 "1e3de567" "F:/proj" 1700000000000 "deepseek-flash")   ; header 行
+(message 0 #f 1700000000001 (msg user "hi"))                     ; entry，id 即下标
+(message 1 0 1700000000002 (msg assistant "hi" '() stop (usage)))
 
 (tool read "Read a file" PARAMS HANDLER)
 ```
@@ -281,21 +292,26 @@ build.scm           把 src/ 编译成 dist/sah.exe + dist/sah.boot
 SYSTEM.md           system prompt（可覆盖，见 core/config.ss）
 config.example.scm  ~/.sah/config.scm 样例
 src/vendor/         第三方 match.ss（含 LICENSE）
+src/fp/             measured-vector.ss：带 monoid measure 的持久向量
 src/core/           util.ss json.ss event.ss data.ss transport.ss config.ss
 src/ai/             chat.ss + providers/openai-compatible.ss
-src/session/        manager.ss（SexprL 存储）+ discovery.ss（查找/选择）
+src/session/        log.ss（不可变 entry 树）+ manager.ss（SexprL 文件）
+                    + discovery.ss（查找/选择）
 src/tools/          registry.ss + read.ss write.ss shell.ss eval.ss
 src/agent/          agent.ss（循环）+ context.ss + compaction.ss
 src/modes/          cli.ss + print.ss + repl.ss
 src/main.ss         入口
 tests/run-tests.ss  离线测试套件
+bench/bench-fp.ss   数据结构测量
 ```
 
-`src/` 按层拆分（core → ai → session → tools → agent → modes），加载顺序即此顺序
-（见 `sah.ss`、`build.scm`）。`core/` 内部：`util` 路径/文件/id，`json` JSON ↔
+`src/` 按层拆分（fp → core → ai → session → tools → agent → modes），加载顺序即此
+顺序（见 `sah.ss`、`build.scm`）。`core/` 内部：`util` 路径/文件/id，`json` JSON ↔
 datum，`event` 事件总线，`data` 规范的消息/条目形状，`transport` curl，
 `config` 设置与 system prompt。工具实现加载时把自己注册进注册表，所以加一个
 工具 = 新增一个文件 + 一行加载。
+
+[`DESIGN.md`](DESIGN.md) 讲核心机制、背后的数据结构，以及和 pi 的对比。
 
 数据流：
 
@@ -313,7 +329,8 @@ main → run-agent ──► 构建上下文（context.ss：system + 会话上�
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss   # 43 项检查，离线（mock 模型）
+scheme --script tests/run-tests.ss   # 830 项检查，离线（mock 模型）
+scheme --script bench/bench-fp.ss    # 数据结构测量
 scheme --script sah.ss --repl        # 从源码运行
 ```
 
@@ -321,5 +338,5 @@ scheme --script sah.ss --repl        # 从源码运行
 
 ## 尚未实现
 
-流式、`edit`、会话树导航、多 provider、扩展、RPC/JSON 模式、TUI、沙箱。
-见路线图。
+流式、`edit`、多 provider、扩展 hook、会话树 *UI*（数据模型和 `/tree` 已有）、
+RPC/JSON 模式、TUI、沙箱。见路线图。

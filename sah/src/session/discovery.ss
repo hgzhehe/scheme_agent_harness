@@ -15,12 +15,13 @@
                        (dir-files dir (lambda (f) (string-suffix? ".ss" f))))))
               (dir-files (sessions-root) (lambda (f) #t)))))
 
-;; id from a session file without reading the whole file (handles legacy alists)
+;; id from a session file without reading the whole file (handles legacy alists
+;; and files whose header went missing)
 (define (session-file-id path)
   (guard (e (#t #f))
     (match (normalize-entry (call-with-input-file path read))
       [(session ,version ,id ,cwd ,created ,model) id]
-      [,other #f])))
+      [,other (id-from-filename path)])))
 
 (define (session-lookup spec)
   ;; spec is a path to an existing file, or a (partial) session id

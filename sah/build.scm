@@ -31,13 +31,9 @@
 
 (define root (script-dir))
 
+;; util.ss also supplies the build script's own path-join / file->string /
+;; ensure-dir! / basename helpers.
 (load (string-append root "/src/core/util.ss"))
-
-(define (basename p)
-  (let loop ((i (- (string-length p) 1)))
-    (cond ((< i 0) p)
-          ((memv (string-ref p i) (list #\/ #\\)) (substring p (+ i 1) (string-length p)))
-          (else (loop (- i 1))))))
 
 (define (path-list)
   ;; PATH uses ';' on Windows and ':' on POSIX
@@ -102,9 +98,10 @@
                   (if petite (list petite main) (list main)))))))
 
 (define src-files
-  ;; load order mirrors the module layering: vendor -> core -> ai -> session ->
-  ;; tools -> agent -> modes -> main
+  ;; load order mirrors the module layering: vendor -> fp -> core -> ai ->
+  ;; session -> tools -> agent -> modes -> main
   '("src/vendor/match.ss"
+    "src/fp/measured-vector.ss"
     "src/core/util.ss"
     "src/core/json.ss"
     "src/core/event.ss"
@@ -113,6 +110,7 @@
     "src/core/config.ss"
     "src/ai/providers/openai-compatible.ss"
     "src/ai/chat.ss"
+    "src/session/log.ss"
     "src/session/manager.ss"
     "src/session/discovery.ss"
     "src/tools/registry.ss"
