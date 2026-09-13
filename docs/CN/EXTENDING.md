@@ -9,7 +9,10 @@ sah 有三个定制面，全都是普通文件：
 | **prompt template** | 变成 `/命令` 的 markdown 文件 | `~/.sah/prompts/<名称>.md`、`<项目>/.sah/prompts/<名称>.md` |
 
 同名时项目定义覆盖全局定义。三种都有示例放在
-[`sah/examples/`](../../sah/examples/)。
+[`sah/examples/`](../../sah/examples/)。其中一个值得为自己装上：
+[`examples/skills/sah-internals/`](../../sah/examples/skills/sah-internals/SKILL.md)
+教 agent sah 自身怎么运作——把它拷到 `~/.sah/skills/`，agent 就会从运行中的系统
+回答关于本 harness 的问题而不是猜，你让它扩展 sah 时它也知道该改哪个文件。
 
 ## Extension
 

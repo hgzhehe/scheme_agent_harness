@@ -9,7 +9,11 @@ sah has three customization surfaces, all of them plain files:
 | **prompt template** | a markdown file that becomes a `/command` | `~/.sah/prompts/<name>.md`, `<project>/.sah/prompts/<name>.md` |
 
 A project definition overrides a global one of the same name.
-Copies of all three are in [`sah/examples/`](../../sah/examples/).
+Copies of all three are in [`sah/examples/`](../../sah/examples/). One of them is
+worth installing for its own sake: [`examples/skills/sah-internals/`](../../sah/examples/skills/sah-internals/SKILL.md)
+teaches the agent how sah itself works — copy it to `~/.sah/skills/` and the
+agent can answer questions about this harness from the running system instead of
+guessing, and can find the right source file when you ask it to extend sah.
 
 ## Extensions
 
