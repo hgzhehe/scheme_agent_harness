@@ -33,7 +33,7 @@
   (make-slog (pvec-empty (monoid-sum-of entry-tokens)) #f #t))
 
 (define (log-count l) (pvec-count (slog-vec l)))
-(define (log-ref l i) (pvec-ref (slog-vec l) i))
+(define (log-ref l i) (pvec-ref (slog-vec l) i))    ; i is a position in THIS log
 (define (log-entries l) (pvec->list (slog-vec l)))
 (define (log-tokens l) (pvec-measure (slog-vec l)))
 
