@@ -115,8 +115,8 @@
         (+ (or (assq-ref u 'input) 0) (or (assq-ref u 'cache-read) 0))
         (let-values (((summary kept) (log-context-parts (session-log session) #f)))
           (if (not summary)
-              (log-tokens (session-log session))
-              (+ (entry-tokens summary) (total-tokens kept)))))))
+              (log-tokens (session-log session))      ; O(1): context = whole log
+              (total-tokens kept))))))                 ; kept already contains the summary entry
 
 ;;----------------------------------------------------------------------------
 ;; cut point

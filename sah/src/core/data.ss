@@ -10,9 +10,23 @@
 ;;;     (msg tool ID NAME CONTENT)
 ;;;     (call ID NAME ARGS)
 ;;;
-;;;   session entries -- one per line in a session file
-;;;     (message    ID PARENT TS MSG)
-;;;     (compaction ID PARENT TS SUMMARY FIRST-KEPT-ID TOKENS-BEFORE DETAILS)
+;;;   session entries -- one per line in a session file. The set is deliberately
+;;;   isomorphic with pi's (session-format.md), which is what makes the two
+;;;   formats convertible (see session/pi-format.ss):
+;;;
+;;;     (message        ID PARENT TS MSG)
+;;;     (compaction     ID PARENT TS SUMMARY FIRST-KEPT-ID TOKENS-BEFORE DETAILS)
+;;;     (branch-summary ID PARENT TS FROM-ID SUMMARY)
+;;;     (label          ID PARENT TS TARGET-ID LABEL)     LABEL #f clears it
+;;;     (session-info   ID PARENT TS NAME)
+;;;     (custom         ID PARENT TS CUSTOM-TYPE DATA)
+;;;     (custom-message ID PARENT TS CUSTOM-TYPE CONTENT DISPLAY)
+;;;     (model-change   ID PARENT TS PROVIDER MODEL)
+;;;     (thinking-level ID PARENT TS LEVEL)
+;;;
+;;; Which of them reach the model is decided in exactly one place
+;;; (`entry->context-messages` below): message, compaction, branch-summary and
+;;; custom-message do; the rest are metadata the model never sees.
 ;;;
 ;;; ID is an integer index into the session log and PARENT is the index of the
 ;;; entry it descends from (#f for the first one). Because ids *are* positions,
@@ -36,11 +50,35 @@
 (define (entry-ts e) (and (pair? e) (>= (length e) 4) (list-ref e 3)))
 (define (entry-message e) (and (pair? e) (>= (length e) 5) (list-ref e 4)))
 
+;; field accessors for the metadata entries
+(define (entry-target e) (and (pair? e) (>= (length e) 5) (list-ref e 4)))  ; label, custom-type, from-id, name
+(define (entry-label e) (and (pair? e) (>= (length e) 6) (list-ref e 5)))
+(define (entry-summary e) (and (pair? e) (>= (length e) 6) (list-ref e 5)))
+(define (entry-first-kept e) (and (pair? e) (>= (length e) 6) (list-ref e 5)))
+(define (entry-tokens-before e) (and (pair? e) (>= (length e) 7) (list-ref e 6)))
+(define (entry-details e) (and (pair? e) (>= (length e) 8) (list-ref e 7)))
+
 (define (entries->messages es)
   (match es
     [() '()]
     [((message ,id ,parent ,ts ,msg) . ,rest) (cons msg (entries->messages rest))]
     [(,other . ,rest) (entries->messages rest)]))
+
+;; The one place that decides what the model sees. Metadata entries (label,
+;; session-info, custom, model-change, thinking-level) contribute nothing, so
+;; they can be appended freely without disturbing the conversation.
+(define (entry->context-messages e)
+  (match e
+    [(message ,id ,parent ,ts ,msg) (list msg)]
+    [(compaction ,id ,parent ,ts ,summary ,fk ,tb ,details)
+     (list `(msg system ,(string-append "Summary of earlier conversation:\n" summary)))]
+    [(branch-summary ,id ,parent ,ts ,from ,summary)
+     (list `(msg system ,(string-append "Summary of the branch that was left:\n" summary)))]
+    [(custom-message ,id ,parent ,ts ,custom-type ,content ,display) (list `(msg user ,content))]
+    [,other '()]))
+
+(define (entries->context-messages es)
+  (fold-right (lambda (e acc) (append (entry->context-messages e) acc)) '() es))
 
 ;;----------------------------------------------------------------------------
 ;; token estimate (same heuristic as pi: ~4 characters per token)
@@ -71,6 +109,8 @@
   (match e
     [(message ,id ,parent ,ts ,msg) (message-tokens msg)]
     [(compaction ,id ,parent ,ts ,summary ,fk ,tb ,details) (estimate-tokens-text summary)]
+    [(branch-summary ,id ,parent ,ts ,from ,summary) (estimate-tokens-text summary)]
+    [(custom-message ,id ,parent ,ts ,custom-type ,content ,display) (estimate-tokens-text content)]
     [,other 0]))
 
 (define (total-tokens es)

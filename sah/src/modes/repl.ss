@@ -32,22 +32,26 @@
     [,other (format "~a" (entry-kind e))]))
 
 ;;----------------------------------------------------------------------------
-;; /tree -- move the cursor; the next message continues from there
+;; /tree -- the session as a tree; the cursor is where new messages attach
 ;;----------------------------------------------------------------------------
 
-(define (tree-command session)
-  (let ((lg (session-log session)))
-    (printf "entries in this session (id  parent  what):~%")
-    (let loop ((i 0))
-      (when (< i (log-count lg))
-        (let ((e (log-ref lg i)))
-          (printf "  ~a~a ~a  ~a~%"
-                  (if (= i (log-leaf lg)) "*" " ") i
-                  (if (eqv? (entry-parent e) #f) "-" (entry-parent e))
-                  (entry-preview e)))
-        (loop (+ i 1))))
-    (unless (log-linear? lg)
-      (printf "  (this session has branches: not every entry above is on the current path)~%"))
+(define (tree-command session config)
+  (let* ((lg (session-log session))
+         (path (log-path-indices lg #f))
+         (name (log-session-name lg)))
+    (printf "session ~a~a~%" (session-id session) (if name (string-append " (" name ")") ""))
+    (printf "depth  id parent  * = cursor, | = on the current path~%")
+    (for-each
+     (lambda (pair)
+       (let* ((depth (car pair)) (e (cdr pair)) (id (entry-id e)) (label (log-label-of lg id)))
+         (printf "  ~a~a~a ~a  ~a~a~%"
+                 (make-string (* 2 depth) #\space)
+                 (if (log-is-leaf? lg id) "*" (if (memv id path) "|" " "))
+                 id
+                 (if (eqv? (entry-parent e) #f) "-" (entry-parent e))
+                 (entry-preview e)
+                 (if label (string-append "  [" label "]") ""))))
+     (log-tree-walk lg))
     (printf "continue from entry id (or q): ")
     (flush-output-port (current-output-port))
     (let ((line (get-line-or-eof (current-input-port))))
@@ -62,10 +66,29 @@
                    ((not (and n (exact? n) (>= n 0) (< n (log-count lg))))
                     (printf "no such entry: ~a~%" s) #f)
                    ((eqv? n (log-leaf lg)) (printf "already at #~a~%" n) #f)
-                   (else
-                    (session-log-set! session (log-set-leaf lg n))
-                    (printf "cursor moved to #~a; the next message starts a new branch here~%" n)
-                    #t))))))))))
+                   (else (move-cursor! session config n)))))))))))
+
+;; Moving the cursor abandons a suffix of the old path. Offer to keep it as a
+;; branch summary (agent/branch.ss) instead of dropping its context silently.
+(define (move-cursor! session config target)
+  (let* ((lg (session-log session))
+         (gone (entries->messages
+                (abandoned-entries (log-path lg (log-leaf lg)) (log-path lg target)))))
+    (if (null? gone)
+        (begin (session-branch! session target)
+               (printf "cursor moved to #~a; the next message starts a new branch here~%" target)
+               #t)
+        (begin
+          (printf "~a message~a would be left behind. Summarise ~a into the new branch? (y/N) "
+                  (length gone) (if (= (length gone) 1) "" "s")
+                  (if (= (length gone) 1) "it" "them"))
+          (flush-output-port (current-output-port))
+          (let ((ans (get-line-or-eof (current-input-port))))
+            (if (and (string? ans) (string-ci=? (string-trim ans) "y"))
+                (begin (branch-summarize! session config target) #t)
+                (begin (session-branch! session target)
+                       (printf "cursor moved to #~a (nothing summarised)~%" target)
+                       #t)))))))
 
 ;;----------------------------------------------------------------------------
 ;; /context -- what the next request would carry
@@ -113,10 +136,30 @@
                      (lambda (args) (compact! session config 'manual (if (string=? args "") #f args)) #f))
   (register-command! 'context "Show what the next request would carry."
                      (lambda (args) (context-command session config) #f))
-  (register-command! 'tree "List entries; move the cursor to branch here."
-                     (lambda (args) (tree-command session) #f))
+  (register-command! 'tree "Show the session tree; move the cursor to branch here."
+                     (lambda (args) (tree-command session config) #f))
+  (register-command! 'label "Label an entry: /label <id> <text> (no text clears it)."
+                     (lambda (args) (label-command session args) #f))
+  (register-command! 'name "Name this session: /name <text>."
+                     (lambda (args)
+                       (if (string=? (string-trim args) "")
+                           (printf "usage: /name <text>~%")
+                           (begin (session-add-name! session (string-trim args))
+                                  (printf "session named ~a~%" (string-trim args))))
+                       #f))
   (register-command! 'help "List commands, templates and skills."
                      (lambda (args) (print-help) #f)))
+
+(define (label-command session args)
+  (let* ((sp (string-index args #\space))
+         (idtxt (if sp (substring args 0 sp) args))
+         (text (if sp (string-trim (substring args (+ sp 1) (string-length args))) "")))
+    (let ((n (string->number (string-trim idtxt))))
+      (if (not (and n (exact? n) (>= n 0) (< n (log-count (session-log session)))))
+          (printf "usage: /label <entry-id> <text>   (see /tree for ids)~%")
+          (begin
+            (session-add-label! session n (if (string=? text "") #f text))
+            (printf "~a entry #~a~%" (if (string=? text "") "cleared label on" "labelled") n))))))
 
 (define (repl session config)
   (register-builtin-commands! session config)

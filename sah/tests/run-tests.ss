@@ -41,6 +41,7 @@
 (load-src "tools/shell.ss")
 (load-src "tools/eval.ss")
 (load-src "agent/compaction.ss")
+(load-src "agent/branch.ss")
 (load-src "agent/context.ss")
 (load-src "agent/agent.ss")
 
@@ -632,7 +633,6 @@
  (lambda () (call-tool 'edit (list (cons 'path ef) (cons 'edits (vector (list (cons 'oldText "beta") (cons 'newText "BETA")))))))
  (lambda (out err)
    (check "edit: single replacement ok" #f err)
-   (printf "DBG out=~s~%" out)
    (check "edit: reports the file" #t (string-contains? "edit-me.txt" out))
    (check "edit: shows the hunk" #t (string-contains? "- beta" out))))
 (check "edit: file content updated" "alpha\nBETA\ngamma\ndelta\n" (file->string ef))
@@ -661,5 +661,107 @@
  (lambda (out err) (check "edit: overlapping edits are rejected" #t err)))
 
 ;;----------------------------------------------------------------------------
+(printf "== session entry kinds + tree algorithms ==~%")
+
+(define st (session-new tmp "mock"))
+(session-add-message! st '(msg user "a"))
+(session-add-message! st '(msg assistant "b" () stop ()))
+(session-add-label! st 0 "start")
+(session-add-name! st "named session")
+(session-add-model-change! st "deepseek" "deepseek-flash")
+(session-add-thinking-level! st "high")
+(session-add-custom! st "demo" '((count . 1)))
+(session-add-custom-message! st "demo" "injected by an extension" #t)
+(session-add-branch-summary! st 1 "left branch summary")
+(define stl (session-log st))
+
+(check "entries: all nine kinds append" 9 (log-count stl))
+(check "entries: kinds in order"
+       '(message message label session-info model-change thinking-level custom custom-message branch-summary)
+       (map entry-kind (log-entries stl)))
+(check "entries: the cursor is the newest entry" 8 (log-leaf stl))
+(check "entries: every entry parents off the previous one (still a chain)" #t (log-linear? stl))
+(check "tree: one root" 1 (length (log-roots stl)))
+(check "tree: depth-first walk keeps depths" '(0 1 2 3 4 5 6 7 8)
+       (map car (log-tree-walk stl)))
+(check "tree: children of #0 is just #1" '(1) (map entry-id (log-children stl 0)))
+(check "labels: latest wins and is looked up by target" "start" (log-label-of stl 0))
+(check "labels: unknown target" #f (log-label-of stl 5))
+(session-add-label! st 0 #f)
+(check "labels: a #f label clears it" #f (log-label-of (session-log st) 0))
+(check "name: from the newest session-info entry" "named session" (log-session-name stl))
+
+;; only four kinds produce messages
+(check "context: metadata entries never reach the model"
+       '("a" "b" "injected by an extension")
+       (map (lambda (m) (match m [(msg user ,c) c] [(msg assistant ,c ,a ,s ,u) c] [,o ""]))
+            (filter (lambda (m) (not (match m [(msg system ,c) #t] [,o #f])))
+                    (session-context-messages st))))
+(check "context: a branch summary becomes a system checkpoint" #t
+       (let ((ms (session-context-messages st)))
+         (and (match (list-ref ms 3) [(msg system ,c) (string-contains? "left branch summary" c)] [,o #f]) #t)))
+
+;; reset-leaf: cursor before the first entry, so the next append is a second root
+(let* ((lg (log-reset-leaf stl))
+       (lg2 (log-push-message lg '(msg user "second root"))))
+  (check "tree: reset-leaf + append makes a second root" 2 (length (log-roots lg2)))
+  (check "tree: the new entry has no parent" #f (entry-parent (log-ref lg2 9)))
+  (check "tree: a branch is detected as non-linear" #f (log-linear? lg2)))
+
+;; compaction no longer duplicates its own entry in the context
+(define sc (session-new tmp "mock"))
+(session-add-message! sc '(msg user "q1"))
+(session-add-message! sc '(msg assistant "a1" () stop ()))
+(session-add-message! sc '(msg user "q2"))
+(session-add-message! sc '(msg assistant "a2" () stop ()))
+(define scl (log-push-compaction (session-log sc) "SUMMARY" 2 100 '()))
+(check "context: the compaction entry appears exactly once"
+       1 (length (filter (lambda (e) (eq? (entry-kind e) 'compaction)) (log-context scl #f))))
+(check "context: it is moved to the front" 4 (entry-id (car (log-context scl #f))))
+(check "context: kept entries follow it, older ones are dropped"
+       '("q2" "a2") (map (lambda (m) (match m [(msg user ,c) c] [(msg assistant ,c ,a ,s ,u) c] [,o ""]))
+                       (cdr (log-context-messages scl #f))))
+
+;;----------------------------------------------------------------------------
+(define (msg-text m)
+  (match m [(msg assistant ,c ,a ,s ,u) c] [(msg ,role ,c) c] [,other ""]))
+
+(printf "== branch summarization ==~%")
+
+(set! *chat-impl* (lambda (config messages tools)
+                    (list 'msg 'assistant "## Goal\nbranch summary text" '() 'stop '())))
+(define bs (session-new tmp "mock"))
+(session-add-message! bs '(msg user "one"))
+(session-add-message! bs '(msg assistant "two" () stop ()))
+(session-add-message! bs '(msg user "three"))
+(session-add-message! bs '(msg assistant "four" () stop ()))
+(define bs-count-before (session-count bs))
+(define bs-cfg (list (cons 'system "t") (cons 'api-key "x") (cons 'base-url "")))
+
+(check "branch: what would be abandoned is the tail after the branch point"
+       '("three" "four")
+       (map (lambda (m) (match m [(msg user ,c) c] [(msg assistant ,c ,a ,s ,u) c] [,o ""]))
+            (entries->messages (abandoned-entries (log-path (session-log bs) #f)
+                                                  (log-path (session-log bs) 1)))))
+(define bs-summary (branch-summarize! bs bs-cfg 1))
+(check "branch: a summary is produced" #t (string-contains? "branch summary text" bs-summary))
+(check "branch: the abandoned entries are still on disk"
+       (+ bs-count-before 1) (session-count bs))
+(check "branch: the cursor sits on the new summary entry" 4 (log-leaf (session-log bs)))
+(check "branch: the abandoned branch is still reachable"
+       '("one" "two" "three" "four")
+       (map (lambda (m) (match m [(msg user ,c) c] [(msg assistant ,c ,a ,s ,u) c] [,o ""]))
+            (log-context-messages (session-log bs) 3)))
+(check "branch: the new branch sees the summary, not the abandoned messages"
+       '(#t #f)
+       (let* ((ms (log-context-messages (session-log bs) #f))
+              (all (apply string-append (map msg-text ms))))
+         (list (string-contains? "branch summary text" all)
+               (string-contains? "three" all))))
+(check "branch: nothing to summarise from the same cursor"
+       #f (branch-summarize! bs bs-cfg (log-leaf (session-log bs))))
+;;----------------------------------------------------------------------------
 (printf "~%---~%~a passed, ~a failed~%" *pass* *fail*)
 (if (> *fail* 0) (exit 1) (exit 0))
+
+;;----------------------------------------------------------------------------

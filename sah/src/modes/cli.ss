@@ -114,4 +114,6 @@
 
 (define (print-resume-hint session)
   (when (and (session-file session) (file-exists? (session-file session)))
-    (printf "~%To resume this session: sah --session ~a~%" (session-id session))))
+    (let ((name (log-session-name (session-log session))))
+      (printf "~%To resume this session: sah --session ~a~a~%"
+              (session-id session) (if name (string-append "   (" name ")") "")))))

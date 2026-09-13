@@ -83,6 +83,39 @@
   (session-log-set! s (log-push-compaction (session-log s) summary first-kept tokens-before details))
   (session-flush! s))
 
+(define (session-add-branch-summary! s from-id summary)
+  (session-log-set! s (log-push-branch-summary (session-log s) from-id summary))
+  (session-flush! s))
+
+(define (session-add-label! s target-id label)
+  (session-log-set! s (log-push-label (session-log s) target-id label))
+  (session-flush! s))
+
+(define (session-add-name! s name)
+  (session-log-set! s (log-push-session-info (session-log s) name))
+  (session-flush! s))
+
+;; move the cursor without appending (the branch point of a /tree navigation)
+(define (session-branch! s id)
+  (session-log-set! s (log-set-leaf (session-log s) id))
+  s)
+
+(define (session-add-custom! s custom-type data)
+  (session-log-set! s (log-push-custom (session-log s) custom-type data))
+  (session-flush! s))
+
+(define (session-add-custom-message! s custom-type content display)
+  (session-log-set! s (log-push-custom-message (session-log s) custom-type content display))
+  (session-flush! s))
+
+(define (session-add-model-change! s provider model)
+  (session-log-set! s (log-push-model-change (session-log s) provider model))
+  (session-flush! s))
+
+(define (session-add-thinking-level! s level)
+  (session-log-set! s (log-push-thinking-level (session-log s) level))
+  (session-flush! s))
+
 (define (session-new cwd model)
   (let* ((dir (session-dir cwd))
          (id (short-id))

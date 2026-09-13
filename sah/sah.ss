@@ -68,6 +68,7 @@
 
 ;; agent: loop, context, compaction
 (load-src "agent/compaction.ss")
+(load-src "agent/branch.ss")
 (load-src "agent/context.ss")
 (load-src "agent/agent.ss")
 

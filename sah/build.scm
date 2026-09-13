@@ -131,6 +131,7 @@
     "src/tools/shell.ss"
     "src/tools/eval.ss"
     "src/agent/compaction.ss"
+    "src/agent/branch.ss"
     "src/agent/context.ss"
     "src/agent/agent.ss"
     "src/modes/cli.ss"
