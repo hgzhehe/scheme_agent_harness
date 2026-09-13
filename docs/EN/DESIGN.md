@@ -220,3 +220,33 @@ result: sah's walk goes 62 → 157 ns/el from 10⁴ to 10⁷, while pi's goes
 24 → 224 — hashed string keys are random memory access, integer indices on a
 parent chain are sequential, and that is what makes the O(log n)-per-step walk
 come out ahead in practice.
+
+## Converting between sah and pi sessions
+
+Because the entry sets are isomorphic, the two formats are a shape mapping, not
+a translation: `session/pi-format.ss` is about 250 lines for both directions, and
+`--export-pi` / `--import-pi` are one-shot commands on top of it.
+
+| sah | pi |
+|---|---|
+| `(message 3 2 TS (msg user "hi"))` | `{"type":"message","id":"00000003","parentId":"00000002",…}` |
+| `(compaction … FIRST-KEPT-ID …)` | `firstKeptEntryId` |
+| `(branch-summary … FROM-ID …)` | `fromId` |
+| `(label … TARGET-ID LABEL)` | `targetId`, `label` (`null` clears) |
+| `(session-info … NAME)` | `{"type":"session_info","name":…}` |
+| `(model-change … PROVIDER MODEL)` | `{"type":"model_change","modelId":…}` |
+| `(thinking-level … LEVEL)` | `{"type":"thinking_level_change",…}` |
+| `(custom … CUSTOM-TYPE DATA)` | `{"type":"custom","customType":…,"data":…}` |
+| `(custom-message … …)` | `{"type":"custom_message",…}` |
+
+Three things cannot be mapped away, and the converter says so in its header:
+sah numbers entries by index while pi uses random hex ids (export derives a
+deterministic 8-hex id from the index, so `--export-pi` is reproducible and a
+round trip is stable); pi's messages carry thinking blocks, images and
+`isError`, which sah does not model (thinking is dropped, images become text
+placeholders, `isError` is written as false); and a pi entry type sah does not
+know is preserved as a `custom` entry with `customType "pi-<type>"`, so an
+import/export cycle is lossless.
+
+Measured: exporting a real six-entry branched session, importing it, and
+exporting again produces byte-identical entries.

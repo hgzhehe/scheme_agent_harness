@@ -36,6 +36,8 @@ hello.scm prints 42.
   （[`src/vendor/match.ss`](../../sah/src/vendor/match.ss)）。
 - **Scheme 原生会话** —— `SexprL`：每行一个 Scheme datum，可用 `read` 读回，
   结构是树形（`id`/`parent`，id 即下标），移动游标就是分叉。
+- **会话可互通** —— `--export-pi` / `--import-pi` 在 sah 的 SexprL 与 pi 的
+  JSONL 之间互转；两边 entry 集合同构，所以往返无损（见 [DESIGN.md](DESIGN.md)）。
 - **Scheme 原生配置** —— `~/.sah/config.scm` 就是一个 alist。
 - **`eval`** —— 在运行中的进程里求值 Scheme；能用基础 Chez，也能调到 sah 自己的
   定义。状态跨轮存活。
@@ -89,7 +91,9 @@ sah [options] [--] [prompt | @file ...]
 | `--repl` | 交互模式 |
 | `-C`, `--continue` | 续接本目录最近一次会话 |
 | `-r`, `--resume` | 从本目录已保存的会话里选一个 |
-| `--session <path\|id>` | 指定会话文件，或完整/部分会话 id |
+| `--session <path|id>` | 指定会话文件，或完整/部分会话 id |
+| `--export-pi <file>` | 把会话写成 pi 的 JSONL（`-` 表示 stdout） |
+| `--import-pi <file>` | 导入 pi 的 JSONL 会话，生成一个新的 sah 会话 |
 | `--key <key>` | API key（覆盖配置和环境变量） |
 | `--model <id>` | 模型 id（默认 `deepseek-flash`） |
 | `--base-url <url>` | API base URL |
@@ -318,10 +322,13 @@ src/extend/         定制面：
                       input.ss   命令 -> input hook -> 技能 -> 模板
 src/ai/             chat.ss + providers/openai-compatible.ss
 src/session/        log.ss（不可变 entry 树）+ manager.ss（SexprL 文件）
-                    + discovery.ss（查找/选择）
+                    + discovery.ss（查找/选择）+ pi-format.ss（读写 pi 的
+                    JSONL，供 --export-pi / --import-pi 使用）
 src/tools/          registry.ss + read.ss write.ss edit.ss shell.ss eval.ss
 src/agent/          agent.ss（循环）+ context.ss + compaction.ss
-src/modes/          cli.ss + print.ss + repl.ss
+                    + branch.ss（为被放弃的分支生成摘要）
+src/modes/          cli.ss + convert.ss（--export-pi/--import-pi）
+                    + print.ss + repl.ss
 src/main.ss         入口
 examples/           扩展 / 技能 / 提示模板 示例
 tests/run-tests.ss  离线测试套件
@@ -352,7 +359,7 @@ main → run-agent ──► 构建上下文（context.ss：system + 会话上�
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss   # 876 项检查，离线（mock 模型）
+scheme --script tests/run-tests.ss   # 937 项检查，离线（mock 模型）
 scheme --script bench/bench-fp.ss    # 数据结构测量
 scheme --script sah.ss --repl        # 从源码运行
 ```

@@ -194,3 +194,29 @@ sah 有意领先的地方是会话数据结构（不可变、带 measure、下�
 其实是增长曲线：从 10⁴ 到 10⁷，sah 的 walk 是 62 → 157 ns/el，pi 是 24 → 224
 ——哈希字符串键是随机内存访问，父链上的整数下标是顺序访问，这才是「每步 O(log n)
 的 walk 反而更快」的原因。
+
+## sah 与 pi 会话格式的互转
+
+因为两边的 entry 集合同构，两个格式之间是形状映射而不是翻译：
+`session/pi-format.ss` 双向加起来约 250 行，`--export-pi` / `--import-pi` 是
+建在它上面的一次性命令。
+
+| sah | pi |
+|---|---|
+| `(message 3 2 TS (msg user "hi"))` | `{"type":"message","id":"00000003","parentId":"00000002",…}` |
+| `(compaction … FIRST-KEPT-ID …)` | `firstKeptEntryId` |
+| `(branch-summary … FROM-ID …)` | `fromId` |
+| `(label … TARGET-ID LABEL)` | `targetId`、`label`（`null` 表示清除） |
+| `(session-info … NAME)` | `{"type":"session_info","name":…}` |
+| `(model-change … PROVIDER MODEL)` | `{"type":"model_change","modelId":…}` |
+| `(thinking-level … LEVEL)` | `{"type":"thinking_level_change",…}` |
+| `(custom … CUSTOM-TYPE DATA)` | `{"type":"custom","customType":…,"data":…}` |
+| `(custom-message … …)` | `{"type":"custom_message",…}` |
+
+有三件事无法抹平，转换器的文件头里写清了：sah 用下标编号 entry，pi 用随机 hex id
+（导出时由下标派生确定的 8 位 hex，所以 `--export-pi` 可复现、往返稳定）；pi 的消息
+带 thinking 块、图片和 `isError`，sah 都不建模（thinking 丢弃、图片变成文本占位、
+`isError` 写成 false）；sah 不认识的 pi entry 类型会保留成 `customType` 为
+`"pi-<类型>"` 的 `custom` entry，所以导入导出往返是无损的。
+
+实测：把一个真实的、六条 entry 带分叉的会话导出、导入、再导出，entry 逐字节相同。

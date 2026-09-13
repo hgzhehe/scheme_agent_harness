@@ -38,6 +38,9 @@ hello.scm prints 42.
   ([`src/vendor/match.ss`](../../sah/src/vendor/match.ss)).
 - **Scheme-native sessions** — `SexprL`: one Scheme datum per line, readable
   with `read`, a tree of entries with a cursor (`/tree` branches in place).
+- **Interoperable sessions** — `--export-pi` / `--import-pi` convert between
+  sah's SexprL and pi's JSONL; the entry sets are isomorphic, so a round trip
+  is lossless (see [DESIGN.md](DESIGN.md)).
 - **Scheme-native config** — `~/.sah/config.scm` is an alist datum.
 - **`eval`** — evaluates Scheme in the running process; reaches base Chez and
   sah's own definitions. State persists across turns.
@@ -93,6 +96,8 @@ sah [options] [--] [prompt | @file ...]
 | `-C`, `--continue` | continue the most recent session for this directory |
 | `-r`, `--resume` | pick from saved sessions for this directory |
 | `--session <path\|id>` | use a specific session file, or a full/partial session id |
+| `--export-pi <file>` | write the session as pi's JSONL (`-` for stdout) |
+| `--import-pi <file>` | import a pi JSONL session as a new sah session |
 | `--key <key>` | API key (overrides config and env) |
 | `--model <id>` | model id (default `deepseek-flash`) |
 | `--base-url <url>` | API base URL |
@@ -332,10 +337,13 @@ src/extend/         the customization surface:
                       input.ss   commands -> input hook -> skills -> templates
 src/ai/             chat.ss + providers/openai-compatible.ss
 src/session/        log.ss (immutable entry tree) + manager.ss (SexprL files)
-                    + discovery.ss (find/pick)
+                    + discovery.ss (find/pick) + pi-format.ss (pi JSONL
+                    read/write, for --export-pi / --import-pi)
 src/tools/          registry.ss + read.ss write.ss edit.ss shell.ss eval.ss
 src/agent/          agent.ss (loop) + context.ss + compaction.ss
-src/modes/          cli.ss + print.ss + repl.ss
+                    + branch.ss (summarise an abandoned branch)
+src/modes/          cli.ss + convert.ss (--export-pi/--import-pi) + print.ss
+                    + repl.ss
 src/main.ss         entry point
 examples/           extension / skill / prompt-template examples
 tests/run-tests.ss  offline test suite
@@ -368,7 +376,7 @@ main → run-agent ──► build context (context.ss: system + session context
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss   # 876 checks, offline (mock model)
+scheme --script tests/run-tests.ss   # 937 checks, offline (mock model)
 scheme --script bench/bench-fp.ss    # data-structure measurements
 scheme --script sah.ss --repl        # run from source
 ```

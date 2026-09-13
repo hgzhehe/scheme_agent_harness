@@ -34,6 +34,7 @@
 (load-src "session/log.ss")
 (load-src "session/manager.ss")
 (load-src "session/discovery.ss")
+(load-src "session/pi-format.ss")
 (load-src "tools/registry.ss")
 (load-src "tools/read.ss")
 (load-src "tools/write.ss")
@@ -803,6 +804,117 @@
          tool-start tool-end turn-start message-start message-end turn-end
          agent-end agent-settled)
        (reverse ev-log))
+
+;;----------------------------------------------------------------------------
+(printf "== pi session format conversion ==~%")
+
+(define cv (session-new tmp "deepseek-flash"))
+(session-add-message! cv '(msg user "hello"))
+(session-add-message! cv '(msg assistant "hi there"
+                                ((call "call_1" read ((path . "a.scm"))))
+                                tool-use ((input . 100) (output . 5) (cache-read . 50) (cache-write . 0))))
+(session-add-message! cv '(msg tool "call_1" read "file contents"))
+(session-add-message! cv '(msg assistant "done" () stop ((input . 120) (output . 2))))
+(session-add-label! cv 1 "checkpoint")
+(session-add-name! cv "conversion demo")
+(session-add-compaction! cv "SUMMARY TEXT" 2 999 '((read-files . ("a.scm"))))
+
+(define pi-jsonl (session->pi-jsonl cv))
+(check "pi: header plus one JSON line per entry"
+       (+ 1 (session-count cv))
+       (length (filter (lambda (l) (not (string=? l ""))) (string-split pi-jsonl "\n"))))
+(check "pi: the header is a session object" #t (string-prefix? "{\"type\":\"session\"" pi-jsonl))
+(check "pi: ids are 8-hex, parents point at the previous entry" #t
+       (string-contains? "\"parentId\":\"00000000\"" pi-jsonl))
+(check "pi: assistant content becomes parts, tool calls included" #t
+       (string-contains? "\"type\":\"toolCall\"" pi-jsonl))
+(check "pi: stopReason is camelCase" #t (string-contains? "\"stopReason\":\"toolUse\"" pi-jsonl))
+(check "pi: usage keys are camelCase" #t (string-contains? "\"cacheRead\":50" pi-jsonl))
+(check "pi: tool results use role toolResult and toolCallId" #t
+       (and (string-contains? "\"role\":\"toolResult\"" pi-jsonl)
+            (string-contains? "\"toolCallId\":\"call_1\"" pi-jsonl)))
+(check "pi: a label's target is remapped to hex" #t
+       (string-contains? "\"targetId\":\"00000001\"" pi-jsonl))
+(check "pi: a compaction keeps first-kept and tokens-before" #t
+       (and (string-contains? "\"firstKeptEntryId\":\"00000002\"" pi-jsonl)
+            (string-contains? "\"tokensBefore\":999" pi-jsonl)))
+
+(call-with-values (lambda () (pi-jsonl->sah pi-jsonl))
+ (lambda (header entries)
+   (check "pi->sah: entry count" (session-count cv) (length entries))
+   (check "pi->sah: parent chain" (map entry-parent (session-entries cv)) (map entry-parent entries))
+   (check "pi->sah: entry kinds" (map entry-kind (session-entries cv)) (map entry-kind entries))
+   (check "pi->sah: the first message survives"
+          '(msg user "hello") (match (car entries) [(message ,i ,p ,t ,m) m] [,o #f]))
+   (check "pi->sah: tool calls come back as (call ...)"
+          '(call "call_1" read ((path . "a.scm")))
+          (match (cadr entries) [(message ,i ,p ,t (msg assistant ,c ,calls ,s ,u)) (car calls)] [,o #f]))
+   (check "pi->sah: the stop reason comes back"
+          'tool-use (match (cadr entries) [(message ,i ,p ,t (msg assistant ,c ,calls ,s ,u)) s] [,o #f]))
+   (check "pi->sah: usage keys come back"
+          '((input . 100) (output . 5) (cache-read . 50) (cache-write . 0))
+          (match (cadr entries) [(message ,i ,p ,t (msg assistant ,c ,calls ,s ,u)) u] [,o #f]))
+   (check "pi->sah: a compaction's first-kept is an index again"
+          2 (entry-first-kept (car (reverse entries))))
+   (check "pi->sah: a label keeps its target index"
+          1 (entry-target (list-ref entries 4)))
+   (check "pi->sah: session-info keeps the name"
+          "conversion demo" (entry-target (list-ref entries 5)))
+   (check "round trip: export -> import -> export is byte-identical"
+          pi-jsonl
+          (string-append
+           (write-json-string (list (cons 'type "session") (cons 'version 3)
+                                    (cons 'id (session-id cv))
+                                    (cons 'timestamp (ms->iso (session-created cv)))
+                                    (cons 'cwd (session-cwd cv))))
+           "\n"
+           (apply string-append
+                  (map (lambda (e) (string-append (write-json-string (sah-entry->pi e)) "\n"))
+                       entries))))))
+
+;; a hand-written sample in pi's documented format, including a type sah does
+;; not model (so the "unknown entries survive" path is exercised)
+(define pi-sample
+  (string-append
+   "{\"type\":\"session\",\"version\":3,\"id\":\"0193abcd\",\"timestamp\":\"2024-12-03T14:00:00.000Z\",\"cwd\":\"/tmp/proj\"}\n"
+   "{\"type\":\"message\",\"id\":\"a1b2c3d4\",\"parentId\":null,\"timestamp\":\"2024-12-03T14:00:01.000Z\",\"message\":{\"role\":\"user\",\"content\":\"Hello\"}}\n"
+   "{\"type\":\"message\",\"id\":\"b2c3d4e5\",\"parentId\":\"a1b2c3d4\",\"timestamp\":\"2024-12-03T14:00:02.000Z\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hi!\"},{\"type\":\"toolCall\",\"id\":\"call_1\",\"name\":\"read\",\"arguments\":{\"path\":\"a.scm\"}}],\"stopReason\":\"toolUse\",\"usage\":{\"input\":10,\"output\":2,\"cacheRead\":8,\"cacheWrite\":0,\"totalTokens\":20}}}\n"
+   "{\"type\":\"future_entry\",\"id\":\"c3d4e5f6\",\"parentId\":\"b2c3d4e5\",\"timestamp\":\"2024-12-03T14:00:03.000Z\",\"somethingNew\":42}\n"))
+
+(call-with-values (lambda () (pi-jsonl->sah pi-sample))
+ (lambda (header entries)
+   (check "pi sample: header id and cwd" '("0193abcd" "/tmp/proj")
+          (list (assq-ref header 'id) (assq-ref header 'cwd)))
+   (check "pi sample: three entries" 3 (length entries))
+   (check "pi sample: ISO timestamps become ms since epoch"
+          1733234401000 (entry-ts (car entries)))
+   (check "pi sample: assistant text and tool call"
+          '("Hi!" ((call "call_1" read ((path . "a.scm")))))
+          (match (cadr entries)
+            [(message ,i ,p ,t (msg assistant ,c ,calls ,s ,u)) (list c calls)]
+            [,o #f]))
+   (check "pi sample: the second message parents off the first" 0 (entry-parent (cadr entries)))
+   (check "pi sample: the model is empty when the session never changed it"
+          "" (pi-import-model entries))
+   (check "pi sample: an unknown entry type is kept as a custom entry"
+          '(custom "pi-future_entry")
+          (list (entry-kind (caddr entries)) (entry-custom-type (caddr entries))))
+   (check "pi sample: its unknown fields are preserved"
+          42 (assq-ref (entry-data (caddr entries)) 'somethingNew))))
+
+(check "pi: an imported session can be written and re-read by sah"
+       #t
+       (let ((f (path-join tmp "from-pi.ss")))
+         (call-with-values (lambda () (pi-jsonl->sah pi-sample))
+          (lambda (header entries)
+            (let ((port (open-session-port f)))
+              (session-write! port `(session 2 "0193abcd" "/tmp/proj" 1733234400000 ""))
+              (for-each (lambda (e) (session-write! port e)) entries)
+              (close-port port))))
+         (let ((again (session-load f)))
+           (and (= 3 (session-count again))
+                (eq? 'message (entry-kind (car (session-entries again))))
+                (string? (session-id again))))))
 (printf "~%---~%~a passed, ~a failed~%" *pass* *fail*)
 (if (> *fail* 0) (exit 1) (exit 0))
 

@@ -16,6 +16,12 @@
          (config0 (apply-cli (load-config cwd) opts)))
     (cond
       ((assq-ref opts 'help) (print-usage) (exit 0))
+      ((assq-ref opts 'export-pi)
+       (run-export-pi (assq-ref opts 'export-pi) cwd opts)
+       (exit 0))
+      ((assq-ref opts 'import-pi)
+       (run-import-pi (assq-ref opts 'import-pi) cwd (assq-ref config0 'model))
+       (exit 0))
       ((string=? (or (assq-ref config0 'api-key) "") "")
        (printf "error: no API key.~%")
        (printf "  set DEEPSEEK_API_KEY, or add (api-key . \"sk-...\") to ~~/.sah/config.scm, or pass --key.~%")

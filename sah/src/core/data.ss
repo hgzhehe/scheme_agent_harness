@@ -52,6 +52,9 @@
 
 ;; field accessors for the metadata entries
 (define (entry-target e) (and (pair? e) (>= (length e) 5) (list-ref e 4)))  ; label, custom-type, from-id, name
+(define (entry-custom-type e) (and (pair? e) (>= (length e) 5) (list-ref e 4)))
+(define (entry-display e) (and (pair? e) (>= (length e) 7) (list-ref e 6)))
+(define (entry-data e) (and (pair? e) (>= (length e) 6) (list-ref e 5)))          ; custom
 (define (entry-label e) (and (pair? e) (>= (length e) 6) (list-ref e 5)))
 (define (entry-summary e) (and (pair? e) (>= (length e) 6) (list-ref e 5)))
 (define (entry-first-kept e) (and (pair? e) (>= (length e) 6) (list-ref e 5)))

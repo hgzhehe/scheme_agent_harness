@@ -124,6 +124,7 @@
     "src/session/log.ss"
     "src/session/manager.ss"
     "src/session/discovery.ss"
+    "src/session/pi-format.ss"
     "src/tools/registry.ss"
     "src/tools/read.ss"
     "src/tools/write.ss"
@@ -136,6 +137,7 @@
     "src/agent/agent.ss"
     "src/modes/cli.ss"
     "src/modes/print.ss"
+    "src/modes/convert.ss"
     "src/modes/repl.ss"
     "src/main.ss"))
 

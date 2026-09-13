@@ -57,6 +57,7 @@
 (load-src "session/log.ss")
 (load-src "session/manager.ss")
 (load-src "session/discovery.ss")
+(load-src "session/pi-format.ss")
 
 ;; tools
 (load-src "tools/registry.ss")
@@ -75,6 +76,7 @@
 ;; modes
 (load-src "modes/cli.ss")
 (load-src "modes/print.ss")
+(load-src "modes/convert.ss")
 (load-src "modes/repl.ss")
 
 ;; entry point
