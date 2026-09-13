@@ -131,7 +131,7 @@ sah reads its configuration from `~/.sah/config.scm` (see
 ((provider . deepseek)
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-...")
- (model    . "deepseek-chat")
+ (model    . "deepseek-flash")
  (max-steps . 1000))
 ```
 

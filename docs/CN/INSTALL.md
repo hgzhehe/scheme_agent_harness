@@ -126,7 +126,7 @@ sah 从 `~/.sah/config.scm` 读取配置（见
 ((provider . deepseek)
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-...")
- (model    . "deepseek-chat")
+ (model    . "deepseek-flash")
  (max-steps . 1000))
 ```
 

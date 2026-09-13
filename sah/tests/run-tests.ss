@@ -191,7 +191,7 @@
 (printf "== session (SexprL) ==~%")
 
 (set! *sah-home-override* (path-join tmp "sah-home"))
-(define s (session-new "/some/project" "deepseek-chat"))
+(define s (session-new "/some/project" "deepseek-flash"))
 (session-append! s (make-message-entry s '(msg user "hi")))
 (session-append! s (make-message-entry s '(msg assistant "yo" () stop (usage))))
 

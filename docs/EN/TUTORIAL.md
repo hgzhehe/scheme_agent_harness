@@ -125,7 +125,7 @@ survives reboots, and works the same on every platform.
 ((provider . deepseek)
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-xxx")
- (model    . "deepseek-chat")
+ (model    . "deepseek-flash")
  (max-steps . 1000))
 ```
 

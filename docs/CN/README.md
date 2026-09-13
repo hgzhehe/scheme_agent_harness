@@ -11,7 +11,7 @@ Scheme。
 
 ```
 $ sah "create hello.scm that prints 42 and run it"
-[sah] session=1E3DE567 model=deepseek-chat
+[sah] session=1E3DE567 model=deepseek-flash
   -> write ((path . "hello.scm") (content . "(display 42)\n(newline)\n"))
   <- write
   -> shell ((command . "scheme --script hello.scm"))
@@ -52,7 +52,7 @@ hello.scm prints 42.
 ((provider . deepseek)
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-...")
- (model    . "deepseek-chat")
+ (model    . "deepseek-flash")
  (max-steps . 1000))
 ```
 
@@ -86,7 +86,7 @@ sah [options] [--] [prompt | @file ...]
 | `-r`, `--resume` | 从本目录已保存的会话里选一个 |
 | `--session <path\|id>` | 指定会话文件，或完整/部分会话 id |
 | `--key <key>` | API key（覆盖配置和环境变量） |
-| `--model <id>` | 模型 id（默认 `deepseek-chat`） |
+| `--model <id>` | 模型 id（默认 `deepseek-flash`） |
 | `--base-url <url>` | API base URL |
 | `--max-steps <n>` | agent 循环最大轮数（默认 1000） |
 | `-H`, `--usage` | 显示帮助 |
@@ -107,7 +107,7 @@ sah [options] [--] [prompt | @file ...]
 | `provider` | `deepseek` | provider id |
 | `base-url` | `https://api.deepseek.com` | API base URL |
 | `api-key` | `""` | API key |
-| `model` | `deepseek-chat` | 模型 id |
+| `model` | `deepseek-flash` | 模型 id |
 | `max-steps` | `1000` | agent 循环最大轮数 |
 | `system` | 见下 | system prompt 覆盖 |
 
@@ -200,7 +200,7 @@ sah> 再算 fact 40
 datum：
 
 ```scheme
-(session 1 "1e3de567" "F:/proj" 1789022830878 "deepseek-chat")
+(session 1 "1e3de567" "F:/proj" 1789022830878 "deepseek-flash")
 (message "a1b2c3d4" "1e3de567" 1789022830900
          (msg user "hi"))
 (message "b2c3d4e5" "a1b2c3d4" 1789022831000
@@ -239,7 +239,7 @@ EOF
 (ev tool-start "c1" read ((path . "a.scm")))
 (ev tool-end   "c1" read #f "file contents")
 
-(session 1 "1e3de567" "F:/proj" 1700000000000 "deepseek-chat")   ; header entry
+(session 1 "1e3de567" "F:/proj" 1700000000000 "deepseek-flash")   ; header entry
 (message "a1b2c3d4" "1e3de567" 1700000000001 (msg user "hi"))    ; message entry
 
 (tool read "Read a file" PARAMS HANDLER)

@@ -13,7 +13,7 @@ Scheme data, and the agent can evaluate Scheme in its own process.
 
 ```
 $ sah "create hello.scm that prints 42 and run it"
-[sah] session=1E3DE567 model=deepseek-chat
+[sah] session=1E3DE567 model=deepseek-flash
   -> write ((path . "hello.scm") (content . "(display 42)\n(newline)\n"))
   <- write
   -> shell ((command . "scheme --script hello.scm"))
@@ -55,7 +55,7 @@ Create a config file `~/.sah/config.scm`:
 ((provider . deepseek)
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-...")
- (model    . "deepseek-chat")
+ (model    . "deepseek-flash")
  (max-steps . 1000))
 ```
 
@@ -89,7 +89,7 @@ sah [options] [--] [prompt | @file ...]
 | `-r`, `--resume` | pick from saved sessions for this directory |
 | `--session <path\|id>` | use a specific session file, or a full/partial session id |
 | `--key <key>` | API key (overrides config and env) |
-| `--model <id>` | model id (default `deepseek-chat`) |
+| `--model <id>` | model id (default `deepseek-flash`) |
 | `--base-url <url>` | API base URL |
 | `--max-steps <n>` | max agent loop iterations (default 1000) |
 | `-H`, `--usage` | show help |
@@ -111,7 +111,7 @@ evaluated). Keys:
 | `provider` | `deepseek` | provider id |
 | `base-url` | `https://api.deepseek.com` | API base URL |
 | `api-key` | `""` | API key |
-| `model` | `deepseek-chat` | model id |
+| `model` | `deepseek-flash` | model id |
 | `max-steps` | `1000` | agent loop iteration cap |
 | `system` | (see below) | system prompt override |
 
@@ -206,7 +206,7 @@ Stored as `SexprL` under `~/.sah/sessions/<cwd-slug>/<ms>_<id>.ss` — one Schem
 datum per line:
 
 ```scheme
-(session 1 "1e3de567" "F:/proj" 1789022830878 "deepseek-chat")
+(session 1 "1e3de567" "F:/proj" 1789022830878 "deepseek-flash")
 (message "a1b2c3d4" "1e3de567" 1789022830900
          (msg user "hi"))
 (message "b2c3d4e5" "a1b2c3d4" 1789022831000
@@ -248,7 +248,7 @@ Everything that crosses a boundary is a plain Scheme datum.
 (ev tool-start "c1" read ((path . "a.scm")))
 (ev tool-end   "c1" read #f "file contents")
 
-(session 1 "1e3de567" "F:/proj" 1700000000000 "deepseek-chat")   ; header entry
+(session 1 "1e3de567" "F:/proj" 1700000000000 "deepseek-flash")   ; header entry
 (message "a1b2c3d4" "1e3de567" 1700000000001 (msg user "hi"))    ; message entry
 
 (tool read "Read a file" PARAMS HANDLER)
