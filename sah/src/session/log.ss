@@ -127,13 +127,7 @@
 ;; Direct children of an entry (or the roots when ID is #f). O(n): fine for the
 ;; occasional query, but the tree walk below builds an index instead.
 (define (log-children l id)
-  (let loop ((i 0) (acc '()))
-    (if (>= i (log-count l))
-        (reverse acc)
-        (loop (+ i 1)
-              (if (eqv? (entry-parent (log-ref l i)) id)
-                  (cons (log-ref l i) acc)
-                  acc)))))
+  (filter (lambda (e) (eqv? (entry-parent e) id)) (log-entries l)))
 
 (define (log-roots l) (log-children l #f))
 
@@ -168,38 +162,32 @@
 
 ;; target id -> label, latest assignment wins; a (label ... #f) clears it
 (define (log-labels l)
-  (let loop ((i 0) (acc '()))
-    (if (>= i (log-count l))
-        acc
-        (let ((e (log-ref l i)))
-          (loop (+ i 1)
-                (match e
-                  [(label ,id ,parent ,ts ,target ,label)
-                   (let ((rest (filter (lambda (p) (not (eqv? (car p) target))) acc)))
-                     (if label (cons (cons target label) rest) rest))]
-                  [,other acc]))))))
+  ;; fold instead of an index loop: an alist is all this is
+  (fold-left
+   (lambda (acc e)
+     (match e
+       [(label ,id ,parent ,ts ,target ,label)
+        (let ((rest (filter (lambda (p) (not (eqv? (car p) target))) acc)))
+          (if label (cons (cons target label) rest) rest))]
+       [,other acc]))
+   '()
+   (log-entries l)))
 
 (define (log-label-of l id)
   (let ((hit (assv id (log-labels l)))) (and hit (cdr hit))))
 
 ;; display name from the newest session-info entry
 (define (log-session-name l)
-  (let loop ((i (- (log-count l) 1)))
-    (cond ((< i 0) #f)
-          (else
-           (match (log-ref l i)
-             [(session-info ,id ,parent ,ts ,name) name]
-             [,other (loop (- i 1))])))))
+  (let ((hit (find (lambda (e) (eq? (entry-kind e) 'session-info))
+                   (reverse (log-entries l)))))
+    (and hit (entry-name hit))))
 
 ;;----------------------------------------------------------------------------
 ;; context
 ;;----------------------------------------------------------------------------
 
 (define (last-compaction-of es)
-  (let loop ((es es) (last #f))
-    (cond ((null? es) last)
-          ((eq? (entry-kind (car es)) 'compaction) (loop (cdr es) (car es)))
-          (else (loop (cdr es) last)))))
+  (find (lambda (e) (eq? (entry-kind e) 'compaction)) (reverse es)))
 
 ;; The context of a leaf, split as the last compaction's entry (or #f) and the
 ;; entries the model should see, in order. Entries before the compaction's

@@ -59,6 +59,10 @@
 
 (define (check-true name v) (check name #t (and v #t)))
 
+;; message content, used by most of the session tests
+(define (msg-text m)
+  (match m [(msg assistant ,c ,a ,s ,u) c] [(msg ,role ,c) c] [,other ""]))
+
 ;;----------------------------------------------------------------------------
 (printf "== json ==~%")
 
@@ -464,11 +468,11 @@
        (list 1 4) (list after-first (log-leaf (session-log sb))))
 (check "tree: a branch's context is the path root->leaf"
        '("first" "first-answer" "another-second")
-       (map (lambda (m) (match m [(msg user ,c) c] [(msg assistant ,c ,a ,s ,u) c] [,o ""]))
+       (map msg-text
             (session-context-messages sb)))
 (check "tree: the abandoned branch tip is still reachable"
        '("first" "first-answer" "second" "second-answer")
-       (map (lambda (m) (match m [(msg user ,c) c] [(msg assistant ,c ,a ,s ,u) c] [,o ""]))
+       (map msg-text
             (log-context-messages (session-log sb) tip)))
 (check "tree: branching shares structure (the prefix objects are identical)"
        #t
@@ -696,7 +700,7 @@
 ;; only four kinds produce messages
 (check "context: metadata entries never reach the model"
        '("a" "b" "injected by an extension")
-       (map (lambda (m) (match m [(msg user ,c) c] [(msg assistant ,c ,a ,s ,u) c] [,o ""]))
+       (map msg-text
             (filter (lambda (m) (not (match m [(msg system ,c) #t] [,o #f])))
                     (session-context-messages st))))
 (check "context: a branch summary becomes a system checkpoint" #t
@@ -721,14 +725,8 @@
        1 (length (filter (lambda (e) (eq? (entry-kind e) 'compaction)) (log-context scl #f))))
 (check "context: it is moved to the front" 4 (entry-id (car (log-context scl #f))))
 (check "context: kept entries follow it, older ones are dropped"
-       '("q2" "a2") (map (lambda (m) (match m [(msg user ,c) c] [(msg assistant ,c ,a ,s ,u) c] [,o ""]))
+       '("q2" "a2") (map msg-text
                        (cdr (log-context-messages scl #f))))
-
-;;----------------------------------------------------------------------------
-(define (msg-text m)
-  (match m [(msg assistant ,c ,a ,s ,u) c] [(msg ,role ,c) c] [,other ""]))
-
-(printf "== branch summarization ==~%")
 
 (set! *chat-impl* (lambda (config messages tools)
                     (list 'msg 'assistant "## Goal\nbranch summary text" '() 'stop '())))
@@ -737,12 +735,14 @@
 (session-add-message! bs '(msg assistant "two" () stop ()))
 (session-add-message! bs '(msg user "three"))
 (session-add-message! bs '(msg assistant "four" () stop ()))
+;;
+(printf "== branch summarization ==~%")
 (define bs-count-before (session-count bs))
 (define bs-cfg (list (cons 'system "t") (cons 'api-key "x") (cons 'base-url "")))
 
 (check "branch: what would be abandoned is the tail after the branch point"
        '("three" "four")
-       (map (lambda (m) (match m [(msg user ,c) c] [(msg assistant ,c ,a ,s ,u) c] [,o ""]))
+       (map msg-text
             (entries->messages (abandoned-entries (log-path (session-log bs) #f)
                                                   (log-path (session-log bs) 1)))))
 (define bs-summary (branch-summarize! bs bs-cfg 1))
@@ -752,7 +752,7 @@
 (check "branch: the cursor sits on the new summary entry" 4 (log-leaf (session-log bs)))
 (check "branch: the abandoned branch is still reachable"
        '("one" "two" "three" "four")
-       (map (lambda (m) (match m [(msg user ,c) c] [(msg assistant ,c ,a ,s ,u) c] [,o ""]))
+       (map msg-text
             (log-context-messages (session-log bs) 3)))
 (check "branch: the new branch sees the summary, not the abandoned messages"
        '(#t #f)
