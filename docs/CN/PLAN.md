@@ -5,6 +5,17 @@
 > 工作代号 **sah**（Scheme Agent Harness）。本文是长期系统架构 + 第一版实现规格。
 > 参考对象：本仓 `../ext-ref/`（pi v0.84.3 的完整架构资料）。
 > 基线环境：Chez Scheme 10.5（`scheme --script`），Windows / POSIX 均可。
+>
+> **与本文的偏离。** 实现有 5 处走了不同的路。正文保持原样，差异集中记在这里，
+> 而不是改回正文：
+>
+> - 上下文文件是 `SYSTEM.md`；`AGENTS.scm`（§8.7 及另外 8 处）从未实现，
+>   “eval 出动态上下文注入”也没做
+> - `modes/` 是 `cli` / `print` / `oneshot` / `repl` —— 没有 rpc 模式
+> - `models.scm` 未实现；模型 id 与 base URL 在 `config.scm` 里
+> - provider 是流式的（SSE，`message-delta` / `thinking-delta`）；v0 规格写的是非流式
+> - 工具是 `read` / `write` / `edit` / `ls` / `grep` / `find` / `shell` / `eval`，
+>   不是 §8 的 `read` / `write` / `echo` / `bash`
 
 ---
 

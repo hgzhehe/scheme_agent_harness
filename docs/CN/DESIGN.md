@@ -157,13 +157,11 @@ sah 有意领先的地方是会话数据结构（不可变、带 measure、下�
 
 ## 这为下一步解锁了什么
 
-树已经在了，所以下面这些变得很小：
+本节原先列的 4 项里已有 3 项落地：`/fork` 与 `--fork`、`/tree` 离开分支时的
+分支摘要、以及 `label` entry 类型。剩下的是：
 
-- `/fork` 和 `--fork <id>`：把 `/tree` 的交互能力做成 CLI；
-- **分支摘要**（pi 的 `session_before_tree`）：离开分支时把它摘要成一条
-  `branch_summary` entry，而不是简单丢弃；
-- `label` entry 类型做书签（`entry-kind` 已经预留）；
-- `/context` 扩展：分段的 token 大小可由 `prefix-measure` 直接得到。
+- `/context` 扩展：分段的 token 大小可由 `prefix-measure` 直接得到
+  （目前该命令只报总数）。
 
 而缺失的核心机制，按价值排序：
 
@@ -193,7 +191,7 @@ sah 有意领先的地方是会话数据结构（不可变、带 measure、下�
 | 分叉（移动游标） | 8 | 83 |
 | 活跃内存/entry | 137 B | 207 B |
 | token 总量 | O(1) | O(n) |
-| `getChildren(id)` | 未实现 | 每次调用 O(n) |
+| `getChildren(id)` | `log-children`，另一个是单遍的 `log-children-index` | 每次调用 O(n) |
 
 两个诚实的保留意见。第一，这既是在比数据结构，也是在比运行时；真正同口径的比较
 应该用 Scheme 重新实现 pi 的「数组 + Map」，那件事没做。第二，pi 的 append 成本里

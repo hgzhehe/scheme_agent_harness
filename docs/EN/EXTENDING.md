@@ -8,7 +8,7 @@ sah has three customization surfaces, all of them plain files:
 | **skill** | markdown instructions, loaded on demand | `~/.sah/skills/<name>/SKILL.md`, `<project>/.sah/skills/...` |
 | **prompt template** | a markdown file that becomes a `/command` | `~/.sah/prompts/<name>.md`, `<project>/.sah/prompts/<name>.md` |
 
-Global first, then project, so a project can override a global definition.
+A project definition overrides a global one of the same name.
 Copies of all three are in [`sah/examples/`](../../sah/examples/).
 
 ## Extensions

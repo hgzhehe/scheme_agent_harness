@@ -8,7 +8,7 @@ sah 有三个定制面，全都是普通文件：
 | **skill** | 按需加载的 markdown 指令 | `~/.sah/skills/<名称>/SKILL.md`、`<项目>/.sah/skills/...` |
 | **prompt template** | 变成 `/命令` 的 markdown 文件 | `~/.sah/prompts/<名称>.md`、`<项目>/.sah/prompts/<名称>.md` |
 
-先全局、后项目，所以项目可以覆盖全局定义。三种都有示例放在
+同名时项目定义覆盖全局定义。三种都有示例放在
 [`sah/examples/`](../../sah/examples/)。
 
 ## Extension

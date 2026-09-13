@@ -180,13 +180,12 @@ project extensions unconditionally) and everything downstream of having a TUI.
 
 ## What this unlocks next
 
-The tree already exists, so these become small:
+Three of the four things this section used to list are in: `/fork` and
+`--fork`, branch summarization when `/tree` leaves a branch, and the `label`
+entry type. What is left:
 
-- `/fork` and `--fork <id>` as CLI surface for what `/tree` does interactively;
-- **branch summarization** (pi's `session_before_tree`): when leaving a branch,
-  summarize it into a `branch_summary` entry instead of just abandoning it;
-- a `label` entry type for bookmarks (already anticipated by `entry-kind`);
-- `/context` growth: per-section token sizes come free from `prefix-measure`.
+- `/context` growth: per-section token sizes come free from `prefix-measure`
+  (the command reports totals only).
 
 And the missing core mechanism, in order of value:
 
@@ -220,7 +219,7 @@ And the missing core mechanism, in order of value:
 | fork (cursor move) | 8 | 83 |
 | live bytes/entry | 137 | 207 |
 | token total | O(1) | O(n) |
-| `getChildren(id)` | not implemented | O(n) per call |
+| `getChildren(id)` | `log-children`, plus a one-pass `log-children-index` | O(n) per call |
 
 Two honest caveats. First, this compares two *runtimes* as much as two data
 structures; a like-for-like comparison would re-implement pi's array + Map in
