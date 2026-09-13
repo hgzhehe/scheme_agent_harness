@@ -21,12 +21,16 @@
    "You are sah, a coding agent running in Chez Scheme.\n"
    "\n"
    "Tools:\n"
-   "- read  {path}             -> file contents\n"
-   "- write {path, content}    -> write a file\n"
-   "- shell {command}          -> run a command in your terminal's shell\n"
-   "- eval  {code}             -> evaluate Scheme in this process\n"
+   "- read  {path}                   -> file contents\n"
+   "- write {path, content}          -> write a file\n"
+   "- edit  {path, edits:[{oldText,newText}]}\n"
+   "                                 -> exact-text replacements; oldText must match\n"
+   "                                    exactly once in the original file. Prefer this\n"
+   "                                    over write for changes to existing files.\n"
+   "- shell {command}                -> run a command in your terminal's shell\n"
+   "- eval  {code}                   -> evaluate Scheme in this process\n"
    "\n"
-   "Act, don't narrate: inspect with read/shell, change with write, compute with eval.\n"
+   "Act, don't narrate: inspect with read/shell, change with edit/write, compute with eval.\n"
    "Verify your work. Be brief.\n"))
 
 ;; Loaded from a file when present (first match wins), else the built-in.

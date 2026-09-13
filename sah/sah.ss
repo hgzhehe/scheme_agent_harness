@@ -31,7 +31,13 @@
 (load-src "core/util.ss")
 (load-src "core/json.ss")
 (load-src "core/event.ss")
+(load-src "core/md.ss")
 (load-src "core/data.ss")
+(load-src "core/hooks.ss")
+(load-src "core/commands.ss")
+(load-src "core/skills.ss")
+(load-src "core/prompts.ss")
+(load-src "core/resources.ss")
 (load-src "core/transport.ss")
 (load-src "core/config.ss")
 
@@ -48,6 +54,7 @@
 (load-src "tools/registry.ss")
 (load-src "tools/read.ss")
 (load-src "tools/write.ss")
+(load-src "tools/edit.ss")
 (load-src "tools/shell.ss")
 (load-src "tools/eval.ss")
 

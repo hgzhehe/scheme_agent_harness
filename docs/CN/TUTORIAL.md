@@ -215,8 +215,14 @@ EOF
 |---|---|---|
 | `read` | `path` | 返回文件内容 |
 | `write` | `path`、`content` | 写文件，自动建父目录 |
+| `edit` | `path`、`edits:[{oldText,newText}]` | 精确文本替换；每个 `oldText` 必须在原文件里唯一 |
 | `shell` | `command` | 在你终端所用的 shell 里执行命令（PowerShell / cmd / bash） |
 | `eval` | `code` | 在本进程里求值 Scheme |
+
+修改已有文件请用 `edit` 而不是 `write`：所有替换都针对原文本匹配，这也是能把多处
+改动合并在一次调用里的安全前提。
+
+扩展可以注册更多工具（见 [EXTENDING.md](EXTENDING.md)）。
 
 `bash` 工具把命令写进临时脚本再执行，所以引号、管道、heredoc 都像在真 shell
 里一样。无输出会显示 `(no output)`。

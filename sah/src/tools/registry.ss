@@ -44,11 +44,27 @@
 
 ;; Build a JSON-schema object from compact prop specs:
 ;;   (schema '((path "string" "File path") (limit "integer" "Max lines")))
+;; A prop whose second element is not a string is taken as a raw schema, so
+;; arrays and nested objects can be described with the helpers below.
 (define (schema props)
   `((type . "object")
     (properties . ,(map (lambda (p)
                           (cons (car p)
-                                `((type . ,(cadr p))
-                                  (description . ,(caddr p)))))
+                                (if (string? (cadr p))
+                                    `((type . ,(cadr p))
+                                      (description . ,(caddr p)))
+                                    (cadr p))))
                         props))
     (required . ,(list->vector (map car props)))))
+
+;; array parameter, e.g. `(edits ,(array-of (object-schema ...) "what they are"))
+(define (array-of items description)
+  `((type . "array") (description . ,description) (items . ,items)))
+
+(define (object-schema props required)
+  `((type . "object")
+    (properties . ,(map (lambda (p)
+                          (cons (car p)
+                                `((type . ,(cadr p)) (description . ,(caddr p)))))
+                        props))
+    (required . ,(list->vector required))))

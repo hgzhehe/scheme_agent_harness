@@ -95,8 +95,15 @@
 (define (openai-compatible-chat config messages tools)
   (let* ((url (string-append (assq-ref config 'base-url) "/chat/completions"))
          (auth (string-append "Bearer " (assq-ref config 'api-key)))
-         (body (write-json-string
-                (build-chat-request (assq-ref config 'model) messages tools)))
+         ;; the payload is the last thing that can be rewritten before the wire:
+         ;; pi exposes this as `before_provider_request`
+         (payload (run-hooks 'before-provider-request
+                             (build-chat-request (assq-ref config 'model) messages tools)
+                             (lambda (proc p)
+                               (let ((r (guard (e (#t (report-hook-error 'before-provider-request e) #f))
+                                          (proc p config))))
+                                 (if (pair? r) r #f)))))
+         (body (write-json-string payload))
          (resp (http-post-json url `(("Authorization" . ,auth)) body)))
     (let ((json (read-json-string resp)))
       (let ((err (assq-ref json 'error)))

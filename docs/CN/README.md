@@ -25,7 +25,12 @@ hello.scm prints 42.
 
 - **Agent 循环** —— 构建上下文、调用模型、执行工具、重复。
 - **单 provider** —— DeepSeek（OpenAI 兼容的 chat completions）。
-- **四个工具** —— `read`、`write`、`shell`、`eval`。
+- **五个工具** —— `read`、`write`、`edit`、`shell`、`eval`。
+- **可扩展** —— 扩展就是注册 hook / 工具 / 命令的 Scheme 文件
+  （`~/.sah/extensions/*.ss`、`<项目>/.sah/extensions/*.ss`）。见
+  [EXTENDING.md](EXTENDING.md)。
+- **可定制** —— skills（`SKILL.md`，渐进披露）与 prompt templates
+  （`/名称`，支持 `$1`/`$@`），放在 `~/.sah/` 或项目里。
 - **模式匹配内核** —— 消息、事件、entry、工具都是位置化 tagged list；
   `ai/` / `agent/` / `session/` / `tools/` 用 `match` 分发
   （[`src/vendor/match.ss`](../../sah/src/vendor/match.ss)）。
@@ -293,14 +298,16 @@ SYSTEM.md           system prompt（可覆盖，见 core/config.ss）
 config.example.scm  ~/.sah/config.scm 样例
 src/vendor/         第三方 match.ss（含 LICENSE）
 src/fp/             measured-vector.ss：带 monoid measure 的持久向量
-src/core/           util.ss json.ss event.ss data.ss transport.ss config.ss
+src/core/           util json md event data hooks commands skills prompts
+                    resources transport config
 src/ai/             chat.ss + providers/openai-compatible.ss
 src/session/        log.ss（不可变 entry 树）+ manager.ss（SexprL 文件）
                     + discovery.ss（查找/选择）
-src/tools/          registry.ss + read.ss write.ss shell.ss eval.ss
+src/tools/          registry.ss + read.ss write.ss edit.ss shell.ss eval.ss
 src/agent/          agent.ss（循环）+ context.ss + compaction.ss
 src/modes/          cli.ss + print.ss + repl.ss
 src/main.ss         入口
+examples/           扩展 / 技能 / 提示模板 示例
 tests/run-tests.ss  离线测试套件
 bench/bench-fp.ss   数据结构测量
 ```
@@ -329,7 +336,7 @@ main → run-agent ──► 构建上下文（context.ss：system + 会话上�
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss   # 830 项检查，离线（mock 模型）
+scheme --script tests/run-tests.ss   # 876 项检查，离线（mock 模型）
 scheme --script bench/bench-fp.ss    # 数据结构测量
 scheme --script sah.ss --repl        # 从源码运行
 ```
@@ -338,5 +345,6 @@ scheme --script sah.ss --repl        # 从源码运行
 
 ## 尚未实现
 
-流式、`edit`、多 provider、扩展 hook、会话树 *UI*（数据模型和 `/tree` 已有）、
-RPC/JSON 模式、TUI、沙箱。见路线图。
+流式、多 provider、会话树 *UI*（数据模型和 `/tree` 已有）、RPC/JSON 模式、TUI、
+沙箱，以及 pi 的项目*信任*机制（sah 无条件加载项目扩展，见
+[EXTENDING.md](EXTENDING.md)）。见路线图。

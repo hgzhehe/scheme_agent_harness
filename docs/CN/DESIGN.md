@@ -17,7 +17,8 @@
 3. **工具是注册表，数据是位置化 tagged list。** 加一个工具 = 新增一个文件 + 一行
    加载；所有跨边界的东西都用 `match` 解构。
 
-扩展 hook（pi 的第四根支柱）**尚未实现**，见文末。
+4. **扩展点** —— 具名 hook，以及由扩展文件注册的工具与命令（见
+   [EXTENDING.md](EXTENDING.md)）。
 
 ## 会话日志（`src/session/log.ss`）
 
@@ -141,11 +142,14 @@ finger tree 用一次 O(log n) 下降完成 `split-by-measure`。我们把 `pref
 | compaction | 反向扫描累加 token | 对缓存 measure 做二分查找（分叉后有物化回退） |
 | fork | 复制到新文件 | O(1) 移动游标（同一个文件） |
 | 快照 | 未建模 | 免费，因为日志不可变 |
-| 扩展 hook | 一等公民（`pi.on`、`registerTool`…） | **未实现** |
+| 扩展 hook | 一等公民（`pi.on`、`registerTool`…） | 同一形状，约 120 行；扩展就是 Scheme 文件 |
+| skills / prompt 模板 | `SKILL.md` + `/名称`，渐进披露 | 同左（core/skills.ss、core/prompts.ss） |
+| 项目信任 | 门控项目资源 | **未实现**（已记录在案） |
 | TUI | 完整组件系统 | 行式 REPL |
 
 sah 有意领先的地方是会话数据结构（不可变、带 measure、下标寻址）以及对“这带来了
-什么”的诚实核算。有意落后的地方是扩展 hook，那是下一块要建的核心。
+什么”的诚实核算。有意落后的地方是信任模型（sah 无条件加载项目扩展），以及所有
+依赖 TUI 的下游能力。
 
 ## 这为下一步解锁了什么
 
@@ -159,8 +163,34 @@ sah 有意领先的地方是会话数据结构（不可变、带 measure、下�
 
 而缺失的核心机制，按价值排序：
 
-1. **扩展 hook** —— 一个很小的注册表（`before-tool-call`、`before-request`、
-   `after-response`、`before-compact`），扩展文件从 `~/.sah/extensions/*.ss` 加载。
-   Scheme 扩展就是“调用 `register-hook!` 的文件”，机制极小、覆盖面很大。
+1. **更多 hook 点（当它们能自证价值时）** —— 注册表只有 60 行，所以一旦真有需求，
+   加 `turn-start` / `turn-end` 或 `user-bash` 阶段很便宜。凭空把列表撑大没有意义：
+   pi 的约 30 种事件全都由 sah 还不具备的 TUI 与 RPC 模式触发。
 2. **流式** —— 事件总线已经区分了 `message-end`；加上 `message-delta` 只需要
    provider 侧的 SSE 读取，不需要结构改动。
+
+## 与 pi 真实实现的实测对照
+
+`bench/bench-scale.ss` 扫描 sah 的日志，`bench/pi-session-manager-bench.mjs`
+用 node 驱动 pi 真实的 `SessionManager`（内存模式、不落盘）。两者 n = 10⁶，
+单位是每元素纳秒：
+
+| 操作 | sah | pi |
+|---|---:|---:|
+| append | 401 | 1777 |
+| 路径回溯（root → leaf） | 91 | 224 |
+| 按 id 查找 | 29 | 90 |
+| 物化全部 entry | 16 | 19 |
+| 构建上下文 | 262 | 377 |
+| 分叉（移动游标） | 8 | 83 |
+| 活跃内存/entry | 137 B | 207 B |
+| token 总量 | O(1) | O(n) |
+| `getChildren(id)` | 未实现 | 每次调用 O(n) |
+
+两个诚实的保留意见。第一，这既是在比数据结构，也是在比运行时；真正同口径的比较
+应该用 Scheme 重新实现 pi 的「数组 + Map」，那件事没做。第二，pi 的 append 成本里
+有一部分是 sah 根本不做的工作：它为每条 entry 生成全局唯一 id（`randomUUID()`
+约 110 ns），因为它支持跨文件引用，而 sah 用稠密下标换掉了这个能力。更值得看的
+其实是增长曲线：从 10⁴ 到 10⁷，sah 的 walk 是 62 → 157 ns/el，pi 是 24 → 224
+——哈希字符串键是随机内存访问，父链上的整数下标是顺序访问，这才是「每步 O(log n)
+的 walk 反而更快」的原因。

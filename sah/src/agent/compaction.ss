@@ -210,8 +210,28 @@
         (list (cons 'summary (list-ref c 4)) (cons 'details (list-ref c 7)))
         '())))
 
+;; Hooks may cancel a compaction or attach instructions to the summary (pi's
+;; `session_before_compact`). -> (values CANCEL-REASON INSTRUCTIONS)
+(define (run-before-compact-hooks reason instructions)
+  (let loop ((hs (hooks-for 'before-compact)) (instr instructions))
+    (if (null? hs)
+        (values #f instr)
+        (let ((r (guard (e (#t (report-hook-error 'before-compact e) #f))
+                   ((car hs) reason instr))))
+          (cond
+            ((and (pair? r) (eq? (car r) 'cancel))
+             (values (let ((w (cdr r))) (if (string? w) w (format "~s" w))) instr))
+            ((and (pair? r) (eq? (car r) 'instructions)) (loop (cdr hs) (cdr r)))
+            (else (loop (cdr hs) instr)))))))
+
 ;; compact the session in place; returns #t if a compaction entry was added
 (define (compact! session config reason custom-instructions)
+  (let-values (((cancel instr) (run-before-compact-hooks reason custom-instructions)))
+    (if cancel
+        (begin (printf "[sah] compaction cancelled: ~a~%" cancel) #f)
+        (compact-now! session config reason instr))))
+
+(define (compact-now! session config reason custom-instructions)
   (let* ((settings (compaction-settings config))
          (keep (assq-ref settings 'keep-recent-tokens))
          (toks (log-path-measured (session-log session) #f))

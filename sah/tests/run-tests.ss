@@ -17,7 +17,13 @@
 (load-src "core/util.ss")
 (load-src "core/json.ss")
 (load-src "core/event.ss")
+(load-src "core/md.ss")
 (load-src "core/data.ss")
+(load-src "core/hooks.ss")
+(load-src "core/commands.ss")
+(load-src "core/skills.ss")
+(load-src "core/prompts.ss")
+(load-src "core/resources.ss")
 (load-src "core/transport.ss")
 (load-src "core/config.ss")
 (load-src "ai/providers/openai-compatible.ss")
@@ -28,6 +34,7 @@
 (load-src "tools/registry.ss")
 (load-src "tools/read.ss")
 (load-src "tools/write.ss")
+(load-src "tools/edit.ss")
 (load-src "tools/shell.ss")
 (load-src "tools/eval.ss")
 (load-src "agent/compaction.ss")
@@ -463,6 +470,192 @@
               (dot (log-ref lg tip)))
          ;; entry 3 is only reachable through the abandoned branch
          (and (eq? (log-ref lg 3) dot) (not (equal? (log-leaf lg) tip)))))
+
+;;----------------------------------------------------------------------------
+(printf "== extension hooks ==~%")
+
+(register-hook! 'tool-call
+  (lambda (name args)
+    (and (eq? name 'shell)
+         (string-contains? "rm -rf" (or (assq-ref args 'command) ""))
+         '(block . "refusing rm -rf"))))
+
+(check "hooks: tool-call blocks" "refusing rm -rf"
+       (let-values (((b a) (run-tool-call-hooks 'shell '((command . "rm -rf /"))))) b))
+(check "hooks: tool-call lets other calls through" #f
+       (let-values (((b a) (run-tool-call-hooks 'shell '((command . "echo hi"))))) b))
+
+;; a later-registered hook rewrites args; the rewrite must survive to the caller
+(register-hook! 'tool-call
+  (lambda (name args)
+    (and (eq? name 'shell) (equal? (assq-ref args 'command) "echo hi")
+         (cons 'args (list (cons 'command "echo hi # patched"))))))
+(check "hooks: tool-call can rewrite args (and the rewrite is returned)"
+       '((command . "echo hi # patched"))
+       (let-values (((b a) (run-tool-call-hooks 'shell '((command . "echo hi"))))) a))
+(check "hooks: a blocking hook wins over a rewriting one"
+       "refusing rm -rf"
+       (let-values (((b a) (run-tool-call-hooks 'shell '((command . "rm -rf /"))))) b))
+
+(register-hook! 'tool-result
+  (lambda (name args out is-error) (list (string-append out " [seen by extension]") is-error)))
+(check "hooks: tool-result can patch the result"
+       '("out [seen by extension]" #f)
+       (call-with-values (lambda () (run-tool-result-hooks 'read '() "out" #f)) list))
+
+(register-hook! 'before-request
+  (lambda (messages config) (cons '(msg system "injected by extension") messages)))
+(check "hooks: before-request can rewrite the message list"
+       '(msg system "injected by extension")
+       (car (build-request-messages (session-new tmp "mock") (list (cons 'system "base")))))
+
+;; a broken hook must not take the agent down
+(register-hook! 'before-request (lambda (messages config) (error 'boom "extension bug")))
+(check "hooks: a raising hook is skipped, not fatal"
+       #t (pair? (build-request-messages (session-new tmp "mock") (list (cons 'system "base")))))
+
+(register-hook! 'before-compact (lambda (reason instr) '(cancel . "not now")))
+(check "hooks: before-compact can cancel"
+       #f (compact! (session-new tmp "mock") (list (cons 'keep-recent-tokens 1)) 'manual #f))
+
+;; end to end: the loop consults the hooks
+(define hook-calls 0)
+(set! *chat-impl*
+      (lambda (config messages tools)
+        (set! hook-calls (+ hook-calls 1))
+        (if (= hook-calls 1)
+            (list 'msg 'assistant "" (list (list 'call "c1" 'shell (list (cons 'command "rm -rf /")))) 'tool-use '())
+            (list 'msg 'assistant "done" '() 'stop '()))))
+(define sh (session-new tmp "mock"))
+(run-agent sh (list (cons 'system "t") (cons 'max-steps 5)) "delete everything")
+(check "hooks: a blocked call is reported to the model instead of running"
+       #t
+       (let loop ((ms (session-messages sh)))
+         (cond ((null? ms) #f)
+               ((match (car ms) [(msg tool ,i ,n ,c) (string-contains? c "refusing rm -rf")] [,o #f]) #t)
+               (else (loop (cdr ms))))))
+
+(register-hook! 'input
+  (lambda (text) (if (string-prefix? "?quick " text) (list 'transform (substring text 7 (string-length text))) #f)))
+(register-hook! 'input (lambda (text) (if (string=? text "ping") 'handled #f)))
+(check "hooks: input transform" "hello" (process-input "?quick hello"))
+(check "hooks: input handled short-circuits" 'handled (process-input "ping"))
+(check "hooks: input passes anything else through" "just a message" (process-input "just a message"))
+
+;;----------------------------------------------------------------------------
+(printf "== commands ==~%")
+
+(register-command! 'greet "Say hello." (lambda (args) (string-append "say hello to " args)))
+(register-command! 'quiet "Do nothing." (lambda (args) 'handled))
+(check "commands: handler output replaces the prompt" "say hello to bob" (process-input "/greet bob"))
+(register-command! 'sideonly "Side effects only (returns #f)." (lambda (args) #f))
+(check "commands: a handled command sends nothing" 'handled (process-input "/quiet"))
+(check "commands: a #f-returning command sends nothing either" 'handled (process-input "/sideonly"))
+(check "commands: unknown slash text falls through to the agent" "/nope x" (process-input "/nope x"))
+(check "commands: parse splits name and args" '(greet "bob smith")
+       (call-with-values (lambda () (parse-command "/greet bob smith")) list))
+(check "commands: not a command" #f (parse-command "hello"))
+
+;;----------------------------------------------------------------------------
+(printf "== skills and prompt templates ==~%")
+
+(define cus (path-join tmp "custom"))
+(ensure-dir! (path-join cus "skills" "pdf-tools"))
+(string->file (path-join cus "skills" "pdf-tools" "SKILL.md")
+              "---\nname: pdf-tools\ndescription: Extract text from PDFs. Use for PDF work.\n---\n## Steps\n1. run the script\n")
+(string->file (path-join cus "skills" "no-desc.md") "---\nname: no-desc\n---\nbody\n")
+(string->file (path-join cus "skills" "bare.md") "---\ndescription: A bare markdown skill.\n---\nbare body\n")
+(ensure-dir! (path-join cus "prompts"))
+(string->file (path-join cus "prompts" "review.md")
+              "---\ndescription: Review staged changes\nargument-hint: \"<file>\"\n---\nReview $1 carefully. All args: $@. Fallback: ${2:-nothing}.")
+(string->file (path-join cus "prompts" "plain.md")
+              "First line becomes the description.\n\nBody here $ARGUMENTS")
+
+(define sk (discover-skills (list (path-join cus "skills"))))
+(define pr (discover-prompts (list (path-join cus "prompts"))))
+(set! *skills* sk)
+(set! *prompts* pr)
+(define pdf-skill (find-skill "pdf-tools"))
+(check "skills: a SKILL.md directory is discovered" 2 (length sk))
+(check "skills: name and description parsed" '("pdf-tools" "Extract text from PDFs. Use for PDF work.")
+       (list (skill-name pdf-skill) (skill-description pdf-skill)))
+(check "skills: a skill without a description is skipped"
+       #f (find-skill "no-desc"))
+(check "skills: a bare markdown skill is discovered" #t
+       (and (find-skill "bare") #t))
+(check "skills: body kept for on-demand loading" #t
+       (string-contains? "run the script" (skill-body pdf-skill)))
+(check "skills: the prompt block has name + description but NOT the body"
+       '(#t #f)
+       (list (string-contains? "pdf-tools" (skills-block))
+             (string-contains? "run the script" (skills-block))))
+(check "skills: /skill:NAME expands to the body" #t
+       (string-contains? "run the script" (process-input "/skill:pdf-tools extra arg")))
+(check "skills: /skill:NAME keeps the user args" #t
+       (string-contains? "User: extra arg" (process-input "/skill:pdf-tools extra arg")))
+
+(check "prompts: frontmatter description" "Review staged changes" (prompt-description (find-prompt "review")))
+(check "prompts: argument-hint parsed" "<file>" (list-ref (find-prompt "review") 5))
+(check "prompts: description falls back to the first line"
+       "First line becomes the description." (prompt-description (find-prompt "plain")))
+(check "prompts: $1 and $@" "Review a.scm carefully. All args: a.scm b.scm. Fallback: b.scm."
+       (expand-prompt-command 'review "a.scm b.scm"))
+(check "prompts: ${N:-default} used when the arg is missing"
+       #t (string-contains? "Fallback: nothing." (expand-prompt-command 'review "a.scm")))
+(check "prompts: $ARGUMENTS" #t
+       (string-contains? "Body here x y" (expand-prompt-command 'plain "x y")))
+(check "prompts: a template is a slash command"
+       #t (string-contains? "Review a.scm carefully" (process-input "/review a.scm")))
+
+;; extension files are plain Scheme, loaded from the customization dirs
+(ensure-dir! (path-join tmp ".sah" "extensions"))
+(string->file (path-join tmp ".sah" "extensions" "demo.ss")
+              "(register-hook! 'session-start (lambda (session config) (set! *demo-loaded* #t)))\n")
+(set! *sah-home-override* tmp)
+(set! *demo-loaded* #f)
+(load-extensions! tmp)
+(check "extensions: a .ss file in ~/.sah/extensions is loaded" #t (pair? (all-extensions)))
+(check "extensions: the loaded path is reported" 1 (length (all-extensions)))
+(run-hook-effects 'session-start (lambda (h) (h #f #f)))
+(check "extensions: the hook it registered is called at session-start" #t *demo-loaded*)
+
+;;----------------------------------------------------------------------------
+(printf "== edit tool ==~%")
+
+(define ef (path-join tmp "edit-me.txt"))
+(string->file ef "alpha\nbeta\ngamma\ndelta\n")
+
+(call-with-values
+ (lambda () (call-tool 'edit (list (cons 'path ef) (cons 'edits (vector (list (cons 'oldText "beta") (cons 'newText "BETA")))))))
+ (lambda (out err)
+   (check "edit: single replacement ok" #f err)
+   (printf "DBG out=~s~%" out)
+   (check "edit: reports the file" #t (string-contains? "edit-me.txt" out))
+   (check "edit: shows the hunk" #t (string-contains? "- beta" out))))
+(check "edit: file content updated" "alpha\nBETA\ngamma\ndelta\n" (file->string ef))
+
+(call-with-values
+ (lambda () (call-tool 'edit (list (cons 'path ef) (cons 'edits (vector (list (cons 'oldText "nope") (cons 'newText "x")))))))
+ (lambda (out err) (check "edit: missing oldText is an error" #t err)))
+(check "edit: a failed edit does not change the file" "alpha\nBETA\ngamma\ndelta\n" (file->string ef))
+
+(call-with-values
+ (lambda () (call-tool 'edit (list (cons 'path ef) (cons 'edits (vector (list (cons 'oldText "a") (cons 'newText "z")))))))
+ (lambda (out err) (check "edit: ambiguous oldText is an error" #t err)))
+
+;; multiple edits, all matched against the ORIGINAL text
+(call-with-values
+ (lambda () (call-tool 'edit (list (cons 'path ef)
+                                   (cons 'edits (vector (list (cons 'oldText "alpha") (cons 'newText "ALPHA"))
+                                                        (list (cons 'oldText "gamma") (cons 'newText "GAMMA")))))))
+ (lambda (out err) (check "edit: two edits in one call" #f err)))
+(check "edit: both applied" "ALPHA\nBETA\nGAMMA\ndelta\n" (file->string ef))
+
+(call-with-values
+ (lambda () (call-tool 'edit (list (cons 'path ef)
+                                   (cons 'edits (vector (list (cons 'oldText "ALPHA\nBETA") (cons 'newText "one"))
+                                                        (list (cons 'oldText "BETA\nGAMMA") (cons 'newText "two")))))))
+ (lambda (out err) (check "edit: overlapping edits are rejected" #t err)))
 
 ;;----------------------------------------------------------------------------
 (printf "~%---~%~a passed, ~a failed~%" *pass* *fail*)

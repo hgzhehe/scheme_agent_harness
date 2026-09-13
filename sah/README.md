@@ -11,11 +11,12 @@ Chez Scheme.
 ```bash
 scheme --script build.scm          # build dist/sah.exe + dist/sah.boot
 scheme --script sah.ss -- "hello"  # run from source
-scheme --script tests/run-tests.ss # offline tests (830 checks)
+scheme --script tests/run-tests.ss # offline tests (876 checks)
 scheme --script bench/bench-fp.ss  # data-structure measurements
 ```
 
 Layout: `sah.ss` entry, `build.scm` bundler, layered `src/` modules
-(`fp/ core/ ai/ session/ tools/ agent/ modes/`), `tests/`, `bench/`.
+(`fp/ core/ ai/ session/ tools/ agent/ modes/`), `examples/`, `tests/`, `bench/`.
 See the docs above for CLI, configuration, tools and the session format;
-`docs/DESIGN.md` covers the core mechanisms and the persistent data structures.
+`docs/DESIGN.md` covers the core mechanisms and the persistent data structures,
+and `docs/EXTENDING.md` covers extensions, skills and prompt templates.

@@ -217,8 +217,15 @@ to find them via `-C`. `SAH_HOME` changes the root.
 |---|---|---|
 | `read` | `path` | return file contents |
 | `write` | `path`, `content` | write a file, creating parent dirs |
+| `edit` | `path`, `edits:[{oldText,newText}]` | exact-text replacements; each `oldText` must match exactly once |
 | `shell` | `command` | run a command in your terminal's shell (PowerShell, cmd, or bash) |
 | `eval` | `code` | evaluate Scheme in this process |
+
+Use `edit` rather than `write` to change an existing file: all edits are matched
+against the original text, which is also what makes batching several changes into
+one call safe.
+
+Extensions can register more tools (see [EXTENDING.md](EXTENDING.md)).
 
 The `bash` tool runs from a temporary script, so quoting, pipes and heredocs
 behave like a real shell. Empty output is reported as `(no output)`.

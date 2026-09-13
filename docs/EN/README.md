@@ -27,12 +27,17 @@ hello.scm prints 42.
 
 - **Agent loop** — build context, call the model, run requested tools, repeat.
 - **One provider** — DeepSeek (OpenAI-compatible chat completions).
-- **Four tools** — `read`, `write`, `shell`, `eval`.
+- **Five tools** — `read`, `write`, `edit`, `shell`, `eval`.
+- **Extensible** — extensions are Scheme files that register hooks, tools and
+  commands (`~/.sah/extensions/*.ss`, `<project>/.sah/extensions/*.ss`). See
+  [EXTENDING.md](EXTENDING.md).
+- **Customizable** — skills (`SKILL.md`, progressive disclosure) and prompt
+  templates (`/name` with `$1`/`$@`) from `~/.sah/` or the project.
 - **Pattern-matched core** — messages, events, entries and tools are positional
   tagged lists; `ai/` / `agent/` / `session/` / `tools/` dispatch with `match`
   ([`src/vendor/match.ss`](../../sah/src/vendor/match.ss)).
 - **Scheme-native sessions** — `SexprL`: one Scheme datum per line, readable
-  with `read`, tree-shaped (`id`/`parent`) so branching can land later.
+  with `read`, a tree of entries with a cursor (`/tree` branches in place).
 - **Scheme-native config** — `~/.sah/config.scm` is an alist datum.
 - **`eval`** — evaluates Scheme in the running process; reaches base Chez and
   sah's own definitions. State persists across turns.
@@ -307,14 +312,16 @@ SYSTEM.md           the system prompt (overridable; see core/config.ss)
 config.example.scm  sample ~/.sah/config.scm
 src/vendor/         third-party match.ss (+ LICENSE)
 src/fp/             measured-vector.ss: persistent vector with a monoid measure
-src/core/           util.ss json.ss event.ss data.ss transport.ss config.ss
+src/core/           util json md event data hooks commands skills prompts
+                    resources transport config
 src/ai/             chat.ss + providers/openai-compatible.ss
 src/session/        log.ss (immutable entry tree) + manager.ss (SexprL files)
                     + discovery.ss (find/pick)
-src/tools/          registry.ss + read.ss write.ss shell.ss eval.ss
+src/tools/          registry.ss + read.ss write.ss edit.ss shell.ss eval.ss
 src/agent/          agent.ss (loop) + context.ss + compaction.ss
 src/modes/          cli.ss + print.ss + repl.ss
 src/main.ss         entry point
+examples/           extension / skill / prompt-template examples
 tests/run-tests.ss  offline test suite
 bench/bench-fp.ss   data-structure measurements
 ```
@@ -345,7 +352,7 @@ main → run-agent ──► build context (context.ss: system + session context
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss   # 830 checks, offline (mock model)
+scheme --script tests/run-tests.ss   # 876 checks, offline (mock model)
 scheme --script bench/bench-fp.ss    # data-structure measurements
 scheme --script sah.ss --repl        # run from source
 ```
@@ -355,6 +362,7 @@ standalone executable, and [`PLAN.md`](PLAN.md) for the roadmap.
 
 ## Not here yet
 
-Streaming, `edit`, multiple providers, extension hooks, a session-tree *UI*
-(the data model and `/tree` already exist), RPC/JSON modes, TUI, sandboxing.
-See the roadmap.
+Streaming, `edit`-free workflows, multiple providers, a session-tree *UI* (the
+model and `/tree` exist), RPC/JSON modes, TUI, sandboxing, and pi's project
+*trust* model (sah loads project extensions unconditionally — see
+[EXTENDING.md](EXTENDING.md)). See the roadmap.

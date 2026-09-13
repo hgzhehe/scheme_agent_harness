@@ -20,7 +20,8 @@ Three mechanisms, and nothing else:
    new file plus one load line; everything crossing a boundary destructures with
    `match`.
 
-Extension hooks (pi's fourth pillar) are **not** implemented yet; see the end.
+4. **Extension points** — named hooks, plus tools and commands registered from
+   extension files (see [EXTENDING.md](EXTENDING.md)).
 
 ## The session log (`src/session/log.ss`)
 
@@ -162,13 +163,15 @@ Honest reading of that table:
 | compaction | scan backwards accumulating tokens | binary search over the cached measure (with a materialise fallback after branching) |
 | fork | copy into a new file | O(1) cursor move (same file) |
 | snapshots | not modelled | free, because the log is immutable |
-| extension hooks | first-class (`pi.on`, `registerTool`, …) | **not implemented** |
+| extension hooks | first-class (`pi.on`, `registerTool`, …) | same shape, ~120 lines; extensions are Scheme files |
+| skills / prompt templates | `SKILL.md` + `/name`, progressive disclosure | same (core/skills.ss, core/prompts.ss) |
+| project trust | gates project resources | **not implemented** (documented gap) |
 | TUI | full component system | line-based REPL |
 
 The two places where sah is deliberately ahead are the session data structure
 (immutable, measured, index-addressed) and the honest accounting of what that
-buys. The place where it is deliberately behind is extension hooks, which is the
-next piece of core to build.
+buys. The place where it is deliberately behind is the trust model (sah loads
+project extensions unconditionally) and everything downstream of having a TUI.
 
 ## What this unlocks next
 
@@ -182,9 +185,38 @@ The tree already exists, so these become small:
 
 And the missing core mechanism, in order of value:
 
-1. **Extension hooks** — a small registry (`before-tool-call`, `before-request`,
-   `after-response`, `before-compact`) with extension files loaded from
-   `~/.sah/extensions/*.ss`. Scheme extensions are just files that call
-   `register-hook!`, which is a very small amount of machinery for a lot of reach.
+1. **More hook points, if they earn it** — the registry is 60 lines, so adding
+   `turn-start` / `turn-end` or a `user-bash` stage is cheap once something
+   needs them. There is no point growing the list speculatively: pi's ~30 events
+   are all reached from the TUI and RPC modes that sah does not have.
 2. **Streaming** — the event bus already distinguishes `message-end`; adding
    `message-delta` requires a provider-side SSE reader and no structural change.
+
+## Measured against pi's actual implementation
+
+`bench/bench-scale.ss` sweeps sah's log, and
+`bench/pi-session-manager-bench.mjs` drives pi's real `SessionManager`
+(in-memory, no I/O) through node. Both are n = 10⁶ entries, ns per element:
+
+| operation | sah | pi |
+|---|---:|---:|
+| append | 401 | 1777 |
+| path walk (root → leaf) | 91 | 224 |
+| lookup by id | 29 | 90 |
+| materialise all entries | 16 | 19 |
+| build context | 262 | 377 |
+| fork (cursor move) | 8 | 83 |
+| live bytes/entry | 137 | 207 |
+| token total | O(1) | O(n) |
+| `getChildren(id)` | not implemented | O(n) per call |
+
+Two honest caveats. First, this compares two *runtimes* as much as two data
+structures; a like-for-like comparison would re-implement pi's array + Map in
+Scheme, which has not been done. Second, part of pi's append cost is work sah
+simply does not do: it generates a globally unique id per entry
+(`randomUUID()` ≈ 110 ns) because it supports cross-file references, and sah
+traded that away for dense indices. The growth curves are the more interesting
+result: sah's walk goes 62 → 157 ns/el from 10⁴ to 10⁷, while pi's goes
+24 → 224 — hashed string keys are random memory access, integer indices on a
+parent chain are sequential, and that is what makes the O(log n)-per-step walk
+come out ahead in practice.
