@@ -48,6 +48,10 @@
                  (api-key . "")
                  (model . "deepseek-flash")
                  (max-steps . 1000)
+                 (compact . #t)
+                 (context-window . 64000)
+                 (reserve-tokens . 16384)
+                 (keep-recent-tokens . 20000)
                  (system . ,(load-system-prompt cwd))))
          (with-file (alist-merge base file-data))
          (env-key (or (getenv "SAH_API_KEY") (getenv "DEEPSEEK_API_KEY")))
@@ -121,7 +125,7 @@
       (else (loop (cdr args) opts (cons (car args) prompt))))))
 
 (define (repl session config)
-  (printf "sah repl (Chez Scheme). Ctrl-D to exit.~%")
+  (printf "sah repl (Chez Scheme). /compact [instructions] to compact. Ctrl-D to exit.~%")
   (let loop ()
     (printf "sah> ")
     (flush-output-port (current-output-port))
@@ -129,6 +133,11 @@
       (cond
         ((eof-object? line) (newline) 'bye)
         ((string=? line "") (loop))
+        ((and (>= (string-length line) 8) (string=? "/compact" (substring line 0 8)))
+         (guard (e (#t (printf "error: ~a~%" (err->string e))))
+           (let ((instr (string-trim (substring line 8 (string-length line)))))
+             (compact! session config 'manual (if (string=? instr "") #f instr))))
+         (loop))
         (else
          (guard (e (#t (printf "error: ~a~%" (err->string e))))
            (run-agent session config line))

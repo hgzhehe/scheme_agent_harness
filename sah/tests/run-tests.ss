@@ -11,6 +11,7 @@
 (define *root* (string-append (here-dir) "/.."))
 
 (load (string-append *root* "/src/match.ss"))
+(load (string-append *root* "/src/event.ss"))
 (load (string-append *root* "/src/util.ss"))
 (load (string-append *root* "/src/json.ss"))
 (load (string-append *root* "/src/transport.ss"))
@@ -18,6 +19,7 @@
 (load (string-append *root* "/src/shell.ss"))
 (load (string-append *root* "/src/tools.ss"))
 (load (string-append *root* "/src/session.ss"))
+(load (string-append *root* "/src/compact.ss"))
 (load (string-append *root* "/src/agent.ss"))
 
 (define *pass* 0)
@@ -274,6 +276,77 @@
 (check "agent: max-steps enforced"
        #t
        (guard (e (#t #t)) (run-agent s4 (list (cons 'system "t") (cons 'max-steps 2)) "go") #f))
+
+;;----------------------------------------------------------------------------
+(printf "== compaction ==~%")
+
+;; mock: summarization requests get a summary, everything else a normal reply
+(define *is-summarize* #f)
+(set! *chat-impl*
+      (lambda (config messages tools)
+        (set! *is-summarize*
+              (and (pair? messages)
+                   (match (car messages)
+                     [(msg system ,c) (and (string? c) (string-contains? "summarization" c))]
+                     [,other #f])))
+        (if *is-summarize*
+            (list 'msg 'assistant "## Goal\nmock summary" '() 'stop '())
+            (list 'msg 'assistant "ok" '() 'stop '((input . 100) (output . 1))))))
+
+(define s5 (session-new tmp "mock"))
+(for-each
+ (lambda (i)
+   (session-append! s5 (make-message-entry s5 `(msg user ,(string-append "q" (number->string i)))))
+   (session-append! s5 (make-message-entry
+                        s5 `(msg assistant ,(string-append "a" (number->string i))
+                                      ((call ,(string-append "c" (number->string i)) read ((path . "a.scm"))))
+                                      stop ((input . 100) (output . 1))))))
+ '(0 1 2 3 4 5))
+
+(define ccfg (list (cons 'compact #t) (cons 'context-window 64000)
+                   (cons 'reserve-tokens 16384) (cons 'keep-recent-tokens 10)
+                   (cons 'system "t") (cons 'api-key "x") (cons 'base-url "")))
+(define before (length (session-messages s5)))
+(compact! s5 ccfg 'manual #f)
+(define after (length (session-context-messages s5)))
+(define centry (car (reverse (session-entries s5))))
+(define cfk (match centry [(compaction ,id ,p ,ts ,s ,fk ,tb ,det) fk] [,other #f]))
+(define csummary (match centry [(compaction ,id ,p ,ts ,s ,fk ,tb ,det) s] [,other ""]))
+
+(check "compaction: a compaction entry was appended" 'compaction (entry-kind centry))
+(check "compaction: context now starts with the summary"
+       #t
+       (match (car (session-context-messages s5))
+         [(msg system ,c) (string-contains? "Summary of earlier conversation" c)]
+         [,other #f]))
+(check "compaction: context shrank" #t (< after before))
+(check "compaction: first-kept points at a message entry"
+       #t
+       (let loop ((es (session-entries s5)))
+         (cond ((null? es) #f)
+               ((equal? (entry-id (car es)) cfk) (eq? (entry-kind (car es)) 'message))
+               (else (loop (cdr es))))))
+(check "compaction: summary carries cumulated file ops"
+       #t (string-contains? "a.scm" csummary))
+(check "compaction: tokens-before recorded" #t
+       (match centry [(compaction ,id ,p ,ts ,s ,fk ,tb ,det) (> tb 0)] [,other #f]))
+
+;; auto-compaction: window 200, reserve 0 => last usage (100) < 200 so no
+;; trigger; window 50 => triggers
+(define s6 (session-new tmp "mock"))
+(session-append! s6 (make-message-entry s6 '(msg user "hi")))
+(session-append! s6 (make-message-entry s6 '(msg assistant "yo" ()
+                                                          stop ((input . 100) (output . 1)))))
+(session-append! s6 (make-message-entry s6 '(msg user "again")))
+(session-append! s6 (make-message-entry s6 '(msg user "more")))
+(maybe-auto-compact! s6 (list (cons 'compact #t) (cons 'context-window 50)
+                              (cons 'reserve-tokens 0) (cons 'keep-recent-tokens 1)))
+(check "compaction: auto-trigger adds a compaction entry"
+       #t
+       (let loop ((es (session-entries s6)))
+         (cond ((null? es) #f)
+               ((eq? (entry-kind (car es)) 'compaction) #t)
+               (else (loop (cdr es))))))
 
 ;;----------------------------------------------------------------------------
 (printf "~%---~%~a passed, ~a failed~%" *pass* *fail*)

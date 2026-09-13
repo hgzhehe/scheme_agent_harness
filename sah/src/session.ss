@@ -84,6 +84,13 @@
 (define (make-message-entry s msg)
   `(message ,(short-id) ,(session-last-id s) ,(now-ms) ,msg))
 
+(define (entry-kind e) (and (pair? e) (car e)))
+(define (entry-id e) (and (pair? e) (>= (length e) 2) (list-ref e 1)))
+
+(define (make-compaction-entry s summary first-kept-id tokens-before details)
+  `(compaction ,(short-id) ,(session-last-id s) ,(now-ms)
+               ,summary ,first-kept-id ,tokens-before ,details))
+
 (define (session-new cwd model)
   (let* ((dir (session-dir cwd))
          (id (short-id))
@@ -145,6 +152,27 @@
 
 (define (session-messages s)
   (entries->messages (session-entries s)))
+
+;; like session-messages, but honoring the most recent compaction: the summary
+;; replaces everything before the first-kept entry
+(define (session-context-messages s)
+  (let* ((es (session-entries s))
+         (last-c (let loop ((l es) (last #f))
+                   (cond ((null? l) last)
+                         ((eq? (entry-kind (car l)) 'compaction) (loop (cdr l) (car l)))
+                         (else (loop (cdr l) last))))))
+    (if (not last-c)
+        (entries->messages es)
+        (let* ((summary (list-ref last-c 4))
+               (first-kept (list-ref last-c 5))
+               (kept (let loop ((l es) (on #f) (acc '()))
+                       (cond ((null? l) (reverse acc))
+                             (on (loop (cdr l) #t (cons (car l) acc)))
+                             ((equal? (entry-id (car l)) first-kept)
+                              (loop (cdr l) #t (cons (car l) acc)))
+                             (else (loop (cdr l) #f acc))))))
+          (cons `(msg system ,(string-append "Summary of earlier conversation:\n" summary))
+                (entries->messages kept))))))
 
 ;;----------------------------------------------------------------------------
 ;; session discovery: --session <path|id> and the -r picker (pi-style)

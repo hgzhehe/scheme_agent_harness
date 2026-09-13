@@ -103,6 +103,7 @@
 
 (define src-files
   '("src/match.ss"
+    "src/event.ss"
     "src/util.ss"
     "src/json.ss"
     "src/transport.ss"
@@ -110,6 +111,7 @@
     "src/llm.ss"
     "src/tools.ss"
     "src/session.ss"
+    "src/compact.ss"
     "src/agent.ss"
     "src/main.ss"))
 

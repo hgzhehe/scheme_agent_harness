@@ -18,6 +18,7 @@
 (define *root* (sah-script-dir))
 
 (load (string-append *root* "/src/match.ss"))
+(load (string-append *root* "/src/event.ss"))
 (load (string-append *root* "/src/util.ss"))
 (load (string-append *root* "/src/json.ss"))
 (load (string-append *root* "/src/transport.ss"))
@@ -25,6 +26,7 @@
 (load (string-append *root* "/src/shell.ss"))
 (load (string-append *root* "/src/tools.ss"))
 (load (string-append *root* "/src/session.ss"))
+(load (string-append *root* "/src/compact.ss"))
 (load (string-append *root* "/src/agent.ss"))
 (load (string-append *root* "/src/main.ss"))
 

@@ -2,7 +2,7 @@
 ;;; Everything here is deliberately dependency-free.
 
 (define (assq-ref alist key)
-  (let ((hit (assq key alist)))
+  (let ((hit (and (list? alist) (assq key alist))))
     (if hit (cdr hit) #f)))
 
 (define (string-prefix? prefix s)

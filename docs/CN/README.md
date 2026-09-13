@@ -109,6 +109,10 @@ sah [options] [--] [prompt | @file ...]
 | `api-key` | `""` | API key |
 | `model` | `deepseek-flash` | 模型 id |
 | `max-steps` | `1000` | agent 循环最大轮数 |
+| `compact` | `#t` | 是否开启自动上下文压缩 |
+| `context-window` | `64000` | 模型上下文窗口（token） |
+| `reserve-tokens` | `16384` | 压缩前为回复预留的 token |
+| `keep-recent-tokens` | `20000` | 压缩时逐字保留的最近 token 数 |
 | `system` | 见下 | system prompt 覆盖 |
 
 ### API key
@@ -195,6 +199,16 @@ sah> 再算 fact 40
 ```
 
 ## 会话
+
+长会话会被压缩，使上下文保持在模型窗口内。当上下文接近
+`context-window - reserve-tokens` 时，sah 把较早的消息摘要成一份结构化检查点
+（Goal / Constraints / Progress / Decisions / Next Steps / Critical Context），
+逐字保留最近 `keep-recent-tokens`，并向会话追加一条 `(compaction …)` entry。
+摘要存在会话文件里，不丢东西——完整历史仍在磁盘上。若 provider 报“上下文过长”，
+sah 会压缩一次并重试。
+
+REPL 里用 `/compact` 手动压缩（可 `/compact <instructions>` 指定摘要重点）。
+在 `~/.sah/config.scm` 里设 `compact` 为 `#f` 可关闭自动压缩。
 
 以 `SexprL` 存放在 `~/.sah/sessions/<cwd-slug>/<ms>_<id>.ss` —— 每行一个 Scheme
 datum：

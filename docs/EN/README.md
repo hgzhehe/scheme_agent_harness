@@ -113,6 +113,10 @@ evaluated). Keys:
 | `api-key` | `""` | API key |
 | `model` | `deepseek-flash` | model id |
 | `max-steps` | `1000` | agent loop iteration cap |
+| `compact` | `#t` | enable automatic context compaction |
+| `context-window` | `64000` | model context window (tokens) |
+| `reserve-tokens` | `16384` | tokens reserved for the reply before compacting |
+| `keep-recent-tokens` | `20000` | most recent tokens kept verbatim when compacting |
 | `system` | (see below) | system prompt override |
 
 ### API key
@@ -201,6 +205,19 @@ sah> Now compute fact 40
 ```
 
 ## Sessions
+
+Long sessions are compacted so the context stays within the model's window.
+When the context approaches `context-window - reserve-tokens`, sah summarizes
+the older messages into a structured checkpoint (Goal / Constraints /
+Progress / Decisions / Next Steps / Critical Context), keeps the most recent
+`keep-recent-tokens` verbatim, and appends a `(compaction …)` entry to the
+session. The summary is stored in the session file, so nothing is lost — the
+full history is still on disk. On a provider "context too long" error sah
+compacts once and retries.
+
+In the REPL, `/compact` compacts manually (optionally `/compact <instructions>`
+to focus the summary). Auto-compaction can be disabled with `"compact": false`
+in `~/.sah/config.scm`.
 
 Stored as `SexprL` under `~/.sah/sessions/<cwd-slug>/<ms>_<id>.ss` — one Scheme
 datum per line:
