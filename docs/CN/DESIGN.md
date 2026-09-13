@@ -143,7 +143,7 @@ finger tree 用一次 O(log n) 下降完成 `split-by-measure`。我们把 `pref
 | fork | 复制到新文件 | O(1) 移动游标（同一个文件） |
 | 快照 | 未建模 | 免费，因为日志不可变 |
 | 扩展 hook | 一等公民（`pi.on`、`registerTool`…） | 同一形状，约 120 行；扩展就是 Scheme 文件 |
-| skills / prompt 模板 | `SKILL.md` + `/名称`，渐进披露 | 同左（core/skills.ss、core/prompts.ss） |
+| skills / prompt 模板 | `SKILL.md` + `/名称`，渐进披露 | 同左（extend/skills.ss、extend/prompts.ss） |
 | 项目信任 | 门控项目资源 | **未实现**（已记录在案） |
 | TUI | 完整组件系统 | 行式 REPL |
 

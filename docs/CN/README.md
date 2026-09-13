@@ -298,8 +298,24 @@ SYSTEM.md           system prompt（可覆盖，见 core/config.ss）
 config.example.scm  ~/.sah/config.scm 样例
 src/vendor/         第三方 match.ss（含 LICENSE）
 src/fp/             measured-vector.ss：带 monoid measure 的持久向量
-src/core/           util json md event data hooks commands skills prompts
-                    resources transport config
+src/util/           对 sah 一无所知的底层原语：
+                      string.ss  文本处理
+                      path.ss    路径、文件、目录
+                      json.ss    JSON <-> Scheme datum
+                      misc.ss    alist、时间、id、错误、行输入
+src/core/           agent 自身的概念与基础设施：
+                      event.ss   事件总线
+                      data.ss    规范的消息/entry 形状
+                      hooks.ss   具名扩展 hook 点
+                      transport.ss  curl 发 HTTP
+                      config.ss  ~/.sah 路径、设置、system prompt
+src/extend/         定制面：
+                      md.ss      frontmatter 解析
+                      commands.ss  /命令注册表
+                      skills.ss  SKILL.md 发现 + 渐进披露
+                      prompts.ss /名称模板（$1、$@、${N:-默认}）
+                      loader.ss  加载扩展、技能、模板
+                      input.ss   命令 -> input hook -> 技能 -> 模板
 src/ai/             chat.ss + providers/openai-compatible.ss
 src/session/        log.ss（不可变 entry 树）+ manager.ss（SexprL 文件）
                     + discovery.ss（查找/选择）
@@ -309,14 +325,14 @@ src/modes/          cli.ss + print.ss + repl.ss
 src/main.ss         入口
 examples/           扩展 / 技能 / 提示模板 示例
 tests/run-tests.ss  离线测试套件
-bench/bench-fp.ss   数据结构测量
+bench/              数据结构与规模测量
 ```
 
-`src/` 按层拆分（fp → core → ai → session → tools → agent → modes），加载顺序即此
-顺序（见 `sah.ss`、`build.scm`）。`core/` 内部：`util` 路径/文件/id，`json` JSON ↔
-datum，`event` 事件总线，`data` 规范的消息/条目形状，`transport` curl，
-`config` 设置与 system prompt。工具实现加载时把自己注册进注册表，所以加一个
-工具 = 新增一个文件 + 一行加载。
+`src/` 按“一个文件被允许知道什么”分层：`util/` 对 sah 一无所知，`core/` 只知道 agent
+自身概念、不认识 mode 和工具，`extend/` 是定制文件能碰到的全部，其余按职责分层
+（ai → session → tools → agent → modes → main）。加载顺序即此顺序（`sah.ss`、
+`build.scm`）。工具实现加载时把自己注册进注册表，所以加一个工具 = 新增一个文件 +
+一行加载。
 
 [`DESIGN.md`](DESIGN.md) 讲核心机制、背后的数据结构，以及和 pi 的对比。
 

@@ -312,8 +312,24 @@ SYSTEM.md           the system prompt (overridable; see core/config.ss)
 config.example.scm  sample ~/.sah/config.scm
 src/vendor/         third-party match.ss (+ LICENSE)
 src/fp/             measured-vector.ss: persistent vector with a monoid measure
-src/core/           util json md event data hooks commands skills prompts
-                    resources transport config
+src/util/           primitives that know nothing about sah:
+                      string.ss  text helpers
+                      path.ss    paths, files, directories
+                      json.ss    JSON <-> Scheme datum
+                      misc.ss    alists, time, ids, errors, line input
+src/core/           the agent's own concepts and infrastructure:
+                      event.ss   the event bus
+                      data.ss    canonical message/entry shapes
+                      hooks.ss   named extension hook points
+                      transport.ss  HTTP via curl
+                      config.ss  ~/.sah paths, settings, system prompt
+src/extend/         the customization surface:
+                      md.ss      frontmatter parsing
+                      commands.ss  the /command registry
+                      skills.ss  SKILL.md discovery + progressive disclosure
+                      prompts.ss /name templates ($1, $@, ${N:-default})
+                      loader.ss  loads extensions, skills, prompts
+                      input.ss   commands -> input hook -> skills -> templates
 src/ai/             chat.ss + providers/openai-compatible.ss
 src/session/        log.ss (immutable entry tree) + manager.ss (SexprL files)
                     + discovery.ss (find/pick)
@@ -323,15 +339,15 @@ src/modes/          cli.ss + print.ss + repl.ss
 src/main.ss         entry point
 examples/           extension / skill / prompt-template examples
 tests/run-tests.ss  offline test suite
-bench/bench-fp.ss   data-structure measurements
+bench/              data-structure and scaling measurements
 ```
 
-`src/` is split by layer (fp → core → ai → session → tools → agent → modes),
-and files are loaded in that order (`sah.ss`, `build.scm`). Inside `core/`:
-`util` = paths/files/ids, `json` = JSON ↔ datum, `event` = the event bus,
-`data` = canonical message/entry shapes, `transport` = curl, `config` = settings
-and the system prompt. Tool implementations register themselves into the
-registry when loaded, so adding a tool is a new file plus one load line.
+`src/` is split by *what a file is allowed to know*: `util/` knows nothing about
+sah, `core/` knows the agent's concepts and nothing about modes or tools,
+`extend/` is everything reachable from a customization file, and the rest is
+layered by role (ai → session → tools → agent → modes → main). Files are loaded
+in that order (`sah.ss`, `build.scm`). Tool implementations register themselves
+into the registry when loaded, so adding a tool is a new file plus one load line.
 
 [`DESIGN.md`](DESIGN.md) explains the core mechanisms, the data structures
 behind them, and how they compare with pi's.

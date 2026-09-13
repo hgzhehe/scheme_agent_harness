@@ -32,8 +32,10 @@
 (define root (script-dir))
 
 ;; util.ss also supplies the build script's own path-join / file->string /
-;; ensure-dir! / basename helpers.
-(load (string-append root "/src/core/util.ss"))
+;; ensure-dir! / basename helpers. The build script only needs the util layer.
+(load (string-append root "/src/util/string.ss"))
+(load (string-append root "/src/util/path.ss"))
+(load (string-append root "/src/util/misc.ss"))
 
 (define (path-list)
   ;; PATH uses ';' on Windows and ':' on POSIX
@@ -98,22 +100,25 @@
                   (if petite (list petite main) (list main)))))))
 
 (define src-files
-  ;; load order mirrors the module layering: vendor -> fp -> core -> ai ->
-  ;; session -> tools -> agent -> modes -> main
+  ;; load order mirrors the module layering: vendor -> fp -> util -> core ->
+  ;; extend -> ai -> session -> tools -> agent -> modes -> main
   '("src/vendor/match.ss"
     "src/fp/measured-vector.ss"
-    "src/core/util.ss"
-    "src/core/json.ss"
+    "src/util/string.ss"
+    "src/util/path.ss"
+    "src/util/json.ss"
+    "src/util/misc.ss"
     "src/core/event.ss"
-    "src/core/md.ss"
     "src/core/data.ss"
     "src/core/hooks.ss"
-    "src/core/commands.ss"
-    "src/core/skills.ss"
-    "src/core/prompts.ss"
-    "src/core/resources.ss"
     "src/core/transport.ss"
     "src/core/config.ss"
+    "src/extend/md.ss"
+    "src/extend/commands.ss"
+    "src/extend/skills.ss"
+    "src/extend/prompts.ss"
+    "src/extend/loader.ss"
+    "src/extend/input.ss"
     "src/ai/providers/openai-compatible.ss"
     "src/ai/chat.ss"
     "src/session/log.ss"

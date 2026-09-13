@@ -12,7 +12,9 @@
 
 (load "src/fp/measured-vector.ss")
 (load "src/vendor/match.ss")
-(load "src/core/util.ss")
+(load "src/util/string.ss")
+(load "src/util/path.ss")
+(load "src/util/misc.ss")
 (load "src/core/data.ss")
 (load "src/session/log.ss")
 

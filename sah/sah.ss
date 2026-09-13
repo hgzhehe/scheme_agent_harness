@@ -8,7 +8,8 @@
 ;;; For a compiled standalone executable, see build.scm and INSTALL.md.
 ;;;
 ;;; Load order mirrors the module layering (see docs/EN/PLAN.md):
-;;;   vendor -> fp -> core -> ai -> session -> tools -> agent -> modes -> main
+;;;   vendor -> fp -> util -> core -> extend -> ai -> session -> tools -> agent
+;;;   -> modes -> main
 
 (define (sah-script-dir)
   (let ((p (car (command-line))))
@@ -27,19 +28,26 @@
 ;; fp: persistent data structures
 (load-src "fp/measured-vector.ss")
 
-;; core: primitives and canonical data
-(load-src "core/util.ss")
-(load-src "core/json.ss")
+;; util: primitives that know nothing about sah (text, paths, JSON, misc)
+(load-src "util/string.ss")
+(load-src "util/path.ss")
+(load-src "util/json.ss")
+(load-src "util/misc.ss")
+
+;; core: the agent's own concepts and infrastructure
 (load-src "core/event.ss")
-(load-src "core/md.ss")
 (load-src "core/data.ss")
 (load-src "core/hooks.ss")
-(load-src "core/commands.ss")
-(load-src "core/skills.ss")
-(load-src "core/prompts.ss")
-(load-src "core/resources.ss")
 (load-src "core/transport.ss")
 (load-src "core/config.ss")
+
+;; extend: the customization surface (extensions, skills, prompt templates)
+(load-src "extend/md.ss")
+(load-src "extend/commands.ss")
+(load-src "extend/skills.ss")
+(load-src "extend/prompts.ss")
+(load-src "extend/loader.ss")
+(load-src "extend/input.ss")
 
 ;; ai: models / providers
 (load-src "ai/providers/openai-compatible.ss")

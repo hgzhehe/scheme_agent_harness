@@ -164,7 +164,7 @@ Honest reading of that table:
 | fork | copy into a new file | O(1) cursor move (same file) |
 | snapshots | not modelled | free, because the log is immutable |
 | extension hooks | first-class (`pi.on`, `registerTool`, …) | same shape, ~120 lines; extensions are Scheme files |
-| skills / prompt templates | `SKILL.md` + `/name`, progressive disclosure | same (core/skills.ss, core/prompts.ss) |
+| skills / prompt templates | `SKILL.md` + `/name`, progressive disclosure | same (extend/skills.ss, extend/prompts.ss) |
 | project trust | gates project resources | **not implemented** (documented gap) |
 | TUI | full component system | line-based REPL |
 

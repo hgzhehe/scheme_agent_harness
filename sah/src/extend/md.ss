@@ -1,23 +1,12 @@
 ;;; md.ss -- the small amount of markdown handling sah needs.
 ;;;
-;;; Skills (core/skills.ss) and prompt templates (core/prompts.ss) are both
+;;; Skills (extend/skills.ss) and prompt templates (extend/prompts.ss) are both
 ;;; "markdown file + YAML-ish frontmatter", so the parsing lives here once.
 ;;;
 ;;; Frontmatter is deliberately parsed by hand: it is `key: value` lines between
 ;;; two `---` lines, and the only keys sah needs are name / description /
 ;;; argument-hint. Pulling in a YAML parser for that would be a worse trade than
-;;; the ~30 lines below.
-
-(define (string-index s ch)
-  (let loop ((i 0))
-    (cond ((>= i (string-length s)) #f)
-          ((char=? (string-ref s i) ch) i)
-          (else (loop (+ i 1))))))
-
-(define (dir-entries dir)
-  ;; sorted, so discovery order (and therefore prompt/skill order) is stable
-  (guard (e (#t '()))
-    (if (file-exists? dir) (sort-strings (directory-list dir)) '())))
+;;; the ~40 lines below.
 
 ;; `argument-hint: "<file>"` should yield <file>, not "<file>"
 (define (unquote-value s)
