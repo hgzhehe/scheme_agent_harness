@@ -7,9 +7,8 @@
 ;;;
 ;;; For a compiled standalone executable, see build.scm and INSTALL.md.
 ;;;
-;;; Load order mirrors the module layering (see docs/EN/PLAN.md):
-;;;   vendor -> fp -> util -> core -> extend -> ai -> session -> tools -> agent
-;;;   -> modes -> main
+;;; The source list lives in manifest.ss, shared with build.scm, the tests and
+;;; the benchmarks. Its order mirrors the module layering (see docs/EN/PLAN.md).
 
 (define (sah-script-dir)
   (let ((p (car (command-line))))
@@ -20,67 +19,7 @@
 
 (define *root* (sah-script-dir))
 
-(define (load-src rel) (load (string-append *root* "/src/" rel)))
-
-;; vendor (third-party)
-(load-src "vendor/match.ss")
-
-;; fp: persistent data structures
-(load-src "fp/measured-vector.ss")
-
-;; util: primitives that know nothing about sah (text, paths, JSON, misc)
-(load-src "util/string.ss")
-(load-src "util/path.ss")
-(load-src "util/json.ss")
-(load-src "util/misc.ss")
-
-;; core: the agent's own concepts and infrastructure
-(load-src "core/event.ss")
-(load-src "core/data.ss")
-(load-src "core/hooks.ss")
-(load-src "core/transport.ss")
-(load-src "core/config.ss")
-
-;; extend: the customization surface (extensions, skills, prompt templates)
-(load-src "extend/md.ss")
-(load-src "extend/commands.ss")
-(load-src "extend/input.ss")
-(load-src "extend/skills.ss")
-(load-src "extend/prompts.ss")
-(load-src "extend/loader.ss")
-(load-src "extend/builtin-commands.ss")
-
-;; ai: models / providers
-(load-src "ai/providers/openai-compatible.ss")
-(load-src "ai/chat.ss")
-
-;; session: the log, persistence, discovery
-(load-src "session/log.ss")
-(load-src "session/manager.ss")
-(load-src "session/discovery.ss")
-(load-src "session/pi-format.ss")
-
-;; tools
-(load-src "tools/registry.ss")
-(load-src "tools/read.ss")
-(load-src "tools/write.ss")
-(load-src "tools/edit.ss")
-(load-src "tools/shell.ss")
-(load-src "tools/eval.ss")
-
-;; agent: loop, context, compaction
-(load-src "agent/compaction.ss")
-(load-src "agent/branch.ss")
-(load-src "agent/context.ss")
-(load-src "agent/agent.ss")
-
-;; modes
-(load-src "modes/cli.ss")
-(load-src "modes/print.ss")
-(load-src "modes/oneshot.ss")
-(load-src "modes/repl.ss")
-
-;; entry point
-(load-src "main.ss")
+(load (string-append *root* "/manifest.ss"))
+(load-sah-sources! *root* sah-source-files)
 
 (main (cdr (command-line)))

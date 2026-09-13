@@ -23,9 +23,11 @@
 (define (prompt-path p) (list-ref p 3))
 (define (prompt-body p) (list-ref p 4))
 
+;; Project first: `find-prompt` returns the first match, and duplicate names are
+;; dropped, so a project template overrides a global one of the same name.
 (define (prompt-dirs cwd)
-  (list (path-join (sah-home) "prompts")
-        (path-join cwd ".sah" "prompts")))
+  (list (path-join cwd ".sah" "prompts")
+        (path-join (sah-home) "prompts")))
 
 (define (load-prompt-file path fallback-name)
   (let* ((text (guard (e (#t #f)) (file->string path))))
@@ -47,7 +49,7 @@
               dirs)))
 
 (define (load-prompts! cwd)
-  (set! *prompts* (discover-prompts (prompt-dirs cwd)))
+  (set! *prompts* (dedupe-by prompt-name (discover-prompts (prompt-dirs cwd))))
   *prompts*)
 
 (define (all-prompts) *prompts*)

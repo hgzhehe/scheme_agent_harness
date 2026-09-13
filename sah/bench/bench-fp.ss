@@ -10,13 +10,8 @@
 ;;; Nothing here is micro-tuned. The point is to show where the shape matters and
 ;;; where it honestly does not.
 
-(load "src/fp/measured-vector.ss")
-(load "src/vendor/match.ss")
-(load "src/util/string.ss")
-(load "src/util/path.ss")
-(load "src/util/misc.ss")
-(load "src/core/data.ss")
-(load "src/session/log.ss")
+(load "manifest.ss")
+(load-sah-sources! "." sah-kernel-source-files)
 
 ;;----------------------------------------------------------------------------
 ;; tiny harness

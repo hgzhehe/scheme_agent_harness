@@ -24,11 +24,10 @@
       (string-append (home-dir) (substring path 1 (string-length path)))
       path))
 
-(define windows? (and (getenv "COMSPEC") #t))
-
 (define (normalize-slashes s)
-  ;; backslashes are path separators only on Windows; on POSIX they are legal
-  ;; filename characters and must be preserved
+  ;; backslashes are path separators only on Windows (windows? comes from
+  ;; platform.ss); on POSIX they are legal filename characters and must be
+  ;; preserved
   (if windows?
       (list->string (map (lambda (c) (if (char=? c #\\) #\/ c)) (string->list s)))
       s))
@@ -84,3 +83,28 @@
 (define (dir-entries dir)
   (guard (e (#t '()))
     (if (file-exists? dir) (sort-strings (directory-list dir)) '())))
+
+;; Recursively walk `dir` and return every FILE path under it (never a
+;; directory), in a stable order. Dot-entries are always skipped: `.git` and
+;; friends are never interesting and are frequently huge. `skip-dirs` adds
+;; further directory names to descend into never.
+;; Directory names a recursive walk skips by default. Dot-entries are skipped
+;; by `walk-files` itself; these are the build/cache directories that are never
+;; what a search is looking for and are usually the bulk of the bytes.
+(define default-walk-skip-dirs
+  '("node_modules" "target" "dist" "build" ".cache" "__pycache__"))
+
+(define (walk-files dir skip-dirs)
+  (define (skip? name)
+    (or (and (> (string-length name) 0) (char=? (string-ref name 0) #\.))
+        (and (member name skip-dirs) #t)))
+  (define (walk d acc)
+    (let loop ((es (dir-entries d)) (acc acc))
+      (if (null? es)
+          acc
+          (let ((full (path-join d (car es))))
+            (loop (cdr es)
+                  (cond ((file-directory? full)
+                         (if (skip? (car es)) acc (walk full acc)))
+                        (else (cons full acc))))))))
+  (if (file-directory? dir) (reverse (walk dir '())) '()))

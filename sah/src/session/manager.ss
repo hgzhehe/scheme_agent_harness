@@ -53,11 +53,12 @@
 
 (define (session-header s)
   ;; the parent session is optional and only written when there is one, so
-  ;; sessions from before forking still load with the same shape
+  ;; sessions from before forking still load with the same shape.
+  ;; v3 = tool messages carry an error flag (see `normalize-message`).
   (if (session-parent s)
-      `(session 2 ,(session-id s) ,(session-cwd s) ,(session-created s) ,(session-model s)
+      `(session 3 ,(session-id s) ,(session-cwd s) ,(session-created s) ,(session-model s)
                 ,(session-parent s))
-      `(session 2 ,(session-id s) ,(session-cwd s) ,(session-created s) ,(session-model s))))
+      `(session 3 ,(session-id s) ,(session-cwd s) ,(session-created s) ,(session-model s))))
 
 ;; Write the newest entry (or rewrite the whole file once, for a session that
 ;; came from disk and has no port yet).

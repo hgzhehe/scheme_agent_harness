@@ -61,10 +61,12 @@ entry 自带 parent 下标，于是所有 entry 构成一棵树。三个后果�
 | 版本 | entry id | 说明 |
 |------|----------|------|
 | 1 | 随机 hex | 最初的格式 |
-| 2 | 日志下标 | 当前 |
+| 2 | 日志下标 | 下标 id 与 entry 树 |
+| 3 | 日志下标 | 当前：tool 消息带 `isError` 标记 |
 
 `manager.ss` 在加载时做 v1 → v2 迁移（parent 和 compaction 的 `first-kept` 通过一张
-哈希表统一重映射），并在下次追加时写回 v2。真正重要的性质是“可重建”而不是“字节
+哈希表统一重映射），并在下次追加时写回 v3。v2 → v3 只是给 tool 消息补上错误槽，
+所以 v2 文件能原样加载，首次被追加时才重写。真正重要的性质是“可重建”而不是“字节
 相同”：丢了 header 的文件仍能加载（id 从文件名恢复），并在下次追加时自愈。
 
 ## 数据结构（`src/fp/measured-vector.ss`）
@@ -142,7 +144,9 @@ finger tree 用一次 O(log n) 下降完成 `split-by-measure`。我们把 `pref
 | compaction | 反向扫描累加 token | 对缓存 measure 做二分查找（分叉后有物化回退） |
 | fork | 复制到新文件 | O(1) 移动游标（同一个文件） |
 | 快照 | 未建模 | 免费，因为日志不可变 |
-| 扩展 hook | 一等公民（`pi.on`、`registerTool`…） | 同一形状，约 120 行；扩展就是 Scheme 文件 |
+| 扩展 hook | 一等公民（`pi.on`、`registerTool`…） | 同一形状，约 130 行；扩展就是 Scheme 文件 |
+| 流式 | SSE，delta-only 的 `message_update` | SSE，`message-delta` / `thinking-delta`；拼出的消息与阻塞调用一致 |
+| 工具 | 内置 8 个，默认开 4 个；`--tools`/`--exclude-tools` | 内置 8 个，全开；同样的允许/排除列表（另有 `--no-tools`） |
 | skills / prompt 模板 | `SKILL.md` + `/名称`，渐进披露 | 同左（extend/skills.ss、extend/prompts.ss） |
 | 项目信任 | 门控项目资源 | **未实现**（已记录在案） |
 | TUI | 完整组件系统 | 行式 REPL |
@@ -166,8 +170,12 @@ sah 有意领先的地方是会话数据结构（不可变、带 measure、下�
 1. **更多 hook 点（当它们能自证价值时）** —— 注册表只有 60 行，所以一旦真有需求，
    加 `turn-start` / `turn-end` 或 `user-bash` 阶段很便宜。凭空把列表撑大没有意义：
    pi 的约 30 种事件全都由 sah 还不具备的 TUI 与 RPC 模式触发。
-2. **流式** —— 事件总线已经区分了 `message-end`；加上 `message-delta` 只需要
-   provider 侧的 SSE 读取，不需要结构改动。
+2. **流式** —— 已完成。`message-delta` / `thinking-delta` 由 provider 侧一个 SSE
+   读取器发出（`core/transport.ss` 多了一个逐行的 curl 变体），拼出来的消息与阻塞
+   调用完全一致；print 处理器边收边渲染，并在 `message-end` 时跳过整段文本。
+   下游仍缺的是**JSON 模式**：用 pi 的 delta-only `message_update` 契约消费同一条流。
+3. **取消** —— sah 的 stop reason 分类学里唯一没有生产者的那个。
+   运行中的请求无法中断，所以工具调用也没有取消信号。
 
 ## 与 pi 真实实现的实测对照
 
@@ -215,9 +223,10 @@ sah 有意领先的地方是会话数据结构（不可变、带 measure、下�
 
 有三件事无法抹平，转换器的文件头里写清了：sah 用下标编号 entry，pi 用随机 hex id
 （导出时由下标派生确定的 8 位 hex，所以 `--export-pi` 可复现、往返稳定）；pi 的消息
-带 thinking 块、图片和 `isError`，sah 都不建模（thinking 丢弃、图片变成文本占位、
-`isError` 写成 false）；sah 不认识的 pi entry 类型会保留成 `customType` 为
-`"pi-<类型>"` 的 `custom` entry，所以导入导出往返是无损的。
+带 thinking 块和图片，sah 不建模（thinking 丢弃、图片变成文本占位）；sah 不认识的
+pi entry 类型会保留成 `customType` 为 `"pi-<类型>"` 的 `custom` entry，所以导入导出
+往返是无损的。`isError` 原本也在这张清单上，格式 v3 给 tool 消息加了错误槽之后它
+也能往返了。
 
 实测：把一个真实的、六条 entry 带分叉的会话导出、导入、再导出，entry 逐字节相同。
 

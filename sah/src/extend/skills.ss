@@ -70,14 +70,16 @@
                             (dir-entries dir))))
               dirs)))
 
+;; Project first: `find-skill` returns the first match, and duplicate names are
+;; dropped, so a project skill overrides a global one of the same name.
 (define (skill-dirs cwd)
-  (list (path-join (sah-home) "skills")
-        (path-join cwd ".sah" "skills")))
+  (list (path-join cwd ".sah" "skills")
+        (path-join (sah-home) "skills")))
 
 ;; Called once at startup; extensions are loaded first so they could register
 ;; additional skill directories later if they want to.
 (define (load-skills! cwd)
-  (set! *skills* (discover-skills (skill-dirs cwd)))
+  (set! *skills* (dedupe-by skill-name (discover-skills (skill-dirs cwd))))
   *skills*)
 
 (define (all-skills) *skills*)

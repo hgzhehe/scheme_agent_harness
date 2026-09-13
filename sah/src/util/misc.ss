@@ -4,6 +4,14 @@
 ;;; The rule for this file is "domain-independent but too small to have a home".
 ;;; If it grows past a screenful of *distinct* concerns, split it.
 
+;; Keep the FIRST item for each key, preserving order. Used where several
+;; directories can define the same name and the earliest wins (skills, prompts).
+(define (dedupe-by keyf lst)
+  (let loop ((l lst) (seen '()) (out '()))
+    (cond ((null? l) (reverse out))
+          ((member (keyf (car l)) seen) (loop (cdr l) seen out))
+          (else (loop (cdr l) (cons (keyf (car l)) seen) (cons (car l) out))))))
+
 (define (assq-ref alist key)
   (let ((hit (and (list? alist) (assq key alist))))
     (if hit (cdr hit) #f)))

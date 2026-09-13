@@ -19,6 +19,9 @@
   (printf "  --model <id>        model id (default deepseek-flash)~%")
   (printf "  --base-url <url>    API base url~%")
   (printf "  --max-steps <n>     max agent loop iterations (default 1000)~%")
+  (printf "  --tools <a,b>       offer only these tools (default: all)~%")
+  (printf "  --exclude-tools <a,b>  offer everything except these~%")
+  (printf "  --no-tools          offer no tools at all~%")
   (printf "  -H, --usage         show this help~%~%")
   (printf "Config: ~~/.sah/config.scm  (alist datum)~%")
   (printf "Env:    DEEPSEEK_API_KEY or SAH_API_KEY~%"))
@@ -55,6 +58,12 @@
        (loop (cddr args) (cons `(base-url . ,(cadr args)) opts) prompt))
       ((string=? (car args) "--max-steps")
        (loop (cddr args) (cons `(max-steps . ,(string->number (cadr args))) opts) prompt))
+      ((string=? (car args) "--tools")
+       (loop (cddr args) (cons `(tools . ,(parse-tool-list (cadr args))) opts) prompt))
+      ((string=? (car args) "--exclude-tools")
+       (loop (cddr args) (cons `(exclude-tools . ,(parse-tool-list (cadr args))) opts) prompt))
+      ((string=? (car args) "--no-tools")
+       (loop (cdr args) (cons '(tools . ()) opts) prompt))
       ((and (> (string-length (car args)) 0)
             (char=? (string-ref (car args) 0) #\@))
        (let ((f (substring (car args) 1 (string-length (car args)))))
@@ -66,9 +75,14 @@
                      prompt))))
       (else (loop (cdr args) opts (cons (car args) prompt))))))
 
+(define (parse-tool-list s)
+  ;; --tools read,edit -> (read edit)
+  (map string->symbol
+       (filter (lambda (x) (not (string=? x ""))) (string-split s ","))))
+
 (define (apply-cli config opts)
   (fold-left (lambda (cfg kv)
-               (if (memq (car kv) '(api-key model base-url max-steps))
+               (if (memq (car kv) '(api-key model base-url max-steps tools exclude-tools))
                    (alist-merge cfg (list kv))
                    cfg))
              config

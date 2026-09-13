@@ -26,8 +26,13 @@ hello.scm prints 42.
 ## Features
 
 - **Agent loop** — build context, call the model, run requested tools, repeat.
+- **Streaming** — the reply is read as SSE and rendered as it arrives
+  (`message-delta` / `thinking-delta`); `(stream . #f)` falls back to one
+  blocking request, and so does a stream that yields nothing.
 - **One provider** — DeepSeek (OpenAI-compatible chat completions).
-- **Five tools** — `read`, `write`, `edit`, `shell`, `eval`.
+- **Eight tools** — `read`, `write`, `edit`, `ls`, `grep`, `find`, `shell`,
+  `eval`. Which of them are offered is configurable (`tools` /
+  `exclude-tools`, or `--tools` / `--exclude-tools` / `--no-tools`).
 - **Extensible** — extensions are Scheme files that register hooks, tools and
   commands (`~/.sah/extensions/*.ss`, `<project>/.sah/extensions/*.ss`). See
   [EXTENDING.md](EXTENDING.md).
@@ -45,8 +50,8 @@ hello.scm prints 42.
 - **`eval`** — evaluates Scheme in the running process; reaches base Chez and
   sah's own definitions. State persists across turns.
 - **Standalone executable** — `build.scm` compiles everything into
-  `dist/sah.exe` + `dist/sah.boot`.
-- **Offline tests** — 34 checks, no network required.
+  `dist/sah.exe` + `dist/sah.boot` (`dist/sah` on POSIX).
+- **Offline tests** — 967 checks, no network required.
 
 ## Requirements
 
@@ -103,6 +108,9 @@ sah [options] [--] [prompt | @file ...]
 | `--model <id>` | model id (default `deepseek-flash`) |
 | `--base-url <url>` | API base URL |
 | `--max-steps <n>` | max agent loop iterations (default 1000) |
+| `--tools <a,b>` | offer only these tools |
+| `--exclude-tools <a,b>` | offer everything except these |
+| `--no-tools` | offer no tools at all (the model replies from context alone) |
 | `-H`, `--usage` | show help |
 | `--` | stop option parsing; the rest are prompt text |
 | `@file` | include a file's contents in the prompt |
@@ -195,16 +203,28 @@ Loaded in order, first match wins; the working directory is appended:
 1. a `system` key in `~/.sah/config.scm`
 2. `~/.sah/SYSTEM.md` (global)
 3. `<cwd>/.sah/SYSTEM.md` (project)
-4. the built-in prompt — mirrored in [`SYSTEM.md`](../../sah/SYSTEM.md)
+4. the built-in prompt, whose tool list is generated from the tools actually
+   enabled (`--tools` / `--exclude-tools`); a sample is in
+   [`SYSTEM.md`](../../sah/SYSTEM.md)
 
 ## Tools
 
 | Tool | Parameters | Behavior |
 |------|-----------|----------|
-| `read` | `path` | return file contents |
+| `read` | `path`, `offset`?, `limit`? | return file contents, or a line range of them (`offset` is 1-based) |
 | `write` | `path`, `content` | write a file; creates parent directories |
+| `edit` | `path`, `edits:[{oldText,newText}]` | exact-text replacements; each `oldText` must match exactly once in the original file |
+| `ls` | `path`? | list a directory, sorted; directories end with a slash |
+| `grep` | `pattern`, `path`?, `ignore-case`?, `limit`? | search files for a **literal** string (not a regex); returns `path:line: text` |
+| `find` | `pattern`, `path`?, `limit`? | files whose name matches a glob (`*` any run, `?` one character) |
 | `shell` | `command` | run a command in the shell sah was launched from (PowerShell, cmd, or bash); returns combined stdout/stderr. Empty output → `(no output)` |
 | `eval` | `code` | evaluate one or more Scheme expressions in this process; returns captured output plus printed values |
+
+`ls`, `grep` and `find` skip dot-directories (`.git`, …) and the build/cache
+ones (`node_modules`, `target`, `dist`, `build`). `grep` is literal on purpose:
+Chez ships no regexp library, so use `shell` with the real `grep` when you need
+a pattern. One tool result is capped at 20000 characters; past that it is
+truncated with a marker, and `read`'s `offset` is how to get the rest.
 
 `eval` is the point of the project. Because it runs in the same process as the
 agent, definitions persist across turns and the agent can inspect the host:
@@ -239,7 +259,7 @@ Stored as `SexprL` under `~/.sah/sessions/<cwd-slug>/<ms>_<id>.ss` — one Schem
 datum per line:
 
 ```scheme
-(session 2 "1e3de567" "F:/proj" 1789022830878 "deepseek-flash")
+(session 3 "1e3de567" "F:/proj" 1789022830878 "deepseek-flash")
 (message 0 #f 1789022830900
          (msg user "hi"))
 (message 1 0 1789022831000
@@ -289,12 +309,16 @@ Everything that crosses a boundary is a plain Scheme datum.
 (msg user "hi")
 (msg system "You are sah...")
 (msg assistant "let me look" ((call "c1" read ((path . "a.scm")))) tool-use (usage ...))
-(msg tool "c1" read "file contents")
+(msg tool "c1" read "file contents" #f)
 
+(ev message-start)
+(ev message-delta "let me ")            ; streaming, delta-only
+(ev message-delta "look")
+(ev thinking-delta "reasoning...")       ; DeepSeek's reasoning_content
 (ev tool-start "c1" read ((path . "a.scm")))
 (ev tool-end   "c1" read #f "file contents")
 
-(session 2 "1e3de567" "F:/proj" 1700000000000 "deepseek-flash")   ; header line
+(session 3 "1e3de567" "F:/proj" 1700000000000 "deepseek-flash")   ; header line
 (message 0 #f 1700000000001 (msg user "hi"))                     ; entry, id = index
 (message 1 0 1700000000002 (msg assistant "hi" '() stop (usage)))
 
@@ -350,7 +374,8 @@ src/ai/             chat.ss + providers/openai-compatible.ss
 src/session/        log.ss (immutable entry tree) + manager.ss (SexprL files)
                     + discovery.ss (find/pick) + pi-format.ss (pi JSONL
                     read/write, for --export-pi / --import-pi)
-src/tools/          registry.ss + read.ss write.ss edit.ss shell.ss eval.ss
+src/tools/          registry.ss + read.ss write.ss edit.ss ls.ss grep.ss
+                    find.ss shell.ss eval.ss
 src/agent/          agent.ss (loop) + context.ss + compaction.ss
                     + branch.ss (summarise an abandoned branch)
 src/modes/          cli.ss + oneshot.ss (--export-pi/--import-pi/--fork)
@@ -397,7 +422,7 @@ standalone executable, and [`PLAN.md`](PLAN.md) for the roadmap.
 
 ## Not here yet
 
-Streaming, `edit`-free workflows, multiple providers, a session-tree *UI* (the
+Interrupting a running request, multiple providers, a session-tree *UI* (the
 model and `/tree` exist), RPC/JSON modes, TUI, sandboxing, and pi's project
 *trust* model (sah loads project extensions unconditionally — see
 [EXTENDING.md](EXTENDING.md)). See the roadmap.

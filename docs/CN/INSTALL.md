@@ -36,11 +36,30 @@ scheme --script build.scm
 产物（`dist/`）：
 
 ```
-dist/sah.exe     Chez 运行时的副本
+dist/sah.exe     Chez 运行时的副本   （Linux/macOS 上是 dist/sah）
 dist/sah.boot    自包含 boot（Chez 基础 boot + 编译后的程序）
 ```
 
-这**两个文件必须放在一起**且文件名不能改：`sah.exe` 会在自己旁边找 `sah.boot`。
+运行时文件名在 Windows 上是 `sah.exe`，在 Linux/macOS 上是 `sah`；POSIX 上会
+自动 chmod 成可执行，所以 `./dist/sah` 能直接跑。这**两个文件必须放在一起**且
+文件名不能改：`sah.exe` 会在自己旁边找 `sah.boot`。
+
+### boot 定位
+
+`build.scm` 会按 Chez 自己的布局约定自动找基础 `petite.boot` / `scheme.boot`：
+`<dir>/<name>.boot`、`<prefix>/boot/<machine>/`，以及带版本号的
+`<prefix>/lib/csv<版本>/<机器>/`（并兼顾 Homebrew 的 `opt/` 与 `Cellar/` 布局）。
+如果你的安装布局不被识别，用 `SAH_BOOT_DIR` 指向存放基础 boot 的目录，或用
+`SAH_RUNTIME_BOOT` 指定某一个文件。
+
+`<机器>` 就是 Chez 的 machine type —— `(machine-type)`，例如 `tarm64osx`、
+`ta6nt`、`ta6le`，构建时会以 `[build] machine: ...` 报出。平台差异一律以它为键
+（见 `src/util/platform.ss`），而不是散落判 OS，这也是 Chez 自身的约定。
+
+两个基础 boot 都找到时，产物是**自包含**的：整条链被拼进 `dist/sah.boot`，
+这对文件放到哪里都能跑。否则构建会提示 `NOT self-contained`，此时产物只能在
+装有那套 Chez 的机器上运行。无论哪种情况，构建最后都会对产物做一次冒烟测试
+（`<产物> --usage`）并报告结果。
 
 ### 选择运行时
 
@@ -61,11 +80,16 @@ Chez 装在别处，用 `SAH_RUNTIME_EXE=/path/to/scheme` 指定可执行文件�
 2. 编译成 `build/sah-boot.so`。
 3. 生成 subordinate boot `build/sah.boot`，引用所选运行时。
 4. 拼接运行时 boot 链 + subordinate boot → `dist/sah.boot`。
-5. 复制运行时可执行文件 → `dist/sah.exe`。
+5. 复制运行时可执行文件 → `dist/sah.exe`（POSIX 上是 `dist/sah`）。
 
 生成的程序还会**嵌入源码文本**，并在启动时把它求值进 interaction environment。
 这就是为什么编译版里的 `eval` 工具能调到 sah 自己的绑定（`assq-ref`、
 `short-id`、工具注册表等），而不只是基础 Chez 库。
+
+也因此，可执行文件**从 interaction environment 进入**，而不是从编译产物里的绑定
+进入。`load`（扩展、skills、prompts 都靠它读取）是求值进 interaction environment
+的，所以如果 `main` 走编译版绑定，它读到的会是**另一套**注册表，扩展的
+`register-hook!` / `register-tool!` 会静默失效。一个进程必须只有一套注册表。
 
 > 如果有一个正在运行的 `sah.exe` 占着文件（Windows 会锁住可执行文件），构建会
 > 提前中止。关掉它再重试。

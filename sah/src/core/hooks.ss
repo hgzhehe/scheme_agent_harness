@@ -23,6 +23,9 @@
 ;;; them may return #f to mean "no opinion"):
 ;;;
 ;;;   session-start           (session config)          -> ignored
+;;;   before-agent-start      (text session config)    -> '(prompt . TEXT)
+;;;                                                        | '(inject . TEXT)
+;;;                                                        | #f
 ;;;   input                   (text)                    -> 'continue
 ;;;                                                        | '(transform TEXT)
 ;;;                                                        | 'handled
@@ -32,13 +35,21 @@
 ;;;                                                        | '(args . NEW-ARGS)
 ;;;                                                        | #f
 ;;;   tool-result             (name args out is-error)  -> (out is-error) | #f
+;;;   after-reply             (reply config)            -> reply | #f
 ;;;   before-compact          (reason)                  -> '(cancel . WHY)
 ;;;                                                        | '(instructions . TEXT)
 ;;;                                                        | #f
+;;;   before-fork             (session target)          -> '(cancel . WHY) | #f
+;;;   before-tree             (session target)          -> '(cancel . WHY) | #f
 ;;;   session-end             (session)                 -> ignored
 ;;;
 ;;; A hook that raises is reported and skipped: one broken extension must not
 ;;; take the agent down.
+;;;
+;;; `before-agent-start` runs once per user prompt, after the input pipeline has
+;;; settled on the text and before it is recorded, so it can rewrite the prompt
+;;; or inject an extra message ahead of it. (Context rewriting per request is
+;;; `before-request`; this is the per-prompt stage.)
 
 (define *hooks* '())
 
@@ -46,11 +57,13 @@
 (define (register-hook! name proc)
   (set! *hooks* (cons (cons name proc) *hooks*)))
 
+;; Oldest registration first, which is the documented order ('hooks run in
+;; registration order and each sees the previous one's result', and what pi
+;; calls 'later handlers see earlier mutations'). `*hooks*` is newest-first, so
+;; reverse it and filter -- an accumulating loop here would reverse a second
+;; time and run the newest hook first.
 (define (hooks-for name)
-  (let loop ((h (reverse *hooks*)) (acc '()))
-    (cond ((null? h) acc)
-          ((eq? (car (car h)) name) (loop (cdr h) (cons (cdr (car h)) acc)))
-          (else (loop (cdr h) acc)))))
+  (map cdr (filter (lambda (p) (eq? (car p) name)) (reverse *hooks*))))
 
 ;; Thread a value through every handler for `name`. Returns the final value.
 ;; `(f current arg ...)` is the handler call; it returns either a replacement or
@@ -67,6 +80,18 @@
 (define (run-hook-effects name f)
   (for-each (lambda (h) (guard (e (#t (report-hook-error name e))) (f h))) (hooks-for name))
   #t)
+
+;; A veto stage: handlers are called with ARGS and may return '(cancel . WHY) to
+;; stop the action (pi's session_before_* stages). The first veto wins, so a
+;; reason from an earlier hook is not overwritten by a later one.
+(define (veto-reason stage . args)
+  (let loop ((hs (hooks-for stage)))
+    (if (null? hs)
+        #f
+        (let ((r (guard (e (#t (report-hook-error stage e) #f)) (apply (car hs) args))))
+          (if (and (pair? r) (eq? (car r) 'cancel))
+              (cdr r)
+              (loop (cdr hs)))))))
 
 (define (report-hook-error name e)
   (printf "[sah] hook ~a failed: ~a~%" name (err->string e)))

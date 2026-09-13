@@ -65,18 +65,36 @@
      (let-values (((blocked args2) (run-tool-call-hooks name args)))
        (if blocked
            (let ((reason (if (string? blocked) blocked (format "blocked by extension: ~s" blocked))))
-             (session-add-message! session `(msg tool ,id ,name ,reason))
+             (session-add-message! session `(msg tool ,id ,name ,reason #t))
              (emit `(ev tool-end ,id ,name #t ,reason)))
            (let* ((out/is-err (call-with-values (lambda () (call-tool name args2)) list))
                   (out (car out/is-err))
                   (is-error (cadr out/is-err)))
              (let-values (((out2 is-error2) (run-tool-result-hooks name args2 out is-error)))
-               (session-add-message! session `(msg tool ,id ,name ,out2))
+               (session-add-message! session `(msg tool ,id ,name ,out2 ,(and is-error2 #t)))
                (emit `(ev tool-end ,id ,name ,is-error2 ,out2))))))]
     [,other (error 'run-tool (format "bad tool call: ~s" other))]))
 
+;; The per-prompt stage: hooks may rewrite the text the model is about to see,
+;; or inject an extra message ahead of it.
+;; -> (values FINAL-TEXT INJECTED-or-#f)
+(define (run-before-agent-start-hooks text session config)
+  (let loop ((hs (hooks-for 'before-agent-start)) (t text) (injected #f))
+    (if (null? hs)
+        (values t injected)
+        (let ((r (guard (e (#t (report-hook-error 'before-agent-start e) #f))
+                   ((car hs) t session config))))
+          (cond ((and (pair? r) (eq? (car r) 'prompt)) (loop (cdr hs) (cdr r) injected))
+                ((and (pair? r) (eq? (car r) 'inject))
+                 (loop (cdr hs) t (if injected
+                                      (string-append injected "\n" (cdr r))
+                                      (cdr r))))
+                (else (loop (cdr hs) t injected)))))))
+
 (define (run-agent session config prompt)
-  (session-add-message! session `(msg user ,prompt))
+  (let-values (((prompt injected) (run-before-agent-start-hooks prompt session config)))
+    (when injected (session-add-message! session `(msg user ,injected)))
+    (session-add-message! session `(msg user ,prompt)))
   (emit '(ev agent-start))
   (let loop ((steps 0))
     (when (>= steps (assq-ref config 'max-steps))
@@ -84,7 +102,12 @@
     (emit `(ev turn-start ,steps))
     (maybe-auto-compact! session config)
     (emit '(ev message-start))
-    (let ((reply (chat-with-recovery session config (all-tools))))
+    (let ((reply (run-hooks 'after-reply
+                            (chat-with-recovery session config (active-tools config))
+                            (lambda (proc r)
+                              (let ((new (guard (e (#t (report-hook-error 'after-reply e) #f))
+                                           (proc r config))))
+                                (if (pair? new) new #f))))))
       (session-add-message! session reply)
       (emit `(ev message-end ,reply))
       (emit `(ev turn-end ,steps))
@@ -104,11 +127,22 @@
 ;; A default event handler that prints to stdout (print / repl modes).
 ;;----------------------------------------------------------------------------
 
+;; Set while deltas are being printed, so `message-end` does not print the same
+;; text a second time.
+(define *streamed-text?* #f)
+
 (define (print-event-handler event)
   (match event
     [(ev session-start ,session) #t]
     [(ev turn-start ,step) #t]
-    [(ev message-start) #t]
+    [(ev message-start) (set! *streamed-text?* #f) #t]
+    [(ev message-delta ,text)
+     (set! *streamed-text?* #t)
+     (display text)
+     (flush-output-port (current-output-port))]
+    ;; reasoning is not part of the stored message (see docs/EN/DESIGN.md), so a
+    ;; terminal consumer only needs to know it is happening
+    [(ev thinking-delta ,text) #t]
     [(ev tool-start ,id ,name ,args)
      (printf "  -> ~a ~s~%" name args)]
     [(ev tool-end ,id ,name ,is-error ,out)
@@ -125,7 +159,13 @@
      (printf "  [summarised the abandoned branch: ~a chars]~%" (string-length summary))]
     [(ev message-end ,msg)
      (let ((txt (assistant-text msg)))
-       (when (> (string-length txt) 0)
-         (display txt)
-         (newline)))]
+       (if *streamed-text?*
+           (newline)                      ; close the line the deltas started
+           (when (> (string-length txt) 0)
+             (display txt)
+             (newline)))
+       (when (match msg
+               [(msg assistant ,c ,cs ,stop ,u) (eq? stop 'length)]
+               [,other #f])
+         (printf "  [reply truncated: the model hit its output limit]~%")))]
     [,other #t]))

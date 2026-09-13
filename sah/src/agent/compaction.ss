@@ -80,6 +80,8 @@
                                        (string-join (map tool-call->text calls) "; ")))
                   '()))
       "\n")]
+    [(msg tool ,id ,name ,content ,is-error)
+     (string-append "[Tool result " (symbol->string name) "]: " (truncate-text content 2000))]
     [(msg tool ,id ,name ,content)
      (string-append "[Tool result " (symbol->string name) "]: " (truncate-text content 2000))]
     [,other ""]))
@@ -244,7 +246,10 @@
                    base))
          (msgs (list `(msg system "You are a summarization assistant. Produce a structured context checkpoint.")
                      `(msg user ,text))))
-    (assistant-text (llm-chat config msgs '()))))
+    ;; explicitly not streamed: nothing consumes deltas here, and the default
+    ;; handler prints them, which would splice a summary into the terminal
+    ;; mid-turn
+    (assistant-text (llm-chat (alist-merge config '((stream . #f))) msgs '()))))
 
 (define (last-compaction-details es)
   (let ((c (last-compaction-of es)))

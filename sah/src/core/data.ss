@@ -7,7 +7,7 @@
 ;;;     (msg user CONTENT)
 ;;;     (msg system CONTENT)
 ;;;     (msg assistant CONTENT CALLS STOP USAGE)
-;;;     (msg tool ID NAME CONTENT)
+;;;     (msg tool ID NAME CONTENT IS-ERROR)
 ;;;     (call ID NAME ARGS)
 ;;;
 ;;;   session entries -- one per line in a session file. The set is deliberately
@@ -37,6 +37,14 @@
 ;;; `migrate-entries` in session/manager.ss.)
 
 (define (message-kind msg) (and (pair? msg) (car msg)))
+
+;; Tool messages carry an error flag; sessions written before format v3 read as
+;; "no error" (`normalize-message` pads the slot), and a message built by hand in
+;; a test may still have four slots.
+(define (tool-message-error? msg)
+  (match msg
+    [(msg tool ,id ,name ,content ,e) (and e #t)]
+    [,other #f]))
 
 (define (assistant-text msg)
   (match msg
@@ -142,6 +150,7 @@
     [(msg assistant ,content ,calls ,stop ,usage)
      (+ (estimate-tokens-text (or content ""))
         (fold-left (lambda (a c) (+ a (call-tokens c))) 0 (if (pair? calls) calls '())))]
+    [(msg tool ,id ,name ,content ,e) (estimate-tokens-text content)]
     [(msg tool ,id ,name ,content) (estimate-tokens-text content)]
     [,other 0]))
 
@@ -173,10 +182,11 @@
     [(msg ,role ,content) (if (eq? role 'assistant) `(msg assistant ,content '() 'stop #f) m)]
     [(msg assistant ,content ,calls ,stop ,usage)
      `(msg assistant ,content ,(map normalize-call calls) ,stop ,usage)]
-    [(msg tool ,id ,name ,content) m]
+    [(msg tool ,id ,name ,content ,e) m]
+    [(msg tool ,id ,name ,content) `(msg tool ,id ,name ,content #f)]
     [((role . assistant) (content . ,content) (calls . ,calls) (stop . ,stop) (usage . ,usage))
      `(msg assistant ,content ,(map normalize-call calls) ,stop ,usage)]
     [((role . ,role) (content . ,content)) `(msg ,role ,content)]
     [((role . ,role) (tool-call-id . ,id) (name . ,name) (content . ,content))
-     `(msg tool ,id ,name ,content)]
+     `(msg tool ,id ,name ,content #f)]
     [,other m]))

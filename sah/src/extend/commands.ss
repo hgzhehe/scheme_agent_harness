@@ -22,6 +22,11 @@
 
 (define (all-commands) (reverse *commands*))
 
+;; Snapshot/restore, so a reload (see extend/loader.ss) can put the registry
+;; back to the state it had before any extension ran.
+(define (commands-snapshot) *commands*)
+(define (commands-restore! snapshot) (set! *commands* snapshot) #t)
+
 (define (find-command name)
   (let loop ((l *commands*))
     (cond ((null? l) #f)

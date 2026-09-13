@@ -68,11 +68,14 @@ session's own short id.
 | version | entry ids | note |
 |---------|-----------|------|
 | 1 | random hex | original format |
-| 2 | log index | current |
+| 2 | log index | index ids and the entry tree |
+| 3 | log index | current: tool messages carry an `isError` flag |
 
 `manager.ss` migrates v1 → v2 on load (parents and a compaction's `first-kept`
-are remapped through one hash table) and writes v2 on the next append. The format
-that matters is "reconstructible", not "byte-identical": a file whose header has
+are remapped through one hash table) and writes v3 on the next append. v2 → v3
+only pads the error slot on tool messages, so a v2 file loads unchanged and is
+rewritten the first time it is appended to. The format that matters is
+"reconstructible", not "byte-identical": a file whose header has
 been lost still loads (the id is recovered from the filename) and heals on the
 next append.
 
@@ -163,7 +166,9 @@ Honest reading of that table:
 | compaction | scan backwards accumulating tokens | binary search over the cached measure (with a materialise fallback after branching) |
 | fork | copy into a new file | O(1) cursor move (same file) |
 | snapshots | not modelled | free, because the log is immutable |
-| extension hooks | first-class (`pi.on`, `registerTool`, …) | same shape, ~120 lines; extensions are Scheme files |
+| extension hooks | first-class (`pi.on`, `registerTool`, …) | same shape, ~130 lines; extensions are Scheme files |
+| streaming | SSE, delta-only `message_update` | SSE, `message-delta` / `thinking-delta`; the assembled message equals the blocking one |
+| tools | 8 built-in, default 4; `--tools`/`--exclude-tools` | 8 built-in, all on; same allow/exclude lists (`--no-tools` too) |
 | skills / prompt templates | `SKILL.md` + `/name`, progressive disclosure | same (extend/skills.ss, extend/prompts.ss) |
 | project trust | gates project resources | **not implemented** (documented gap) |
 | TUI | full component system | line-based REPL |
@@ -189,8 +194,15 @@ And the missing core mechanism, in order of value:
    `turn-start` / `turn-end` or a `user-bash` stage is cheap once something
    needs them. There is no point growing the list speculatively: pi's ~30 events
    are all reached from the TUI and RPC modes that sah does not have.
-2. **Streaming** — the event bus already distinguishes `message-end`; adding
-   `message-delta` requires a provider-side SSE reader and no structural change.
+2. **Streaming** — done. `message-delta` / `thinking-delta` are emitted from an
+   SSE reader in the provider (`core/transport.ss` gained a line-at-a-time
+   variant of the curl call) and the assembled message is identical to the
+   blocking one; the print handler renders deltas and skips the text at
+   `message-end`. What is still missing downstream is a **JSON mode** that
+   consumes the same stream with pi's delta-only `message_update` contract.
+3. **Cancellation** — the one stop reason sah's taxonomy has no producer for.
+   A running request cannot be interrupted, which is why tool calls have no
+   cancel signal either.
 
 ## Measured against pi's actual implementation
 
@@ -242,11 +254,12 @@ a translation: `session/pi-format.ss` is about 250 lines for both directions, an
 Three things cannot be mapped away, and the converter says so in its header:
 sah numbers entries by index while pi uses random hex ids (export derives a
 deterministic 8-hex id from the index, so `--export-pi` is reproducible and a
-round trip is stable); pi's messages carry thinking blocks, images and
-`isError`, which sah does not model (thinking is dropped, images become text
-placeholders, `isError` is written as false); and a pi entry type sah does not
-know is preserved as a `custom` entry with `customType "pi-<type>"`, so an
-import/export cycle is lossless.
+round trip is stable); pi's messages carry thinking blocks and images, which sah
+does not model (thinking is dropped, images become text placeholders); and a pi
+entry type sah does not know is preserved as a `custom` entry with
+`customType "pi-<type>"`, so an import/export cycle is lossless. pi's `isError`
+was on that list until format v3 gave the tool message an error slot, so it
+round-trips too.
 
 Measured: exporting a real six-entry branched session, importing it, and
 exporting again produces byte-identical entries.

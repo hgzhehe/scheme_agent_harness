@@ -52,17 +52,53 @@
   (reverse *loaded-extensions*))
 
 ;;----------------------------------------------------------------------------
-;; one call that does all of it
+;; one call that does all of it, and the reload path
 ;;----------------------------------------------------------------------------
 
+;; Everything an extension can add to, captured once before extensions run, so a
+;; reload can put the registries back and load again.
+(define *baseline* #f)
+
+(define (baseline-capture!)
+  (set! *baseline* (list (tools-snapshot) (commands-snapshot) (hooks-snapshot))))
+
+(define (baseline-restore!)
+  (when *baseline*
+    (tools-restore! (list-ref *baseline* 0))
+    (commands-restore! (list-ref *baseline* 1))
+    (hooks-restore! (list-ref *baseline* 2))))
+
+;; `base-system` is the prompt without the skills block, so reloading can
+;; replace the block instead of appending a second copy of it.
+(define (system-with-skills config)
+  (let ((block (skills-block))
+        (base (or (assq-ref config 'base-system) (assq-ref config 'system) "")))
+    (if (string=? block "") base (string-append base block))))
+
 ;; Load extensions, discover skills and prompts, and return `config` with the
-;; skills block appended to the system prompt. Called once from main.
+;; skills block appended to the system prompt. Called once from main; the first
+;; call also captures the baseline.
 (define (load-resources config cwd)
+  (unless *baseline* (baseline-capture!))
   (load-extensions! cwd)
   (load-skills! cwd)
   (load-prompts! cwd)
-  (let* ((block (skills-block))
-         (system (assq-ref config 'system)))
-    (if (string=? block "")
-        config
-        (alist-merge config (list (cons 'system (string-append system block)))))))
+  (alist-merge config (list (cons 'system (system-with-skills config)))))
+
+;; Reload everything a project can customize. This is not a re-load of the same
+;; files: the registries are first put back to their pre-extension state, so an
+;; extension that was deleted (or a hook it removed) really disappears -- which
+;; a plain re-load, where registration only ever overwrites by name, would get
+;; wrong. Built-in commands are re-registered by the caller, which owns the
+;; session they close over.
+;;
+;; `config` is updated in place (its `system` pair), so a caller holding the same
+;; alist sees the new skills block without having to thread a new one around.
+(define (reload-resources! config cwd)
+  (baseline-restore!)
+  (load-extensions! cwd)
+  (load-skills! cwd)
+  (load-prompts! cwd)
+  (let ((pair (assq 'system config)))
+    (if pair (set-cdr! pair (system-with-skills config)) #f))
+  config)

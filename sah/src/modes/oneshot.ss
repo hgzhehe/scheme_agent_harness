@@ -57,8 +57,18 @@
                        (else (or (session-latest cwd)
                                  (begin (printf "error: no session for this directory to fork~%")
                                         (exit 1)))))))
-    (let ((new (session-extract session (log-leaf (session-log session)))))
+    (let ((new (fork-leaf! session)))
       (session-close! new)
       (printf "forked ~a entries from ~a into ~a~%  new session id: ~a~%\n  continue with: sah --session ~a~%"
               (session-count new) (session-id session) (session-file new)
               (session-id new) (session-id new)))))
+
+;; Extracting the current leaf, unless a `before-fork` hook vetoes it. A veto
+;; exits non-zero: --fork is used from scripts, where a silently unchanged
+;; session would be worse than a failure.
+(define (fork-leaf! session)
+  (let* ((id (log-leaf (session-log session)))
+         (veto (veto-reason 'before-fork session id)))
+    (if veto
+        (begin (printf "fork cancelled: ~a~%" veto) (exit 1))
+        (session-extract session id))))

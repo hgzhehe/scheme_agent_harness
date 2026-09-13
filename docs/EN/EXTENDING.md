@@ -38,12 +38,16 @@ Hooks run in registration order and each sees the previous one's result
 | hook | called with | may return |
 |---|---|---|
 | `session-start` | `session config` | ignored (side effects) |
+| `before-agent-start` | `text session config` | `'(prompt . TEXT)`, `'(inject . TEXT)`, `#f` |
 | `input` | `text` | `'continue`, `'(transform TEXT)`, `'handled` |
 | `before-request` | `messages config` | a replacement message list |
 | `before-provider-request` | `payload config` | a replacement JSON payload |
 | `tool-call` | `name args` | `'(block . REASON)` or `'(args . NEW-ARGS)` |
 | `tool-result` | `name args out is-error` | `(list NEW-OUT NEW-IS-ERROR)` |
+| `after-reply` | `reply config` | a replacement reply |
 | `before-compact` | `reason instructions` | `'(cancel . WHY)` or `'(instructions . TEXT)` |
+| `before-fork` | `session target` | `'(cancel . WHY)` |
+| `before-tree` | `session target` | `'(cancel . WHY)` |
 | `session-end` | `session` | ignored |
 
 Notes that matter in practice:
@@ -54,6 +58,16 @@ Notes that matter in practice:
   execution; no re-validation happens afterwards (same as pi).
 - `before-request` is the non-destructive context edit: change what is sent,
   without touching the session.
+- `before-agent-start` runs once per user prompt, after the input pipeline has
+  settled on the text: rewrite it with `'(prompt . TEXT)`, or add a message ahead
+  of it with `'(inject . TEXT)` (project facts, a reminder, retrieved context).
+  It is the per-prompt stage; `before-request` is the per-request one.
+- `after-reply` sees the model's reply after it is decoded and before it is
+  stored, so a hook can redact, annotate or replace it. It runs on the way in,
+  not on the way to the provider (`before-provider-request` is that end).
+- `before-fork` and `before-tree` are veto stages: they run before a fork or a
+  cursor move and may return `'(cancel . WHY)`. `--fork` exits non-zero on a
+  veto, so a script cannot mistake "refused" for "forked".
 - `before-compact` returns instructions that are appended to the summarization
   prompt, which is how you get a domain-specific checkpoint.
 
@@ -136,8 +150,11 @@ Deliberate gaps, in order of how likely they are to matter:
 - Startup prints `[sah] extensions: ...` for every extension file it loaded.
 - Hooks that raise print `[sah] hook NAME failed: ...` and are skipped, so a
   stack trace in the middle of a turn is usually an extension, not sah.
-- Everything is loaded at startup: edit an extension, restart sah. There is no
-  hot reload.
+- Everything is loaded at startup. `/reload` re-reads every extension file and
+  re-discovers skills and prompts in a running session, so you can iterate on an
+  extension without restarting. It restores the registries to their built-in
+  state first, so a deleted extension (and a hook it registered) really
+  disappears.
 
 ## Built-in commands and the input pipeline
 
@@ -147,9 +164,9 @@ Commands are registered by `main` for every mode, so they work in print mode too
 sah "/context"          # what the next request would carry
 ```
 
-The built-ins are `/compact`, `/context`, `/tree`, `/label`, `/name` and
-`/help`. An extension command with the same name loses (built-ins are registered
-after extensions, and the last registration of a name wins).
+The built-ins are `/compact`, `/context`, `/tree`, `/label`, `/name`, `/fork`,
+`/reload` and `/help`. An extension command with the same name loses (built-ins
+are registered after extensions, and the last registration of a name wins).
 
 A user message passes through stages, each of which consults its own registry:
 

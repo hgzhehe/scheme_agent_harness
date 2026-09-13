@@ -12,9 +12,13 @@
 ;;;
 ;;; Run it with:  dist/sah.exe --usage
 ;;;
-;;; Runtime selection: SAH_RUNTIME=scheme (default) or petite. On this Windows
-;;; build the two .exe files are byte-identical; only the boot differs, so the
-;;; choice only affects the embedded base libraries and the version label.
+;;; Runtime selection: SAH_RUNTIME=scheme (default) or petite. On Windows the
+;;; two .exe files are byte-identical; only the boot differs, so the choice only
+;;; affects the embedded base libraries and the version label.
+;;;
+;;; Platform differences are keyed off the Chez machine type rather than off OS
+;;; tests: `platform` below is the one table of per-platform values, built on
+;;; src/util/platform.ss. The source list comes from manifest.ss.
 ;;;
 ;;; Chez boot files are "subordinate": a compiled boot references a base boot
 ;;; (petite.boot). We therefore concatenate petite.boot and our subordinate
@@ -31,9 +35,13 @@
 
 (define root (script-dir))
 
-;; util.ss also supplies the build script's own path-join / file->string /
-;; ensure-dir! / basename helpers. The build script only needs the util layer.
+;; manifest.ss is the one source list, shared with sah.ss, the tests and the
+;; benchmarks. The util files are loaded here too because the build script
+;; itself needs path-join / file->string / ensure-dir! / basename, and
+;; platform.ss because that is where windows? lives.
+(load (string-append root "/manifest.ss"))
 (load (string-append root "/src/util/string.ss"))
+(load (string-append root "/src/util/platform.ss"))
 (load (string-append root "/src/util/path.ss"))
 (load (string-append root "/src/util/misc.ss"))
 
@@ -45,10 +53,21 @@
 (define (which name)
   (let loop ((ps (path-list)))
     (cond ((null? ps) #f)
-          ((file-exists? (path-join (car ps) name)) (path-join (car ps) name))
+          ((let ((p (path-join (car ps) name)))
+             (and (file-exists? p) (not (file-directory? p))))
+           (path-join (car ps) name))
           (else (loop (cdr ps))))))
 
-(define windows-build? (and (getenv "COMSPEC") #t))
+;; Values that differ per platform, in one place, keyed off the Chez machine
+;; type (see src/util/platform.ss). Chez keeps its equivalents in per-machine
+;; makefiles -- Mf-<machine> for C, s/Mf-<machine> for Scheme; sah's entire
+;; platform surface is the few values below, so a table is enough. Same
+;; principle, at the scale the difference actually has.
+(define platform
+  `((exe-suffix  . ,(if windows? ".exe" ""))
+    (exec-bit?   . ,(not windows?))
+    (null-device . ,(if windows? "NUL" "/dev/null"))
+    (quote       . ,(if windows? "\"" "'"))))
 
 ;; Which Chez runtime/boot to embed. `scheme` is the full system; `petite`
 ;; labels itself "Petite". On some installs the two executables are identical
@@ -60,30 +79,89 @@
       (which (string-append name ".exe"))
       (which name)
       ;; last-resort Windows location; POSIX distros put scheme on PATH
-      (and windows-build?
+      (and windows?
            (let ((cand (string-append "G:/ChezScheme/ta6nt/bin/ta6nt/" name ".exe")))
              (and (file-exists? cand) cand)))
       (error 'build "cannot find ~a; set SAH_RUNTIME_EXE to its path" name)))
 
+(define (chez-version-token)
+  ;; (scheme-version) is e.g. "Chez Scheme Version 10.1.0"; the last token is
+  ;; the version, which also appears inside the csv<version> directory name.
+  (let ((s (scheme-version)))
+    (let loop ((i (- (string-length s) 1)))
+      (cond ((< i 0) "")
+            ((char=? (string-ref s i) #\space)
+             (substring s (+ i 1) (string-length s)))
+            (else (loop (- i 1)))))))
+
+(define (machine-dir-name exe)
+  ;; Chez lays boot files out under boot/<machine>/ and
+  ;; lib/csv<version>/<machine>/. The machine type comes from platform.ss; fall
+  ;; back to the runtime's own directory, which is the machine directory in the
+  ;; Windows layout (<chez>/bin/<machine>/scheme.exe).
+  (if (string=? chez-machine-type "unknown")
+      (basename (dirname exe))
+      chez-machine-type))
+
+(define (csv-boot-candidates lib-root machine boot)
+  ;; The boot directory is versioned (`csv10.1.0-pre-release.3`), so we cannot
+  ;; hardcode its name: enumerate csv* entries instead. The directory matching
+  ;; the running version is tried first, then any other, then the unversioned
+  ;; `csv/` layout some distros use.
+  (let* ((csv (filter (lambda (e) (and (string-prefix? "csv" e)
+                                       (file-directory? (path-join lib-root e))))
+                      (dir-entries lib-root)))
+         (ver (chez-version-token))
+         (ranked (append (filter (lambda (e) (string-contains? e ver)) csv)
+                         (filter (lambda (e) (not (string-contains? e ver))) csv))))
+    (append
+     (apply append
+            (map (lambda (e)
+                   (let ((d (path-join lib-root e)))
+                     (list (path-join d machine boot)   ; <lib>/csv<ver>/<machine>/
+                           (path-join d boot))))         ; <lib>/csv<ver>/
+                 ranked))
+     (list (path-join lib-root "csv" boot)             ; Debian-ish
+           (path-join lib-root "csv" machine boot)))))
+
+(define (lib-roots exe-dir)
+  ;; Every plausible `<prefix>/lib` that might hold a Chez boot, including the
+  ;; Homebrew layouts where bin/scheme is a symlink into the Cellar.
+  (let* ((parent (dirname exe-dir))
+         (root (dirname parent))
+         (cellar (path-join parent "Cellar" "chezscheme")))
+    (append
+     (list (path-join parent "lib")
+           (path-join root "lib")
+           (path-join parent "opt" "chezscheme" "lib"))
+     (map (lambda (v) (path-join cellar v "lib")) (dir-entries cellar)))))
+
 (define (find-boot-file exe name)
-  ;; Look for <name>.boot near the runtime. Layouts vary by platform/distro,
+  ;; Look for <name>.boot near the runtime. Layouts vary by platform and distro,
   ;; so also honour SAH_RUNTIME_BOOT and SAH_BOOT_DIR.
   (let* ((exe-dir (dirname exe))
-         (machine (basename exe-dir))
-         (chez-root (dirname (dirname exe-dir)))
+         (exe-parent (dirname exe-dir))
+         (chez-root (dirname exe-parent))
+         (machine (machine-dir-name exe))
          (boot (string-append name ".boot"))
          (explicit (getenv "SAH_RUNTIME_BOOT"))
          (boot-dir (getenv "SAH_BOOT_DIR"))
-         (cands (list explicit
-                      (and boot-dir (path-join boot-dir boot))
-                      (path-join exe-dir boot)                                    ; <dir>/<name>.boot
-                      (path-join chez-root "boot" machine boot)                  ; <root>/boot/<machine>/
-                      (path-join (dirname exe-dir) "boot" machine boot)            ; <dir>/../boot/<machine>/
-                      (path-join (dirname exe-dir) "lib" "csv" boot)               ; Debian-ish
-                      (path-join (dirname (dirname exe-dir)) "lib" "csv" boot))))
+         (cands (append
+                 (list explicit
+                       (and boot-dir (path-join boot-dir boot))
+                       (path-join exe-dir boot))                    ; <dir>/<name>.boot
+                 (list (path-join chez-root "boot" machine boot)    ; <root>/boot/<machine>/
+                       (path-join exe-parent "boot" machine boot))  ; <dir>/../boot/<machine>/
+                 (apply append
+                        (map (lambda (lib)
+                               (csv-boot-candidates lib machine boot))
+                             (lib-roots exe-dir))))))
     (let loop ((cs cands))
       (cond ((null? cs) #f)
-            ((and (car cs) (file-exists? (car cs))) (car cs))
+            ((and (car cs)
+                  (file-exists? (car cs))
+                  (not (file-directory? (car cs))))
+             (car cs))
             (else (loop (cdr cs)))))))
 
 ;; A boot may be subordinate to another boot. In this distribution
@@ -98,49 +176,6 @@
           ((string=? name "petite") (list main))
           (else (let ((petite (find-boot-file exe "petite")))
                   (if petite (list petite main) (list main)))))))
-
-(define src-files
-  ;; load order mirrors the module layering: vendor -> fp -> util -> core ->
-  ;; extend -> ai -> session -> tools -> agent -> modes -> main
-  '("src/vendor/match.ss"
-    "src/fp/measured-vector.ss"
-    "src/util/string.ss"
-    "src/util/path.ss"
-    "src/util/json.ss"
-    "src/util/misc.ss"
-    "src/core/event.ss"
-    "src/core/data.ss"
-    "src/core/hooks.ss"
-    "src/core/transport.ss"
-    "src/core/config.ss"
-    "src/extend/md.ss"
-    "src/extend/commands.ss"
-    "src/extend/input.ss"
-    "src/extend/skills.ss"
-    "src/extend/prompts.ss"
-    "src/extend/loader.ss"
-    "src/extend/builtin-commands.ss"
-    "src/ai/providers/openai-compatible.ss"
-    "src/ai/chat.ss"
-    "src/session/log.ss"
-    "src/session/manager.ss"
-    "src/session/discovery.ss"
-    "src/session/pi-format.ss"
-    "src/tools/registry.ss"
-    "src/tools/read.ss"
-    "src/tools/write.ss"
-    "src/tools/edit.ss"
-    "src/tools/shell.ss"
-    "src/tools/eval.ss"
-    "src/agent/compaction.ss"
-    "src/agent/branch.ss"
-    "src/agent/context.ss"
-    "src/agent/agent.ss"
-    "src/modes/cli.ss"
-    "src/modes/print.ss"
-    "src/modes/oneshot.ss"
-    "src/modes/repl.ss"
-    "src/main.ss"))
 
 (define (escape-scheme-string s)
   (let loop ((i 0) (acc '()))
@@ -158,9 +193,9 @@
 (define (source-text)
   (apply string-append
          (map (lambda (f)
-                (string-append "\n;;; ---- " f " ----\n"
-                               (file->string (path-join root f))))
-              src-files)))
+                (string-append "\n;;; ---- src/" f " ----\n"
+                               (file->string (path-join root "src" f))))
+              sah-source-files)))
 
 ;; The generated program contains the compiled code plus the source text. The
 ;; source is evaluated into the interaction environment at startup so the `eval`
@@ -182,7 +217,17 @@
      "          (loop))))))\n"
      "\n;;; ---- boot entry ----\n"
      "(suppress-greeting #t)\n"
-     "(scheme-start (lambda fns (main fns)))\n")))
+     ;; Run the program from the INTERACTION environment, not from the compiled
+     ;; bindings. Loading a file (`load`, which is how extensions, skills and
+     ;; prompts are read) evaluates into the interaction environment, so a
+     ;; compiled `main` would read a *different* copy of every registry: an
+     ;; extension's register-hook!/register-tool! would land in the interaction
+     ;; registries and the compiled loop would never see them. Entering through
+     ;; the interaction environment is what makes one process have one set of
+     ;; registries. Falls back to the compiled `main` if that lookup fails.
+     "(scheme-start (lambda fns\n"
+     "  (let ((m (guard (e (#t #f)) (eval 'main (interaction-environment)))))\n"
+     "    ((if (procedure? m) m main) fns))))\n")))
 
 (define (copy-file! from to)
   (when (file-exists? to)
@@ -220,11 +265,29 @@
 (define (concat-many! out in-list)
   (write-bytes out (concat-bytes-list (map read-bytes in-list))))
 
+(define (make-executable! path)
+  ;; Writing the runtime copy creates a fresh file, so the source's executable
+  ;; bit does not carry over. Restore it so `./dist/sah` runs directly.
+  (guard (e (#t (printf "[build] warning: could not chmod ~a: ~a\n" path (err->string e))))
+    (chmod path #o755)))
+
+(define (smoke-check! exe)
+  ;; The runtime resolves its boot at startup, so a missing base boot shows up
+  ;; here rather than on the user's first run. `--usage` is read-only.
+  (let* ((q (assq-ref platform 'quote))
+         (quoted (string-append q exe q))
+         (sink (string-append "> " (assq-ref platform 'null-device) " 2>&1"))
+         (status (guard (e (#t #f)) (system (string-append quoted " --usage " sink)))))
+    (if (and (integer? status) (zero? status))
+        (printf "[build] check: ~a --usage ok\n" exe)
+        (printf "[build] warning: ~a --usage failed (status ~s) -- artifact may not run\n"
+                exe status))))
+
 (define build-dir (path-join root "build"))
 (define dist-dir (path-join root "dist"))
 ;; Chez derives the boot name from the executable name, so `sah.exe` and `sah`
 ;; both load `sah.boot`.
-(define exe-name (if windows-build? "sah.exe" "sah"))
+(define exe-name (string-append "sah" (assq-ref platform 'exe-suffix)))
 (ensure-dir! build-dir)
 (ensure-dir! dist-dir)
 
@@ -252,6 +315,7 @@
 
 (define runtime-exe (find-runtime-exe sah-runtime))
 (define runtime-boots (runtime-chain runtime-exe sah-runtime))
+(printf "[build] machine: ~a (~a)~n" chez-machine-type machine-os)
 (printf "[build] runtime: ~a~n" sah-runtime)
 (printf "[build] exe:     ~a~n" runtime-exe)
 (for-each (lambda (b) (printf "[build] boot:    ~a~n" b)) runtime-boots)
@@ -262,15 +326,19 @@
 
 (printf "[build] assembling ~a\n" dist-dir)
 (copy-file! runtime-exe (path-join dist-dir exe-name))
+(when (assq-ref platform 'exec-bit?) (make-executable! (path-join dist-dir exe-name)))
 (if (null? runtime-boots)
     (begin
-      (printf "[build] note: base boot for ~a not found; dist/sah.boot is not self-contained\n" sah-runtime)
-      (printf "[build]       it will look for ~a.boot in your Chez installation at runtime\n" sah-runtime)
-      (printf "[build]       set SAH_RUNTIME_BOOT=/path/to/~a.boot for a self-contained build\n" sah-runtime)
+      (printf "[build] note: base ~a.boot not found; dist/sah.boot is NOT self-contained\n" sah-runtime)
+      (printf "[build]       it resolves ~a.boot from your Chez installation at runtime, so\n" sah-runtime)
+      (printf "[build]       dist/~a only runs where that installation is present.\n" exe-name)
+      (printf "[build]       set SAH_RUNTIME_BOOT=/path/to/~a.boot (or SAH_BOOT_DIR=<dir>)\n" sah-runtime)
+      (printf "[build]       for a self-contained build.\n")
       (copy-file! (path-join build-dir "sah.boot") (path-join dist-dir "sah.boot"))))
 (if (pair? runtime-boots)
     ;; self-contained boot: base boot chain first, then our subordinate boot
     (concat-many! (path-join dist-dir "sah.boot")
                   (append runtime-boots (list (path-join build-dir "sah.boot")))))
 
+(smoke-check! (path-join dist-dir exe-name))
 (printf "[build] done. run: ~a --usage\n" (path-join dist-dir exe-name))

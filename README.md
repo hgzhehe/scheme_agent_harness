@@ -28,7 +28,7 @@ session history are all Scheme.
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss          # offline tests (34 checks)
+scheme --script tests/run-tests.ss          # offline tests (967 checks)
 scheme --script sah.ss -- "hello"            # run from source
 scheme --script build.scm                    # build dist/sah.exe + dist/sah.boot
 ./dist/sah.exe "hello"                       # run the standalone executable
@@ -40,8 +40,9 @@ Start with the [tutorial](docs/EN/TUTORIAL.md) or the
 ## `sah` in one paragraph
 
 `sah` runs an agent loop (build context → call the model → run requested tools →
-repeat) against DeepSeek (OpenAI-compatible). It ships four tools — `read`,
-`write`, `shell`, `eval` — and keeps everything as plain Scheme data: sessions
+repeat) against DeepSeek (OpenAI-compatible). It ships eight tools — `read`,
+`write`, `edit`, `ls`, `grep`, `find`, `shell`, `eval` — and keeps everything as
+plain Scheme data: sessions
 are `SexprL` (one readable datum per line), config is an alist, and the `eval`
 tool evaluates Scheme in the agent's own process, so definitions persist across
 turns. Built with Chez Scheme; the production artifact is `sah.exe` + `sah.boot`.

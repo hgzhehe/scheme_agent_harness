@@ -21,6 +21,8 @@
                       (if (and (string? content) (> (string-length content) 0))
                           (clip content 44)
                           (format "(~a tool call~a)" n (if (= n 1) "" "s")))))]
+    [(msg tool ,id ,name ,content ,is-error)
+     (string-append "tool " (symbol->string name) (if is-error " [error]" "") ": " (clip content 44))]
     [(msg tool ,id ,name ,content) (string-append "tool " (symbol->string name) ": " (clip content 44))]
     [,other ""]))
 
@@ -68,27 +70,31 @@
                    ((eqv? n (log-leaf lg)) (printf "already at #~a~%" n) #f)
                    (else (move-cursor! session config n)))))))))))
 
-;; Moving the cursor abandons a suffix of the old path. Offer to keep it as a
-;; branch summary (agent/branch.ss) instead of dropping its context silently.
+;; Moving the cursor abandons a suffix of the old path. A `before-tree` hook may
+;; veto the move (pi's session_before_tree); otherwise offer to keep the
+;; abandoned suffix as a branch summary (agent/branch.ss).
 (define (move-cursor! session config target)
-  (let* ((lg (session-log session))
-         (gone (entries->messages
-                (abandoned-entries (log-path lg (log-leaf lg)) (log-path lg target)))))
-    (if (null? gone)
-        (begin (session-branch! session target)
-               (printf "cursor moved to #~a; the next message starts a new branch here~%" target)
-               #t)
-        (begin
-          (printf "~a message~a would be left behind. Summarise ~a into the new branch? (y/N) "
-                  (length gone) (if (= (length gone) 1) "" "s")
-                  (if (= (length gone) 1) "it" "them"))
-          (flush-output-port (current-output-port))
-          (let ((ans (get-line-or-eof (current-input-port))))
-            (if (and (string? ans) (string-ci=? (string-trim ans) "y"))
-                (begin (branch-summarize! session config target) #t)
-                (begin (session-branch! session target)
-                       (printf "cursor moved to #~a (nothing summarised)~%" target)
-                       #t)))))))
+  (let ((veto (veto-reason 'before-tree session target)))
+    (if veto
+        (begin (printf "cursor not moved: ~a~%" veto) #f)
+        (let* ((lg (session-log session))
+               (gone (entries->messages
+                      (abandoned-entries (log-path lg (log-leaf lg)) (log-path lg target)))))
+          (if (null? gone)
+              (begin (session-branch! session target)
+                     (printf "cursor moved to #~a; the next message starts a new branch here~%" target)
+                     #t)
+              (begin
+                (printf "~a message~a would be left behind. Summarise ~a into the new branch? (y/N) "
+                        (length gone) (if (= (length gone) 1) "" "s")
+                        (if (= (length gone) 1) "it" "them"))
+                (flush-output-port (current-output-port))
+                (let ((ans (get-line-or-eof (current-input-port))))
+                  (if (and (string? ans) (string-ci=? (string-trim ans) "y"))
+                      (begin (branch-summarize! session config target) #t)
+                      (begin (session-branch! session target)
+                             (printf "cursor moved to #~a (nothing summarised)~%" target)
+                             #t)))))))))
 
 ;;----------------------------------------------------------------------------
 ;; /context -- what the next request would carry
@@ -150,7 +156,22 @@
   (register-command! 'fork "Copy this session's current path into a new session file."
                      (lambda (args) (fork-command session args) #f))
   (register-command! 'help "List commands, templates and skills."
-                     (lambda (args) (print-help) #f)))
+                     (lambda (args) (print-help) #f))
+  (register-command! 'reload "Reload extensions, skills and prompts."
+                     (lambda (args) (reload-command session config) #f)))
+
+;; A reload re-reads every extension file after putting the registries back to
+;; their built-in state, so it also has to put the built-in commands back (they
+;; are registered after extensions, and the restore removed them).
+(define (reload-command session config)
+  (reload-resources! config (current-directory))
+  (register-builtin-commands! session config)
+  (set! *shell-override* (assq-ref config 'shell))
+  (let ((n (lambda (l) (number->string (length l)))))
+    (printf "reloaded ~a extension~a, ~a skill~a, ~a template~a~%"
+            (n (all-extensions)) (if (= 1 (length (all-extensions))) "" "s")
+            (n (all-skills)) (if (= 1 (length (all-skills))) "" "s")
+            (n (all-prompts)) (if (= 1 (length (all-prompts))) "" "s"))))
 
 (define (label-command session args)
   (let* ((sp (string-index args #\space))
@@ -170,8 +191,11 @@
          (n (if (string=? txt "") (log-leaf lg) (string->number txt))))
     (if (not (and n (exact? n) (>= n 0) (< n (log-count lg))))
         (printf "usage: /fork [entry-id]   (see /tree for ids)~%")
-        (let ((new (session-extract session n)))
-          (session-close! new)
-          (printf "forked ~a entr~a into a new session~%  id: ~a~%  file: ~a~%  continue with: sah --session ~a~%"
-                  (session-count new) (if (= (session-count new) 1) "y" "ies")
-                  (session-id new) (session-file new) (session-id new))))))
+        (let ((veto (veto-reason 'before-fork session n)))
+          (if veto
+              (printf "fork cancelled: ~a~%" veto)
+              (let ((new (session-extract session n)))
+                (session-close! new)
+                (printf "forked ~a entr~a into a new session~%  id: ~a~%  file: ~a~%  continue with: sah --session ~a~%"
+                        (session-count new) (if (= (session-count new) 1) "y" "ies")
+                        (session-id new) (session-file new) (session-id new))))))))

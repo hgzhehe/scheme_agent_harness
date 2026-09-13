@@ -10,42 +10,8 @@
 
 (define *root* (string-append (here-dir) "/.."))
 
-(define (load-src rel) (load (string-append *root* "/src/" rel)))
-
-(load-src "vendor/match.ss")
-(load-src "fp/measured-vector.ss")
-(load-src "util/string.ss")
-(load-src "util/path.ss")
-(load-src "util/json.ss")
-(load-src "util/misc.ss")
-(load-src "core/event.ss")
-(load-src "core/data.ss")
-(load-src "core/hooks.ss")
-(load-src "core/transport.ss")
-(load-src "core/config.ss")
-(load-src "extend/md.ss")
-(load-src "extend/commands.ss")
-(load-src "extend/input.ss")
-(load-src "extend/skills.ss")
-(load-src "extend/prompts.ss")
-(load-src "extend/loader.ss")
-(load-src "extend/builtin-commands.ss")
-(load-src "ai/providers/openai-compatible.ss")
-(load-src "ai/chat.ss")
-(load-src "session/log.ss")
-(load-src "session/manager.ss")
-(load-src "session/discovery.ss")
-(load-src "session/pi-format.ss")
-(load-src "tools/registry.ss")
-(load-src "tools/read.ss")
-(load-src "tools/write.ss")
-(load-src "tools/edit.ss")
-(load-src "tools/shell.ss")
-(load-src "tools/eval.ss")
-(load-src "agent/compaction.ss")
-(load-src "agent/branch.ss")
-(load-src "agent/context.ss")
-(load-src "agent/agent.ss")
+(load (string-append *root* "/manifest.ss"))
+(load-sah-sources! *root* sah-kernel-source-files)
 
 (define *pass* 0)
 (define *fail* 0)
@@ -135,7 +101,7 @@
            [,other #f])))
 
 (check "llm: legacy alist message migrates to positional"
-       '(msg tool "c1" read "out")
+       '(msg tool "c1" read "out" #f)
        (normalize-message '((role . tool) (tool-call-id . "c1") (name . read) (content . "out"))))
 
 ;;----------------------------------------------------------------------------
@@ -282,7 +248,10 @@
          [,other #f]))
 (check "agent: third is tool result with file content"
        "the-answer"
-       (match (caddr msgs) [(msg tool ,id ,name ,content) content] [,other #f]))
+       (match (caddr msgs)
+         [(msg tool ,id ,name ,content ,e) content]
+         [(msg tool ,id ,name ,content) content]
+         [,other #f]))
 (check "agent: fourth is final assistant" "done"
        (match (cadddr msgs) [(msg assistant ,c ,calls ,stop ,usage) c] [,other #f]))
 (check-true "agent: emitted tool-start/tool-end"
@@ -542,7 +511,10 @@
        #t
        (let loop ((ms (session-messages sh)))
          (cond ((null? ms) #f)
-               ((match (car ms) [(msg tool ,i ,n ,c) (string-contains? c "refusing rm -rf")] [,o #f]) #t)
+               ((match (car ms)
+                  [(msg tool ,i ,n ,c ,e) (string-contains? c "refusing rm -rf")]
+                  [(msg tool ,i ,n ,c) (string-contains? c "refusing rm -rf")]
+                  [,o #f]) #t)
                (else (loop (cdr ms))))))
 
 (register-hook! 'input
@@ -1097,6 +1069,498 @@
              (and (not (pair? (filter (lambda (x) (eq? (entry-kind x) 'compaction))
                                      (session-entries saved)))) #t)))))
 (session-close! forked2)
+
+;;----------------------------------------------------------------------------
+(printf "== manifest ==~%")
+
+;; the list is the single source of truth, so it has to be complete: a source
+;; file that is on disk but not listed is invisible to every entry point
+(check "manifest: lists every src/*.ss file and nothing else"
+       '()
+       (let* ((on-disk (map (lambda (p) (substring p 4 (string-length p)))
+                            (filter (lambda (p) (string-suffix? ".ss" p))
+                                    (walk-files "src" '()))))
+              (listed sah-source-files))
+         (append (filter (lambda (f) (not (member f listed))) on-disk)
+                 (filter (lambda (f) (not (member f on-disk))) listed))))
+
+(check "manifest: lists only .ss sources"
+       '()
+       (filter (lambda (f) (not (string-suffix? ".ss" f))) sah-source-files))
+
+(check "manifest: no entry is listed twice"
+       #t
+       (let loop ((l sah-source-files) (seen '()))
+         (cond ((null? l) #t)
+               ((member (car l) seen) #f)
+               (else (loop (cdr l) (cons (car l) seen))))))
+
+(check "manifest: the full list is the kernel plus the entry points"
+       (length sah-source-files)
+       (+ (length sah-kernel-source-files) (length sah-entry-source-files)))
+
+(check "manifest: the kernel stops before the CLI entry points"
+       '()
+       (filter (lambda (f) (member f '("modes/cli.ss" "main.ss"))) sah-kernel-source-files))
+
+;;----------------------------------------------------------------------------
+(printf "== tools: ls, grep, find ==~%")
+
+(define tt (path-join tmp "tools"))
+(ensure-dir! (path-join tt "sub"))
+(ensure-dir! (path-join tt ".hidden"))
+(ensure-dir! (path-join tt "node_modules"))
+(string->file (path-join tt "a.txt") "alpha\nbeta\nALPHA\n")
+(string->file (path-join tt "sub/b.ss") "(define x 1)\n")
+(string->file (path-join tt ".hidden/h.txt") "alpha\n")
+(string->file (path-join tt "node_modules/n.txt") "alpha\n")
+
+(define (tool-out name args)
+  (call-with-values (lambda () (call-tool name args)) (lambda (o e) o)))
+
+(check "tools: eight built-in tools are registered"
+       '(read write edit ls grep find shell eval)
+       (map tool-name (all-tools)))
+
+(check "tools: ls lists entries sorted, directories with a trailing slash"
+       '(".hidden/" "a.txt" "node_modules/" "sub/")
+       (string-split (tool-out 'ls (list (cons 'path tt))) "\n"))
+
+(check "tools: ls defaults to the working directory"
+       #t
+       (> (length (string-split (tool-out 'ls '()) "\n")) 0))
+
+(check "tools: ls on a file is an error"
+       #t
+       (call-with-values (lambda () (call-tool 'ls (list (cons 'path (path-join tt "a.txt")))))
+         (lambda (o e) e)))
+
+(check "tools: grep reports path:line and skips dot- and build directories"
+       (list (format "~a:3: ALPHA" (path-join tt "a.txt")))
+       (string-split (tool-out 'grep (list (cons 'pattern "ALPHA") (cons 'path tt))) "\n"))
+
+(check "tools: grep ignore-case widens the match"
+       2
+       (length (string-split
+                (tool-out 'grep (list (cons 'pattern "alpha") (cons 'path tt)
+                                      (cons 'ignore-case #t)))
+                "\n")))
+
+(check "tools: grep on a single file"
+       (list (format "~a:2: beta" (path-join tt "a.txt")))
+       (string-split (tool-out 'grep (list (cons 'pattern "beta")
+                                           (cons 'path (path-join tt "a.txt"))))
+                     "\n"))
+
+(check "tools: grep with no match says so"
+       #t
+       (string-prefix? "no match" (tool-out 'grep (list (cons 'pattern "zzzznope") (cons 'path tt)))))
+
+(check "tools: grep on a missing path is an error"
+       #t
+       (call-with-values (lambda () (call-tool 'grep (list (cons 'pattern "x")
+                                                           (cons 'path (path-join tt "nope")))))
+         (lambda (o e) e)))
+
+(check "tools: find matches basenames by glob"
+       (list (path-join tt "sub/b.ss"))
+       (string-split (tool-out 'find (list (cons 'pattern "*.ss") (cons 'path tt))) "\n"))
+
+(check "tools: glob * and ?"
+       '(#t #f #t #f)
+       (list (glob-match? "*.ss" "a.ss") (glob-match? "*.ss" "a.scm")
+             (glob-match? "a?c" "abc") (glob-match? "a?c" "ac")))
+
+(check "tools: walk-files always skips dot-directories"
+       #f
+       (and (member (path-join tt ".hidden/h.txt") (walk-files tt '())) #t))
+
+(check "tools: walk-files skips the build directories it is given"
+       '()
+       (filter (lambda (p) (string-contains? "node_modules" p))
+               (walk-files tt default-walk-skip-dirs)))
+
+;;----------------------------------------------------------------------------
+(printf "== tools: allow and exclude ==~%")
+
+(check "tools: no restriction is every tool" 8 (length (active-tools '())))
+(check "tools: allowlist" '(read grep) (map tool-name (active-tools '((tools . (read grep))))))
+(check "tools: denylist" 7 (length (active-tools '((exclude-tools . (shell))))))
+(check "tools: the denylist removes exactly that name" #f
+       (and (memq 'shell (map tool-name (active-tools '((exclude-tools . (shell)))))) #t))
+(check "tools: the denylist is applied after the allowlist" '(read)
+       (map tool-name (active-tools '((tools . (read write)) (exclude-tools . (write))))))
+(check "tools: an empty allowlist means no tools" '()
+       (map tool-name (active-tools '((tools . ())))))
+(check "tools: a comma-separated string, as the CLI produces it" '(read grep)
+       (map tool-name (active-tools '((tools . "read,grep")))))
+(check "tools: an unknown name matches nothing" '()
+       (map tool-name (active-tools '((tools . (nope))))))
+
+(check "tools: optional props stay out of required"
+       '(pattern)
+       (vector->list (assq-ref (schema '((pattern "string" "p")
+                                         (path "string" "d" optional)))
+                               'required)))
+
+(check "tools: props without the marker are required"
+       '(pattern path)
+       (vector->list (assq-ref (schema '((pattern "string" "p") (path "string" "d")))
+                               'required)))
+
+;; the generated prompt must describe the tools that are actually on offer
+(check "tools: the built-in prompt lists the active tools only"
+       (list #t #f)
+       (list (string-contains? "- read:" (builtin-system-prompt '()))
+             (string-contains? "- shell:" (builtin-system-prompt '((exclude-tools . (shell)))))))
+
+(check "tools: excluding a tool removes it from the offered list"
+       '(read)
+       (map tool-name (active-tools '((exclude-tools . (write edit ls grep find shell eval))))))
+
+;;----------------------------------------------------------------------------
+(printf "== extensions: before-agent-start ==~%")
+
+(define hs (hooks-snapshot))
+(set! *chat-impl* (lambda (cfg msgs tools) '(msg assistant "ok" () stop (usage))))
+
+(define (user-texts text)
+  (let ((s (session-new tmp "mock")))
+    (run-agent s (list (cons 'max-steps 3)) text)
+    (let loop ((ms (session-context-messages s)) (acc '()))
+      (cond ((null? ms) (session-close! s) (reverse acc))
+            (else (loop (cdr ms)
+                        (match (car ms)
+                          [(msg user ,c) (cons c acc)]
+                          [,o acc])))))))
+
+(check "ext: with no hook the prompt is untouched" '("hi") (user-texts "hi"))
+
+(register-hook! 'before-agent-start (lambda (t s c) `(prompt . ,(string-append t "!"))))
+(check "ext: before-agent-start can rewrite the prompt" '("hi!") (user-texts "hi"))
+
+(hooks-restore! hs)
+(register-hook! 'before-agent-start (lambda (t s c) '(inject . "CTX")))
+(check "ext: before-agent-start can inject a message ahead of the prompt"
+       '("CTX" "hi")
+       (user-texts "hi"))
+
+(hooks-restore! hs)
+(register-hook! 'before-agent-start (lambda (t s c) (error 'boom "no")))
+(check "ext: a hook that raises is skipped and the run continues" '("hi") (user-texts "hi"))
+
+(hooks-restore! hs)
+
+;;----------------------------------------------------------------------------
+(printf "== extensions: reload ==~%")
+
+(define home (path-join tmp "home"))
+(define proj (path-join tmp "proj"))
+(ensure-dir! (path-join home "extensions"))
+(ensure-dir! (path-join home "skills/s1"))
+(ensure-dir! proj)
+(set! *sah-home-override* home)
+(string->file (path-join home "skills/s1/SKILL.md")
+              "---\nname: s1\ndescription: d1\n---\nbody\n")
+(string->file (path-join home "extensions/x.ss")
+              "(register-tool! 'xtool \"x\" (schema '()) (lambda (a) \"x\"))\n")
+
+(define rcfg (load-resources (load-config proj) proj))
+(check "ext: an extension's tool is registered" #t
+       (and (memq 'xtool (map tool-name (active-tools rcfg))) #t))
+(check "ext: the extension is recorded" 1 (length (all-extensions)))
+(check "ext: a global skill reaches the skills block" #t
+       (string-contains? "d1" (assq-ref rcfg 'system)))
+
+;; a plain re-load would only overwrite names, so a deleted extension's tool
+;; would linger; a reload restores the pre-extension state first
+(delete-file (path-join home "extensions/x.ss"))
+(reload-resources! rcfg proj)
+(check "ext: reload forgets a deleted extension's tool" #f
+       (and (memq 'xtool (map tool-name (active-tools rcfg))) #t))
+(check "ext: reload forgets the deleted extension" 0 (length (all-extensions)))
+
+(string->file (path-join home "extensions/y.ss")
+              "(register-hook! 'before-agent-start (lambda (t s c) '(inject . \"Y\")))\n")
+(reload-resources! rcfg proj)
+(check "ext: reload picks up a new extension" 1 (length (all-extensions)))
+(check "ext: reload picks up the new hook" '("Y" "hi") (user-texts "hi"))
+
+(check "ext: reload replaces the skills block instead of appending a second one"
+       1
+       (- (length (string-split (assq-ref rcfg 'system) "<skills>")) 1))
+
+(hooks-restore! hs)
+
+;;----------------------------------------------------------------------------
+(printf "== resources: project overrides global ==~%")
+
+(ensure-dir! (path-join home "skills/dup"))
+(ensure-dir! (path-join proj ".sah/skills/dup"))
+(ensure-dir! (path-join home "prompts"))
+(ensure-dir! (path-join proj ".sah/prompts"))
+(string->file (path-join home "skills/dup/SKILL.md")
+              "---\nname: dup\ndescription: GLOBAL\n---\nbody\n")
+(string->file (path-join proj ".sah/skills/dup/SKILL.md")
+              "---\nname: dup\ndescription: PROJECT\n---\nbody\n")
+(string->file (path-join home "prompts/p.md") "---\ndescription: GLOBAL p\n---\nbody\n")
+(string->file (path-join proj ".sah/prompts/p.md") "---\ndescription: PROJECT p\n---\nbody\n")
+
+(load-skills! proj)
+(load-prompts! proj)
+
+(check "resources: a project skill overrides a global one, with no duplicate"
+       '("PROJECT")
+       (map skill-description (filter (lambda (s) (string=? "dup" (skill-name s))) (all-skills))))
+
+(check "resources: a project template overrides a global one, with no duplicate"
+       '("PROJECT p")
+       (map prompt-description (filter (lambda (p) (string=? "p" (prompt-name p))) (all-prompts))))
+
+(check "resources: dedupe-by keeps the first item for each key"
+       '(1 2)
+       (map cadr (dedupe-by car '((a 1) (b 2) (a 3)))))
+
+;; leave the shared state as the rest of the suite expects it
+(set! *sah-home-override* tmp)
+(load-skills! tmp)
+(load-prompts! tmp)
+
+;;----------------------------------------------------------------------------
+(printf "== message model: stop reason, tool errors ==~%")
+
+(check "llm: finish_reason maps onto the stop-reason taxonomy"
+       '(tool-use tool-use length error stop stop)
+       (map finish->stop '("tool_calls" "function_call" "length" "content_filter" "stop" #f)))
+
+(check "llm: a reply cut off by the output limit is not reported as a clean stop"
+       'length
+       (match (decode-assistant '((content . "cut")) "length" #f)
+         [(msg assistant ,c ,calls ,stop ,u) stop]
+         [,other #f]))
+
+(check "data: a tool message carries its error flag"
+       '(#t #f)
+       (list (and (tool-message-error? '(msg tool "c" read "out" #t)) #t)
+             (and (tool-message-error? '(msg tool "c" read "out")) #t)))
+
+(check "data: normalize-message pads the error slot on a message that predates it"
+       '(msg tool "c" read "out" #f)
+       (normalize-message '(msg tool "c" read "out")))
+
+(check "sessions: a v2 tool message loads as v3 (slot padded)"
+       '(msg tool "c" read "out" #f)
+       (entry-message (normalize-entry '(message 0 #f 1 (msg tool "c" read "out")))))
+
+(check "sessions: the header is written as format v3"
+       3
+       (entry-field (session-header (session-new tmp "mock")) 1))
+
+(check "pi: a tool error survives the round trip (isError)"
+       '(#t #t "boom")
+       (let* ((pi '((role . "toolResult") (toolCallId . "c") (toolName . "read")
+                    (content . #(((type . "text") (text . "boom"))))
+                    (isError . #t)))
+              (msg (pi-msg->sah pi)))
+         (list (and (tool-message-error? msg) #t)
+               (and (assq-ref (sah-msg->pi msg) 'isError) #t)
+               (match msg [(msg tool ,i ,n ,c ,e) c] [,other #f]))))
+
+(check "pi: a tool success round-trips as isError false"
+       #f
+       (let ((pi '((role . "toolResult") (toolCallId . "c") (toolName . "read")
+                   (content . #(((type . "text") (text . "fine")))))))
+         (assq-ref (sah-msg->pi (pi-msg->sah pi)) 'isError)))
+
+;;----------------------------------------------------------------------------
+(printf "== tools: read ranges and the output cap ==~%")
+
+(define rtf (path-join tmp "ranged.txt"))
+(string->file rtf "l1\nl2\nl3\nl4\nl5\n")
+
+(check "read: no range returns the file verbatim"
+       "l1\nl2\nl3\nl4\nl5\n"
+       (tool-out 'read (list (cons 'path rtf))))
+
+(check "read: offset is 1-based"
+       "l3\nl4\nl5"
+       (tool-out 'read (list (cons 'path rtf) (cons 'offset 3))))
+
+(check "read: offset with a limit reports what is left"
+       "l3\nl4\n... (1 more line; ask for a higher offset)"
+       (tool-out 'read (list (cons 'path rtf) (cons 'offset 3) (cons 'limit 2))))
+
+(check "read: a limit alone counts the remainder"
+       "l1\n... (4 more lines; ask for a higher offset)"
+       (tool-out 'read (list (cons 'path rtf) (cons 'limit 1))))
+
+(check "read: an offset past the end says so"
+       "(nothing to read: the file has 5 lines)"
+       (tool-out 'read (list (cons 'path rtf) (cons 'offset 99))))
+
+(check "read: a missing file is an error"
+       #t
+       (call-with-values (lambda () (call-tool 'read (list (cons 'path (path-join tmp "nope")))))
+         (lambda (o e) e)))
+
+(check "tools: output past the cap is truncated with a marker"
+       #t
+       (and (string-contains? "[truncated:"
+                              (tool-out 'eval (list (cons 'code "(make-string 25000 #\\x)"))))
+            #t))
+
+(check "tools: output under the cap is untouched"
+       "short"
+       (tool-out 'eval (list (cons 'code "(display \"short\")"))))
+
+;;----------------------------------------------------------------------------
+(printf "== extensions: veto hooks and after-reply ==~%")
+
+(define hs2 (hooks-snapshot))
+(set! *chat-impl* (lambda (cfg msgs tools) '(msg assistant "R" () stop (usage))))
+
+(define (reply-text)
+  (let ((s (session-new tmp "mock")))
+    (run-agent s (list (cons 'max-steps 2)) "x")
+    (let ((t (assistant-text (car (reverse (session-context-messages s))))))
+      (session-close! s)
+      t)))
+
+(check "ext: with no after-reply hook the reply is stored as returned" "R" (reply-text))
+
+(register-hook! 'after-reply
+  (lambda (r cfg) `(msg assistant ,(string-append (assistant-text r) "!") () stop (usage))))
+(check "ext: after-reply can rewrite the reply before it is stored" "R!" (reply-text))
+
+(hooks-restore! hs2)
+
+(check "ext: with no veto hook, veto-reason is #f" #f (veto-reason 'before-tree #f #f))
+
+(check "ext: a hook returning #f does not veto"
+       #f
+       (begin (register-hook! 'before-fork (lambda (s t) #f))
+              (let ((r (veto-reason 'before-fork #f #f)))
+                (hooks-restore! hs2)
+                r)))
+
+(check "ext: a returns-a-reason hook vetoes"
+       "no forking"
+       (begin (register-hook! 'before-fork (lambda (s t) '(cancel . "no forking")))
+              (let ((r (veto-reason 'before-fork #f #f)))
+                (hooks-restore! hs2)
+                r)))
+
+(check "ext: the first veto wins"
+       "first"
+       (begin (register-hook! 'before-fork (lambda (s t) '(cancel . "first")))
+              (register-hook! 'before-fork (lambda (s t) '(cancel . "second")))
+              (let ((r (veto-reason 'before-fork #f #f)))
+                (hooks-restore! hs2)
+                r)))
+
+(check "ext: a broken veto hook is skipped, not treated as a veto"
+       #f
+       (begin (register-hook! 'before-tree (lambda (a b) (error 'boom "no")))
+              (let ((r (veto-reason 'before-tree #f #f)))
+                (hooks-restore! hs2)
+                r)))
+
+(hooks-restore! hs2)
+
+;;----------------------------------------------------------------------------
+(printf "== streaming (SSE assembly) ==~%")
+
+(check "stream: only `data:` lines yield frames, and [DONE] ends it"
+       '("{\"a\":1}" #f #f #f done #f)
+       (map sse-frame '("data: {\"a\":1}" "" ": keep-alive" "event: ping" "data: [DONE]" "data:")))
+
+(check "stream: absent keys stream, an explicit #f does not"
+       '(#t #f)
+       (list (streaming? '()) (streaming? '((stream . #f)))))
+
+;; Fold chunk-JSON strings through the accumulator -> (MESSAGE TEXTS THINKS).
+(define (stream-fold chunks)
+  (let loop ((cs chunks) (acc (acc-new)) (texts '()) (thinks '()))
+    (cond
+      ((null? cs) (list (acc->message acc) (reverse texts) (reverse thinks)))
+      (else
+       (let-values (((a t k) (acc-step acc (read-json-string (car cs)))))
+         (loop (cdr cs)
+               a
+               (if (string=? t "") texts (cons t texts))
+               (if (string=? k "") thinks (cons k thinks))))))))
+
+;; a JSON `null` reads as '(), which is truthy, so an (or X "") guard misses it
+;; -- and DeepSeek sends "content": null on every chunk that carries only
+;; reasoning_content, so this is the common case
+(check "stream: a JSON null content does not break the fold"
+       '("Hello" ("hmm"))
+       (let ((r (stream-fold '("{\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":null,\"reasoning_content\":\"\"}}]}"
+                              "{\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"hmm\"}}]}"
+                              "{\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}"))))
+         (list (assistant-text (car r)) (caddr r))))
+
+(check "stream: text deltas are delta-only, never the accumulated text"
+       '("Hel" "lo")
+       (cadr (stream-fold '("{\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}"
+                           "{\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}"))))
+
+(check "stream: the finished message is what a blocking decode would have given"
+       '(msg assistant "Hello" () stop ((input . 7) (output . 2) (cache-read . 0) (cache-write . 0)))
+       (car (stream-fold (list "{\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}"
+                               "{\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}"
+                               (string-append
+                                "{\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],"
+                                "\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2}}")))))
+
+(check "stream: tool-call fragments are concatenated per index"
+       '((call "call_1" read ((path . "a.scm"))))
+       (match (car (stream-fold
+                    '("{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"pa\"}}]}}]}"
+                      "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"th\\\":\\\"a.scm\\\"}\"}}]}}]}"
+                      "{\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}")))
+         [(msg assistant ,c ,calls ,stop ,u) calls]
+         [,other #f]))
+
+(check "stream: two interleaved tool calls keep their own argument streams"
+       '((call "c0" read ((path . "a"))) (call "c1" ls ()))
+       (match (car (stream-fold
+                    '("{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c0\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"a\\\"}\"}}]}}]}"
+                      "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"c1\",\"function\":{\"name\":\"ls\",\"arguments\":\"{}\"}}]}}]}"
+                      "{\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}")))
+         [(msg assistant ,c ,calls ,stop ,u) calls]
+         [,other #f]))
+
+(check "stream: finish_reason and usage come from the last chunk that carries them"
+       '(tool-use 10 2)
+       (match (car (stream-fold
+                    (list "{\"choices\":[{\"delta\":{\"content\":\"x\"}}]}"
+                          (string-append
+                           "{\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],"
+                           "\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}"))))
+         [(msg assistant ,c ,calls ,stop ,usage)
+          (list stop (assq-ref usage 'input) (assq-ref usage 'output))]
+         [,other #f]))
+
+(check "stream: assembling a stream equals decoding the same response in one piece"
+       #t
+       (let* ((one (string-append
+                    "{\"choices\":[{\"message\":{\"content\":\"Hi\",\"tool_calls\":["
+                    "{\"id\":\"c1\",\"function\":{\"name\":\"ls\",\"arguments\":\"{}\"}}]},"
+                    "\"finish_reason\":\"tool_calls\"}],"
+                    "\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}"))
+              (json (read-json-string one))
+              (ch (vector-ref (assq-ref json 'choices) 0))
+              (blocking (decode-assistant (assq-ref ch 'message)
+                                          (assq-ref ch 'finish_reason)
+                                          (assq-ref json 'usage)))
+              (streamed (car (stream-fold
+                              (list "{\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}"
+                                    "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"ls\",\"arguments\":\"{}\"}}]}}]}"
+                                    (string-append
+                                     "{\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],"
+                                     "\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}"))))))
+         (equal? blocking streamed)))
 
 (printf "~%---~%~a passed, ~a failed~%" *pass* *fail*)
 (if (> *fail* 0) (exit 1) (exit 0))

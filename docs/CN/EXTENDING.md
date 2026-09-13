@@ -37,12 +37,16 @@ hook 按注册顺序执行，每个都能看到上一个的结果（中间件风
 | hook | 参数 | 可返回 |
 |---|---|---|
 | `session-start` | `session config` | 忽略（只用副作用） |
+| `before-agent-start` | `text session config` | `'(prompt . TEXT)`、`'(inject . TEXT)`、`#f` |
 | `input` | `text` | `'continue`、`'(transform TEXT)`、`'handled` |
 | `before-request` | `messages config` | 替换后的消息列表 |
 | `before-provider-request` | `payload config` | 替换后的 JSON payload |
 | `tool-call` | `name args` | `'(block . REASON)` 或 `'(args . NEW-ARGS)` |
 | `tool-result` | `name args out is-error` | `(list 新OUT 新IS-ERROR)` |
+| `after-reply` | `reply config` | 替换后的回应 |
 | `before-compact` | `reason instructions` | `'(cancel . WHY)` 或 `'(instructions . TEXT)` |
+| `before-fork` | `session target` | `'(cancel . WHY)` |
+| `before-tree` | `session target` | `'(cancel . WHY)` |
 | `session-end` | `session` | 忽略 |
 
 实践上要注意的几点：
@@ -51,6 +55,14 @@ hook 按注册顺序执行，每个都能看到上一个的结果（中间件风
   它不会中止本轮。
 - `tool-call` 的参数改写对后续 hook 和真正执行都可见；之后不会重新校验（与 pi 相同）。
 - `before-request` 是非破坏性的上下文编辑：改变发出去的内容，但不碰会话。
+- `before-agent-start` 每个用户 prompt 跑一次，时机在输入管线定稿之后：用
+  `'(prompt . TEXT)` 改写它，或用 `'(inject . TEXT)` 在它前面插一条消息（项目事实、
+  提醒、检索到的上下文）。它是**每 prompt** 阶段，`before-request` 是**每请求**阶段。
+- `after-reply` 看到的是模型回应解码之后、落盘之前的那份数据，所以 hook 可以脱敏、
+  注解或替换它。它作用于“进来”的方向；“出去”的方向是 `before-provider-request`。
+- `before-fork` 与 `before-tree` 是**否决**阶段：在 fork 或移动游标之前跑，可返回
+  `'(cancel . WHY)`。`--fork` 遇到否决会以非零码退出，所以脚本不会把“被拒绝”误当成
+  “已 fork”。
 - `before-compact` 返回的 instructions 会追加到摘要提示里，这是做领域专用检查点的
   办法。
 
@@ -122,7 +134,9 @@ pi 的扩展系统更大，是因为它的扩展是 TypeScript 模块：需要�
 - 启动时会打印 `[sah] extensions: ...`，列出加载成功的每个扩展文件。
 - 抛异常的 hook 会打印 `[sah] hook NAME failed: ...` 然后跳过——所以轮次中间出现
   堆栈，通常是扩展的问题，不是 sah 的。
-- 一切都在启动时加载：改完扩展重启 sah。没有热重载。
+- 一切都在启动时加载。`/reload` 会在运行中的会话里重新读取所有扩展文件、重新发现
+  skills 与模板，所以改扩展不用重启。它会先把注册表恢复到内置状态，因此被删掉的
+  扩展（以及它注册的 hook）会真正消失。
 
 ## 内置命令与输入管线
 
@@ -132,7 +146,8 @@ pi 的扩展系统更大，是因为它的扩展是 TypeScript 模块：需要�
 sah "/context"          # 下一次请求会带什么
 ```
 
-内置命令有 `/compact`、`/context`、`/tree`、`/label`、`/name`、`/help`。同名的扩展
+内置命令有 `/compact`、`/context`、`/tree`、`/label`、`/name`、`/fork`、
+`/reload`、`/help`。同名的扩展
 命令会输给内置的（内置在扩展之后注册，而最后注册的同名命令胜出）。
 
 一条用户消息会依次经过几个阶段，每个阶段查自己的注册表：

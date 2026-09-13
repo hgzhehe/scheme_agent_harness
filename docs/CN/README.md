@@ -24,8 +24,12 @@ hello.scm prints 42.
 ## 特性
 
 - **Agent 循环** —— 构建上下文、调用模型、执行工具、重复。
+- **流式** —— 回应以 SSE 读取并边到边渲染（`message-delta` / `thinking-delta`）；
+  `(stream . #f)` 回退成一次阻塞请求，一条什么都没给的流也会自动回退。
 - **单 provider** —— DeepSeek（OpenAI 兼容的 chat completions）。
-- **五个工具** —— `read`、`write`、`edit`、`shell`、`eval`。
+- **八个工具** —— `read`、`write`、`edit`、`ls`、`grep`、`find`、`shell`、
+  `eval`。其中哪些真正提供给模型是可配的（`tools` / `exclude-tools`，或
+  `--tools` / `--exclude-tools` / `--no-tools`）。
 - **可扩展** —— 扩展就是注册 hook / 工具 / 命令的 Scheme 文件
   （`~/.sah/extensions/*.ss`、`<项目>/.sah/extensions/*.ss`）。见
   [EXTENDING.md](EXTENDING.md)。
@@ -41,8 +45,8 @@ hello.scm prints 42.
 - **Scheme 原生配置** —— `~/.sah/config.scm` 就是一个 alist。
 - **`eval`** —— 在运行中的进程里求值 Scheme；能用基础 Chez，也能调到 sah 自己的
   定义。状态跨轮存活。
-- **独立可执行文件** —— `build.scm` 把一切编译成 `dist/sah.exe` + `dist/sah.boot`。
-- **离线测试** —— 34 项，不需要联网。
+- **独立可执行文件** —— `build.scm` 把一切编译成 `dist/sah.exe` + `dist/sah.boot`（POSIX 上是 `dist/sah`）。
+- **离线测试** —— 967 项，不需要联网。
 
 ## 环境要求
 
@@ -99,6 +103,9 @@ sah [options] [--] [prompt | @file ...]
 | `--model <id>` | 模型 id（默认 `deepseek-flash`） |
 | `--base-url <url>` | API base URL |
 | `--max-steps <n>` | agent 循环最大轮数（默认 1000） |
+| `--tools <a,b>` | 只提供这些工具 |
+| `--exclude-tools <a,b>` | 提供除这些之外的全部工具 |
+| `--no-tools` | 一个工具都不给（模型只能凭上下文回答） |
 | `-H`, `--usage` | 显示帮助 |
 | `--` | 停止解析选项，后面都当作 prompt |
 | `@file` | 把文件内容并入 prompt |
@@ -187,16 +194,26 @@ echo 'export SAH_API_KEY=sk-xxx' >> ~/.zshrc
 1. `~/.sah/config.scm` 里的 `system` 键
 2. `~/.sah/SYSTEM.md`（全局）
 3. `<cwd>/.sah/SYSTEM.md`（项目级）
-4. 内置 prompt —— 镜像于 [`SYSTEM.md`](../../sah/SYSTEM.md)
+4. 内置 prompt —— 其中的工具表由实际启用的工具生成（受 `--tools` /
+   `--exclude-tools` 影响）；样例见 [`SYSTEM.md`](../../sah/SYSTEM.md)
 
 ## 工具
 
 | 工具 | 参数 | 行为 |
 |------|------|------|
-| `read` | `path` | 返回文件内容 |
+| `read` | `path`、`offset`?、`limit`? | 返回文件内容，或其中的一段行范围（`offset` 从 1 开始） |
 | `write` | `path`、`content` | 写文件；自动创建父目录 |
+| `edit` | `path`、`edits:[{oldText,newText}]` | 精确文本替换；每个 `oldText` 在原文里必须恰好匹配一次 |
+| `ls` | `path`? | 列目录，已排序；目录以斜杠结尾 |
+| `grep` | `pattern`、`path`?、`ignore-case`?、`limit`? | 在文件里搜索**字面**字符串（不是正则）；返回 `path:line: text` |
+| `find` | `pattern`、`path`?、`limit`? | 按 glob（`*` 任意串、`?` 单字符）匹配文件**名** |
 | `shell` | `command` | 在启动 sah 的终端 shell 里执行命令（PowerShell / cmd / bash）；返回合并后的 stdout/stderr。无输出 → `(no output)` |
 | `eval` | `code` | 在本进程里求值一个或多个 Scheme 表达式；返回捕获的输出和打印的值 |
+
+`ls`、`grep`、`find` 会跳过点目录（`.git` 等）以及构建/缓存目录
+（`node_modules`、`target`、`dist`、`build`）。`grep` 是字面匹配是有意为之：
+Chez 不带正则库，需要模式匹配时请用 `shell` 调真正的 `grep`。单个工具的输出上限是
+20000 字符，超出部分会被截断并附上标记；`read` 用 `offset` 取剩下的部分。
 
 `eval` 是这个项目的重点。因为它和 agent 在同一个进程里运行，定义可以跨轮存活，
 agent 也能自省宿主：
@@ -228,7 +245,7 @@ REPL 里用 `/compact` 手动压缩（可 `/compact <instructions>` 指定摘要
 datum：
 
 ```scheme
-(session 2 "1e3de567" "F:/proj" 1789022830878 "deepseek-flash")
+(session 3 "1e3de567" "F:/proj" 1789022830878 "deepseek-flash")
 (message 0 #f 1789022830900
          (msg user "hi"))
 (message 1 0 1789022831000
@@ -274,12 +291,16 @@ REPL 内：`/compact [instructions]`、`/context`（下一次请求会带什么�
 (msg user "hi")
 (msg system "You are sah...")
 (msg assistant "let me look" ((call "c1" read ((path . "a.scm")))) tool-use (usage ...))
-(msg tool "c1" read "file contents")
+(msg tool "c1" read "file contents" #f)
 
+(ev message-start)
+(ev message-delta "let me ")            ; 流式，仅增量
+(ev message-delta "look")
+(ev thinking-delta "reasoning...")       ; DeepSeek 的 reasoning_content
 (ev tool-start "c1" read ((path . "a.scm")))
 (ev tool-end   "c1" read #f "file contents")
 
-(session 2 "1e3de567" "F:/proj" 1700000000000 "deepseek-flash")   ; header 行
+(session 3 "1e3de567" "F:/proj" 1700000000000 "deepseek-flash")   ; header 行
 (message 0 #f 1700000000001 (msg user "hi"))                     ; entry，id 即下标
 (message 1 0 1700000000002 (msg assistant "hi" '() stop (usage)))
 
@@ -333,7 +354,8 @@ src/ai/             chat.ss + providers/openai-compatible.ss
 src/session/        log.ss（不可变 entry 树）+ manager.ss（SexprL 文件）
                     + discovery.ss（查找/选择）+ pi-format.ss（读写 pi 的
                     JSONL，供 --export-pi / --import-pi 使用）
-src/tools/          registry.ss + read.ss write.ss edit.ss shell.ss eval.ss
+src/tools/          registry.ss + read.ss write.ss edit.ss ls.ss grep.ss
+                    find.ss shell.ss eval.ss
 src/agent/          agent.ss（循环）+ context.ss + compaction.ss
                     + branch.ss（为被放弃的分支生成摘要）
 src/modes/          cli.ss + oneshot.ss（--export-pi/--import-pi/--fork）
@@ -377,6 +399,6 @@ scheme --script sah.ss --repl        # 从源码运行
 
 ## 尚未实现
 
-流式、多 provider、会话树 *UI*（数据模型和 `/tree` 已有）、RPC/JSON 模式、TUI、
-沙箱，以及 pi 的项目*信任*机制（sah 无条件加载项目扩展，见
+中断运行中的请求、多 provider、会话树 *UI*（数据模型和 `/tree` 已有）、RPC/JSON
+模式、TUI、沙箱，以及 pi 的项目*信任*机制（sah 无条件加载项目扩展，见
 [EXTENDING.md](EXTENDING.md)）。见路线图。

@@ -24,6 +24,8 @@
 ;;;   (ev agent-start)                    one agent run begins
 ;;;     (ev turn-start STEP)              one model call + its tool calls
 ;;;       (ev message-start)              the request is going out
+;;;       (ev message-delta TEXT)         streaming: text as it arrives
+;;;       (ev thinking-delta TEXT)        streaming: reasoning as it arrives
 ;;;       (ev message-end MSG)            the assistant message is in
 ;;;       (ev tool-start ID NAME ARGS)    per requested tool
 ;;;       (ev tool-end   ID NAME IS-ERROR OUT)
@@ -40,6 +42,12 @@
 ;;; tools", the second says "the harness is idle". A consumer that wants to
 ;;; know when it is safe to act (an extension, a script) should wait for the
 ;;; second, which is exactly why pi has both.
+;;;
+;;; The delta events are the streaming half of `message-end` and are knowingly
+;;; redundant with it: a consumer that renders incrementally uses the deltas,
+;;; and one that only cares about the finished message ignores them. They are
+;;; delta-only (never the accumulated text), which is the same contract pi's
+;;; `message_update` has, so a stream's size stays linear.
 
 (define *subscribers* '())          ; (TOKEN . PROC), newest first
 (define *next-token* 0)

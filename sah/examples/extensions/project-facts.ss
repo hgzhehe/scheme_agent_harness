@@ -1,24 +1,36 @@
-;;; project-facts.ss -- example sah extension: a custom tool plus a command.
+;;; project-facts.ss -- example sah extension: a tool, a command, and a hook.
 ;;;
-;;; Shows both extension surfaces that do not need hooks:
-;;;   - register-tool!    a tool the model can call
-;;;   - register-command! a /command for the user
+;;; Shows the three extension surfaces:
+;;;   - register-tool!        a tool the model can call
+;;;   - register-command!     a /command for the user
+;;;   - register-hook!        something that runs at a stage of the loop
 ;;;
 ;;;   cp examples/extensions/project-facts.ss ~/.sah/extensions/
-
-(register-tool! 'ls
-  "List the entries of a directory (names only, sorted)."
-  (schema '((path "string" "Directory to list (default \".\")")))
-  (lambda (args)
-    (let ((dir (or (assq-ref args 'path) ".")))
-      (if (not (file-exists? dir))
-          (error 'ls (format "no such directory: ~a" dir))
-          (string-join (sort-strings (directory-list dir)) "\n")))))
+;;;
+;;; Note the tool is called `now`, not `ls`: registering a name that a built-in
+;;; already uses would REPLACE the built-in (the last registration of a name
+;;; wins), which is a legitimate override but a confusing thing to do by
+;;; accident. Built-ins: read write edit ls grep find shell eval.
 
 (register-tool! 'now
   "Current wall-clock time as milliseconds since the epoch."
   (schema '())
   (lambda (args) (format "~a" (now-ms))))
+
+;; `before-agent-start` runs once per user prompt and may rewrite it, or add a
+;; message ahead of it. This is the cheap way to put facts the model cannot
+;; derive back in front of it on every turn.
+(define (project-facts)
+  (string-append
+   "Facts about this machine: "
+   (format "instance=~a " (or (getenv "SAH_INSTANCE") "unknown"))
+   (format "shell=~a" (or (getenv "SAH_SHELL") "auto"))))
+
+(register-hook! 'before-agent-start
+  (lambda (text session config)
+    (if (string-prefix? "/" text)          ; slash commands are not prompts
+        #f
+        `(inject . ,(project-facts)))))
 
 (register-command! 'tools "List every registered tool."
                    (lambda (args)

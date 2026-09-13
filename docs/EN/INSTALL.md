@@ -37,12 +37,34 @@ scheme --script build.scm
 Output (`dist/`):
 
 ```
-dist/sah.exe     copy of the Chez runtime
+dist/sah.exe     copy of the Chez runtime   (dist/sah on Linux/macOS)
 dist/sah.boot    self-contained boot (Chez base boot + compiled program)
 ```
 
-These **two files must stay together** and keep their names: `sah.exe` looks for
-`sah.boot` next to itself.
+The runtime file is `sah.exe` on Windows and `sah` on Linux/macOS; it is
+chmod'ed executable on POSIX, so `./dist/sah` runs directly. These **two files
+must stay together** and keep their names: `sah.exe` looks for `sah.boot` next
+to itself.
+
+### Boot discovery
+
+`build.scm` locates the base `petite.boot` / `scheme.boot` automatically, by
+trying the layouts Chez itself uses — `<dir>/<name>.boot`, `<prefix>/boot/<machine>/`,
+and the versioned `<prefix>/lib/csv<version>/<machine>/` (plus the Homebrew
+`opt/` and `Cellar/` equivalents). Set `SAH_BOOT_DIR` to the directory holding
+the base boots, or `SAH_RUNTIME_BOOT` to one specific file, if your install
+uses a layout it does not recognise.
+
+`<machine>` is the Chez machine type — `(machine-type)`, e.g. `tarm64osx`,
+`ta6nt`, `ta6le` — and the build reports it as `[build] machine: ...`. Platform
+differences are keyed off it (`src/util/platform.ss`) rather than off OS tests,
+following Chez's own convention.
+
+When both base boots are found the result is **self-contained**: the whole chain
+is embedded in `dist/sah.boot`, so the pair runs anywhere. Otherwise the build
+says `NOT self-contained` and the artifact only runs where that Chez
+installation is present. Either way the build finishes by smoke-testing the
+artifact (`<artifact> --usage`) and reports the result.
 
 ### Choosing the runtime
 
@@ -64,12 +86,19 @@ and the version label differ. Override the executable path with
 2. Compiles it → `build/sah-boot.so`.
 3. Makes a subordinate boot `build/sah.boot` referencing the chosen runtime.
 4. Concatenates the runtime boot chain + the subordinate boot → `dist/sah.boot`.
-5. Copies the runtime executable → `dist/sah.exe`.
+5. Copies the runtime executable → `dist/sah.exe` (`dist/sah` on POSIX).
 
 The generated program also **embeds the source text** and evaluates it into the
 interaction environment at startup. That is what lets the `eval` tool reach
 sah's own bindings (`assq-ref`, `short-id`, the tool registry, …) in the
 compiled executable, not just the base Chez library.
+
+Because of that, the executable **enters through the interaction environment**
+rather than through the compiled bindings. `load` — which is how extensions,
+skills and prompts are read — evaluates into the interaction environment, so a
+compiled `main` would read a second, separate copy of every registry and an
+extension's `register-hook!` / `register-tool!` would silently do nothing. One
+process must have one set of registries.
 
 > The build aborts early if a running `sah.exe` holds the file (Windows locks
 > executables). Close it and retry.

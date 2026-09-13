@@ -26,8 +26,8 @@
 ;;;   - messages. pi's assistant content is an array of parts and can carry
 ;;;     thinking blocks and images. sah has neither: thinking is dropped on
 ;;;     import and images are reported as text placeholders. pi's toolResult
-;;;     carries isError, which sah does not store: import keeps the text, export
-;;;     writes false.
+;;;     carries isError, which sah stores as the tool message's last slot
+;;;     (format v3), so that one round-trips.
 ;;;   - the system prompt is not an entry in either format, so system messages
 ;;;     are emitted as user messages on export.
 ;;;   - entry types we do not know are preserved on import as a `custom` entry
@@ -116,6 +116,10 @@
                (content . ,(sah-content-parts content calls))
                (stopReason . ,(sah-stop->pi stop)))
              (if usage (list (cons 'usage (sah-usage->pi usage))) '()))]
+    [(msg tool ,id ,name ,content ,is-error)
+     `((role . "toolResult") (toolCallId . ,id) (toolName . ,(symbol->string name))
+       (content . #(((type . "text") (text . ,content))))
+       (isError . ,(and is-error #t)))]
     [(msg tool ,id ,name ,content)
      `((role . "toolResult") (toolCallId . ,id) (toolName . ,(symbol->string name))
        (content . #(((type . "text") (text . ,content))))
@@ -238,7 +242,8 @@
       ((string=? role "toolResult")
        `(msg tool ,(or (assq-ref m 'toolCallId) "")
               ,(string->symbol (or (assq-ref m 'toolName) "tool"))
-              ,(pi-content->text content)))
+              ,(pi-content->text content)
+              ,(and (assq-ref m 'isError) #t)))
       (else `(msg user ,(pi-content->text content))))))
 
 (define (pi-entry->sah d i tab)
