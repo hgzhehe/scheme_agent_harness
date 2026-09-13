@@ -106,13 +106,23 @@
           [,other (loop (cdr ms))]))))
 
 ;; The provider reports the size of the prompt it received; that is the real
-;; context size. Without one we fall back to the log's cached per-entry token
-;; measure: O(1) while no compaction is in play (so the per-turn auto-compact
-;; check costs nothing), O(context) once a summary has replaced a prefix.
+;; context size, and it is larger than the log's own measure because it counts
+;; the system prompt and the tool schemas too. `input` is that number, and it is
+;; used ALONE: `cache-read` is a subset of it, so adding the two double counts the
+;; cached prefix, which on a long session is nearly the whole prompt. That was a
+;; real thrash -- the check saw about twice the context, so a compaction fired and
+;; then fired again on the next turn, each time discarding context that had never
+;; been over the window (4 compactions in 6 turns).
+;;
+;; Without a usage we fall back to the log's cached per-entry token measure: O(1)
+;; while no compaction is in play (so the per-turn auto-compact check costs
+;; nothing), O(context) once a summary has replaced a prefix. A usage of zero
+;; means the provider did not report one, not that the context is empty.
 (define (context-tokens session config)
-  (let ((u (last-assistant-usage session)))
-    (if u
-        (+ (or (assq-ref u 'input) 0) (or (assq-ref u 'cache-read) 0))
+  (let* ((u (last-assistant-usage session))
+         (n (if u (or (assq-ref u 'input) 0) 0)))
+    (if (> n 0)
+        n
         (let-values (((summary kept) (log-context-parts (session-log session) #f)))
           (if (not summary)
               (log-tokens (session-log session))      ; O(1): context = whole log

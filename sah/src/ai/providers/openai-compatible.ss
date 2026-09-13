@@ -60,6 +60,11 @@
 ;; decode
 ;;----------------------------------------------------------------------------
 
+;; `input` is the WHOLE prompt: `prompt_cache_hit_tokens` is the part of
+;; `prompt_tokens` that hit the cache, i.e. a SUBSET of it, not a sibling of it.
+;; Anything that wants the size of the context wants `input` alone
+;; (agent/compaction.ss used to add the two, and so counted the cached prefix --
+;; nearly the whole prompt on a long session -- twice).
 (define (decode-usage u)
   (if u
       `((input . ,(or (assq-ref u 'prompt_tokens) 0))

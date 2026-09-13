@@ -37,6 +37,13 @@ entry 自带 parent 下标，于是所有 entry 构成一棵树。三个后果�
 - **上下文是一个视图。** `log-context-messages` 从游标沿父链回溯，找到该路径上最新
   的 `compaction` entry，返回 `摘要 + 其 first-kept id 起的 entry`。这与 pi 的
   `buildSessionContext` 完全一致，大约十行。
+- **两种 token 口径，不可互换。** *触发*比较的是 provider 报告的、它实际收到的那次
+  prompt 的大小（`usage.input`）——拿它跟窗口比才是对的，因为它把系统提示和工具 schema
+  也算进去了。*切点*与 `keep-recent-tokens` 预算用的是日志自己的逐 entry 估计，只算消息，
+  比前者低约四分之一。两者必须分清。尤其：OpenAI 兼容的 provider 里 `input` 是**整个**
+  prompt，而 `cache-read` 是其中命中缓存的那一部分，于是 `input + cache-read` 把缓存前缀
+  算了两遍——长会话上是 1.8~2 倍，结果是触发在远未接近窗口的上下文上开火，下一轮又开火，
+  反复丢掉根本没超预算的上下文。
 
 ### Entry 形状
 

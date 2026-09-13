@@ -43,6 +43,17 @@ entries form a tree. Three consequences:
   the cursor, finds the newest `compaction` entry on that path, and returns
   `summary + entries at or after its first-kept id`. This is exactly pi's
   `buildSessionContext`, in about ten lines.
+- **Two token currencies, and they are not interchangeable.** The *trigger*
+  compares against the size the provider reported for the prompt it received
+  (`usage.input`); that is the right thing to compare with a window, because it
+  counts the system prompt and the tool schemas too. The *cut* and the
+  `keep-recent-tokens` budget are in the log's own per-entry estimate, which
+  counts messages only and runs about a quarter under. Keep the two apart. In
+  particular, an OpenAI-compatible provider reports `input` as the WHOLE prompt
+  and `cache-read` as the part of it that hit the cache, so `input + cache-read`
+  counts the cached prefix twice -- 1.8x to 2x on a long session, which makes the
+  trigger fire on a context nowhere near the window and then fire again on the
+  next turn, discarding context that was never over budget.
 
 ### Entry shapes
 

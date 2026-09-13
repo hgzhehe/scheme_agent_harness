@@ -365,6 +365,39 @@
                ((eq? (entry-kind (car es)) 'compaction) #t)
                (else (loop (cdr es))))))
 
+;; `input` is the whole prompt and `cache-read` is the part of it that hit the
+;; cache, so the two must not be added: with the addition the check saw about
+;; twice the real context and compacted on every turn.
+(define cs-usage (session-new tmp "mock"))
+(for-each
+ (lambda (i)
+   (session-add-message! cs-usage `(msg user ,(string-append "u" (number->string i))))
+   (session-add-message! cs-usage `(msg assistant ,(string-append "a" (number->string i)) ()
+                                        stop ((input . 30000) (output . 5)
+                                              (cache-read . 29900) (cache-write . 0)))))
+ '(0 1 2))
+(define (compaction-count s)
+  (length (filter (lambda (e) (eq? (entry-kind e) 'compaction)) (session-entries s))))
+(define cs-cfg (list (cons 'compact #t) (cons 'context-window 64000)
+                     (cons 'reserve-tokens 16384) (cons 'keep-recent-tokens 1)
+                     (cons 'system "t") (cons 'api-key "x") (cons 'base-url "")))
+(check "compaction: cache-hits are a subset of input, not an addition"
+       30000 (context-tokens cs-usage cs-cfg))
+(maybe-auto-compact! cs-usage cs-cfg)
+(check "compaction: 30000 tokens in a 64000 window is left alone" 0 (compaction-count cs-usage))
+;; control: the same session must compact when the window really is smaller
+(maybe-auto-compact! cs-usage (list (cons 'compact #t) (cons 'context-window 20000)
+                                    (cons 'reserve-tokens 0) (cons 'keep-recent-tokens 1)
+                                    (cons 'system "t") (cons 'api-key "x") (cons 'base-url "")))
+(check "compaction: the same session does compact over the window" 1 (compaction-count cs-usage))
+;; a usage of zero means "not reported", so the log's own measure has to answer
+(define cs-zero (session-new tmp "mock"))
+(session-add-message! cs-zero '(msg user "hello there"))
+(session-add-message! cs-zero '(msg assistant "hi" () stop ((input . 0) (output . 0)
+                                                             (cache-read . 0) (cache-write . 0))))
+(check "compaction: a zero usage falls back to the log measure"
+       #t (> (context-tokens cs-zero cs-cfg) 0))
+
 ;;----------------------------------------------------------------------------
 (section! "fp: persistent measured vector")
 

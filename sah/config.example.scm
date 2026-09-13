@@ -14,9 +14,12 @@
  (model    . "deepseek-flash")
  (max-steps . 1000)
  (compact . #t)              ; automatic context compaction
- (context-window . 64000)   ; model context window, in tokens
- (reserve-tokens . 16384)   ; headroom kept for the reply
- (keep-recent-tokens . 20000) ; recent tokens kept verbatim when compacting
+ (context-window . 64000)   ; model context window, in prompt tokens -- the whole
+                            ; prompt as the provider counts it (system + tools +
+                            ; messages), not the log's own estimate
+ (reserve-tokens . 16384)   ; headroom kept for the reply, same currency
+ (keep-recent-tokens . 20000) ; recent tokens kept verbatim when compacting; in
+                            ; the log's own estimate, not the provider's
  (stream . #t)              ; read the reply as SSE and render it as it arrives;
                             ; #f sends one blocking request instead
  ;; Tools offered to the model. Built-ins: read write edit ls grep find shell
