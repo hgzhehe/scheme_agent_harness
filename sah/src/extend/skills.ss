@@ -121,3 +121,20 @@
         (begin (printf "no such skill: ~a~%" name) 'handled)
         (string-append "Follow this skill:\n\n" (skill-body s)
                        (if (string=? rest "") "" (string-append "\n\nUser: " rest))))))
+
+;;----------------------------------------------------------------------------
+;; /skill:NAME as an input handler (extend/input.ss, stage 3)
+;;----------------------------------------------------------------------------
+
+;; "/skill:foo bar" parses as the command name `skill:foo`, so the skill name is
+;; whatever follows the colon.
+(define (skill-command-arg name args)
+  (let* ((n (symbol->string name)) (sp (string-index n #\:)))
+    (and sp (string=? "skill" (substring n 0 sp))
+         (string-append (substring n (+ sp 1) (string-length n))
+                        (if (string=? args "") "" (string-append " " args))))))
+
+(register-input-handler!
+ (lambda (name args)
+   (let ((sk (skill-command-arg name args)))
+     (and sk (expand-skill-command sk)))))

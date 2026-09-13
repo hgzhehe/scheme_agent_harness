@@ -5,6 +5,13 @@
 ;;; same stream (that is pi's central design choice, and the reason its TUI is
 ;;; not "part of" the agent).
 ;;;
+;;; EVENTS OBSERVE, HOOKS TRANSFORM (core/hooks.ss). A subscriber is notified and
+;;; cannot change what the agent does; a hook is called at a stage and may
+;;; rewrite the value or block an action. `session-start` deliberately does both,
+;;; as a hook (may abort) and as an event (may observe). When in doubt: an
+;;; extension that wants to *influence* a run wants a hook, one that wants to
+;;; *watch* it wants a subscription.
+;;;
 ;;;   (subscribe! proc) -> TOKEN      (unsubscribe! TOKEN)
 ;;;
 ;;; `emit` fans out in registration order. A subscriber that raises is reported

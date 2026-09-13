@@ -25,10 +25,11 @@
 (load-src "core/config.ss")
 (load-src "extend/md.ss")
 (load-src "extend/commands.ss")
+(load-src "extend/input.ss")
 (load-src "extend/skills.ss")
 (load-src "extend/prompts.ss")
 (load-src "extend/loader.ss")
-(load-src "extend/input.ss")
+(load-src "extend/builtin-commands.ss")
 (load-src "ai/providers/openai-compatible.ss")
 (load-src "ai/chat.ss")
 (load-src "session/log.ss")
@@ -859,7 +860,7 @@
    (check "pi->sah: a label keeps its target index"
           1 (entry-target (list-ref entries 4)))
    (check "pi->sah: session-info keeps the name"
-          "conversion demo" (entry-target (list-ref entries 5)))
+          "conversion demo" (entry-name (list-ref entries 5)))
    (check "round trip: export -> import -> export is byte-identical"
           pi-jsonl
           (string-append
@@ -915,6 +916,72 @@
            (and (= 3 (session-count again))
                 (eq? 'message (entry-kind (car (session-entries again))))
                 (string? (session-id again))))))
+
+;;----------------------------------------------------------------------------
+(printf "== entry shapes, command registry, atomicity ==~%")
+
+;; the slot table in core/data.ss, asserted for every kind
+(define sl (log-empty))
+(define sl (log-push-message sl '(msg user "m")))
+(define sl (log-push-compaction sl "SUM" 0 1 '((k . 1))))
+(define sl (log-push-branch-summary sl 0 "BSUM"))
+(define sl (log-push-label sl 0 "L"))
+(define sl (log-push-session-info sl "NAME"))
+(define sl (log-push-custom sl "CT" '((d . 1))))
+(define sl (log-push-custom-message sl "CT" "CONTENT" #t))
+(define sl (log-push-model-change sl "prov" "mod"))
+(define sl (log-push-thinking-level sl "high"))
+
+(check "shapes: every kind has the documented length"
+       '((message 5) (compaction 8) (branch-summary 6) (label 6) (session-info 5)
+         (custom 6) (custom-message 7) (model-change 6) (thinking-level 5))
+       (map (lambda (e) (list (entry-kind e) (length e))) (log-entries sl)))
+(check "shapes: ids are the insertion indices and parents chain"
+       '(0 1 2 3 4 5 6 7 8) (map entry-id (log-entries sl)))
+(check "shapes: entry-summary dispatches (compaction slot 4, branch-summary slot 5)"
+       '("SUM" "BSUM")
+       (list (entry-summary (log-ref sl 1)) (entry-summary (log-ref sl 2))))
+(check "shapes: the payload accessors agree with the table"
+       '((msg user "m") 0 1 ((k . 1)) 0 "L" "NAME" "CT" ((d . 1)) "CONTENT" #t "prov" "mod" "high")
+       (list (entry-message (log-ref sl 0))
+             (entry-first-kept (log-ref sl 1)) (entry-tokens-before (log-ref sl 1))
+             (entry-details (log-ref sl 1))
+             (entry-from (log-ref sl 2))
+             (entry-label (log-ref sl 3)) (entry-name (log-ref sl 4))
+             (entry-custom-type (log-ref sl 5)) (entry-data (log-ref sl 5))
+             (entry-field (log-ref sl 6) 5) (entry-display (log-ref sl 6))
+             (entry-field (log-ref sl 7) 4) (entry-field (log-ref sl 7) 5)
+             (entry-field (log-ref sl 8) 4)))
+(check "shapes: entry-payload is the kind-specific tail"
+       '((0 "BSUM") ("prov" "mod") ("CT" "CONTENT" #t))
+       (list (entry-payload (log-ref sl 2)) (entry-payload (log-ref sl 7))
+             (entry-payload (log-ref sl 6))))
+
+;; commands are registered by main, not by the REPL, so print mode has them too
+(register-builtin-commands! (session-new tmp "mock") (list (cons 'system "t")))
+(check "commands: the built-ins exist without the REPL"
+       '(#t #t #t #t #t #t)
+       (map (lambda (n) (and (find-command n) #t))
+            '(compact context tree label name help)))
+(check "commands: /compact on an empty session is handled, not sent to the model"
+       'handled (process-input "/compact"))
+
+;; an input handler is a small extension point of the pipeline
+(register-input-handler! (lambda (name args) (and (eq? name 'demo) (string-append "DEMO:" args))))
+(check "input: a registered handler expands its command" "DEMO:x" (process-input "/demo x"))
+(check "input: unclaimed slash text still reaches the agent" "/nope x" (process-input "/nope x"))
+
+;; a failed summarization must leave the session exactly where it was
+(define atom (session-new tmp "mock"))
+(session-add-message! atom '(msg user "one"))
+(session-add-message! atom '(msg assistant "two" () stop ()))
+(define atom-before (list (session-count atom) (log-leaf (session-log atom))))
+(set! *chat-impl* (lambda (config messages tools) (error 'llm "summarizer exploded")))
+(guard (e (#t #t))
+  (branch-summarize! atom (list (cons 'system "t") (cons 'api-key "x") (cons 'base-url "")) 0))
+(check "branch: a failed summarization moves nothing"
+       atom-before
+       (list (session-count atom) (log-leaf (session-log atom))))
 (printf "~%---~%~a passed, ~a failed~%" *pass* *fail*)
 (if (> *fail* 0) (exit 1) (exit 0))
 

@@ -75,46 +75,53 @@
       (guard (e (#t #t)) (close-port p))
       (session-port-set! s #f))))
 
+
+;;----------------------------------------------------------------------------
+;; state changes
+;;----------------------------------------------------------------------------
+;; Every mutation of a session goes through here. There is one generic append
+;; (`session-push!`) and one place that flushes, so the "which entries need a
+;; whole-file rewrite" decision has a single implementation instead of nine.
+;;
+;; `session-push!` takes a function of the log rather than a kind and a field
+;; list, so that the shape of each entry stays defined in session/log.ss.
+
+(define (session-push! s push)
+  (session-log-set! s (push (session-log s)))
+  (session-flush! s))
+
 (define (session-add-message! s msg)
-  (session-log-set! s (log-push-message (session-log s) msg))
-  (session-flush! s))
-
+  (session-push! s (lambda (lg) (log-push-message lg msg))))
 (define (session-add-compaction! s summary first-kept tokens-before details)
-  (session-log-set! s (log-push-compaction (session-log s) summary first-kept tokens-before details))
-  (session-flush! s))
-
+  (session-push! s (lambda (lg) (log-push-compaction lg summary first-kept tokens-before details))))
 (define (session-add-branch-summary! s from-id summary)
-  (session-log-set! s (log-push-branch-summary (session-log s) from-id summary))
-  (session-flush! s))
-
+  (session-push! s (lambda (lg) (log-push-branch-summary lg from-id summary))))
 (define (session-add-label! s target-id label)
-  (session-log-set! s (log-push-label (session-log s) target-id label))
-  (session-flush! s))
-
+  (session-push! s (lambda (lg) (log-push-label lg target-id label))))
 (define (session-add-name! s name)
-  (session-log-set! s (log-push-session-info (session-log s) name))
-  (session-flush! s))
+  (session-push! s (lambda (lg) (log-push-session-info lg name))))
+(define (session-add-custom! s custom-type data)
+  (session-push! s (lambda (lg) (log-push-custom lg custom-type data))))
+(define (session-add-custom-message! s custom-type content display)
+  (session-push! s (lambda (lg) (log-push-custom-message lg custom-type content display))))
+(define (session-add-model-change! s provider model)
+  (session-push! s (lambda (lg) (log-push-model-change lg provider model))))
+(define (session-add-thinking-level! s level)
+  (session-push! s (lambda (lg) (log-push-thinking-level lg level))))
 
 ;; move the cursor without appending (the branch point of a /tree navigation)
 (define (session-branch! s id)
   (session-log-set! s (log-set-leaf (session-log s) id))
   s)
 
-(define (session-add-custom! s custom-type data)
-  (session-log-set! s (log-push-custom (session-log s) custom-type data))
-  (session-flush! s))
-
-(define (session-add-custom-message! s custom-type content display)
-  (session-log-set! s (log-push-custom-message (session-log s) custom-type content display))
-  (session-flush! s))
-
-(define (session-add-model-change! s provider model)
-  (session-log-set! s (log-push-model-change (session-log s) provider model))
-  (session-flush! s))
-
-(define (session-add-thinking-level! s level)
-  (session-log-set! s (log-push-thinking-level (session-log s) level))
-  (session-flush! s))
+;; Move the cursor AND append a summary in one step: the summary's parent has to
+;; be the new cursor, and doing it as two mutations left the session at the new
+;; branch point with no summary whenever the append failed.
+(define (session-branch-summary! s target-id from-id summary)
+  (let* ((lg (log-set-leaf (session-log s) target-id))
+         (lg (log-push-branch-summary lg from-id summary)))
+    (session-log-set! s lg)
+    (session-flush! s)))
 
 (define (session-new cwd model)
   (let* ((dir (session-dir cwd))

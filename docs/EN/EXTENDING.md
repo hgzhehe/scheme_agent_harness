@@ -138,3 +138,28 @@ Deliberate gaps, in order of how likely they are to matter:
   stack trace in the middle of a turn is usually an extension, not sah.
 - Everything is loaded at startup: edit an extension, restart sah. There is no
   hot reload.
+
+## Built-in commands and the input pipeline
+
+Commands are registered by `main` for every mode, so they work in print mode too:
+
+```bash
+sah "/context"          # what the next request would carry
+```
+
+The built-ins are `/compact`, `/context`, `/tree`, `/label`, `/name` and
+`/help`. An extension command with the same name loses (built-ins are registered
+after extensions, and the last registration of a name wins).
+
+A user message passes through stages, each of which consults its own registry:
+
+1. **commands** — `(register-command! NAME DESC HANDLER)`; a handler returns `#f`
+   (side effects only), a string (send this to the agent instead) or `'handled`.
+2. **input hooks** — `(register-hook! 'input ...)`; return `#f`, `'(transform TEXT)`
+   or `'handled`.
+3. **registered input handlers** — `(register-input-handler! (lambda (name args) ...))`
+   for a slash name of your own. `/skill:NAME` and `/template` are just two of
+   these, which is why the pipeline does not need to know about skills or
+   templates.
+
+Anything no stage claims is sent to the agent as ordinary text.

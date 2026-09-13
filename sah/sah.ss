@@ -44,10 +44,11 @@
 ;; extend: the customization surface (extensions, skills, prompt templates)
 (load-src "extend/md.ss")
 (load-src "extend/commands.ss")
+(load-src "extend/input.ss")
 (load-src "extend/skills.ss")
 (load-src "extend/prompts.ss")
 (load-src "extend/loader.ss")
-(load-src "extend/input.ss")
+(load-src "extend/builtin-commands.ss")
 
 ;; ai: models / providers
 (load-src "ai/providers/openai-compatible.ss")

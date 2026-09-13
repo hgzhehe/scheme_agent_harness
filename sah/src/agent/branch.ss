@@ -10,11 +10,23 @@
 ;;;   /tree to B, summarize
 ;;;   cursor: ... A -> B -> S -> E     (S = summary of C,D; E = next message)
 ;;;
-;;; This is the same summarization machinery as compaction (agent/compaction.ss):
-;;; one call to the model, structured summary, cumulative file tracking.
+;;; This is the same summarisation machinery as compaction: one call to the model
+;;; through `summarize-entries` (agent/compaction.ss), structured summary,
+;;; cumulative file tracking.
 ;;;
 ;;; Nothing is destroyed: C and D are still in the log, reachable by moving the
 ;;; cursor back to D.
+;;;
+;;; Ordering matters and is deliberate: the model call happens *first*, and only
+;;; then does the session move. A summarization failure therefore leaves the
+;;; session exactly where it was, and the move itself is one atomic state change
+;;; (`session-branch-summary!`).
+
+(define BRANCH-SUMMARY-INSTRUCTIONS
+  (string-append
+   "This is a branch that was abandoned. Preserve what was learned: what was "
+   "tried, what worked, what failed and why, and anything the next attempt "
+   "should not repeat."))
 
 ;; Entries that are on the old path but not on the new one, i.e. what the summary
 ;; has to cover. Both paths end at the common ancestor.
@@ -28,22 +40,13 @@
   (let* ((lg (session-log session))
          (old-leaf (log-leaf lg))
          (target (if (not target-id) -1 target-id))
-         (old-path (log-path lg old-leaf))
-         (new-path (if (< target 0) '() (log-path lg target)))
-         (gone (abandoned-entries old-path new-path))
-         (messages (entries->messages gone))
-         (conversation (serialize-conversation messages)))
-    (if (null? messages)
+         (gone (abandoned-entries (log-path lg old-leaf)
+                                  (if (< target 0) '() (log-path lg target)))))
+    (if (null? (entries->messages gone))
         #f
-        (let* ((ops (collect-file-ops messages '()))
-               (summary (summarize config conversation #f
-                                    "This is a branch that was abandoned. Preserve what was learned: what was tried, what worked, what failed and why, and anything the next attempt should not repeat."))
-               (summary+ (string-append summary (render-file-lists ops))))
-          (printf "[sah] summarising the abandoned branch (~a messages, ~a entries)~%"
-                  
-                  (length messages) (length gone))
-          ;; move the cursor first, so the summary is a child of `target-id`
-          (session-log-set! session (log-set-leaf lg (if (< target 0) #f target)))
-          (session-add-branch-summary! session (if (< target 0) #f old-leaf) summary+)
-          (emit `(ev branch-summary ,summary+))
-          summary+))))
+        (begin
+          (printf "[sah] summarising the abandoned branch (~a entries)~%" (length gone))
+          (let-values (((summary+ ops) (summarize-entries config gone '() '() BRANCH-SUMMARY-INSTRUCTIONS)))
+            (session-branch-summary! session (if (< target 0) #f target) old-leaf summary+)
+            (emit `(ev branch-summary ,summary+))
+            summary+)))))

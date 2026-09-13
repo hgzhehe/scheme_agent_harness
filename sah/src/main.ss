@@ -39,6 +39,9 @@
              (printf "[sah] extensions: ~a~%" (string-join (all-extensions) " ")))
            (emit `(ev session-start ,session))
            (run-hook-effects 'session-start (lambda (h) (h session config)))
+           ;; commands are a capability, not a mode: register them for print mode
+           ;; and the REPL alike (after extensions, so built-ins win a clash)
+           (register-builtin-commands! session config)
            (if (or (eq? (assq-ref opts 'mode) 'repl) (string=? prompt ""))
                (repl session config)
                (guard (e (#t (printf "error: ~a~%" (err->string e)) (set! status 1)))

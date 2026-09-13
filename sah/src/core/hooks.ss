@@ -1,5 +1,11 @@
 ;;; hooks.ss -- extension hook points.
 ;;;
+;;; HOOKS TRANSFORM, EVENTS OBSERVE (core/event.ss). A hook is called at a named
+;;; stage of the loop and may rewrite the value it is given or block the action;
+;;; a subscriber is only notified. The two jobs have different contracts:
+;;; merging them would either let an observer break a run, or leave a transformer
+;;; with no way to return a decision.
+;;;
 ;;; A hook is a named stage in the agent loop. An extension registers a procedure
 ;;; for a stage and sah calls it when it reaches that stage. Hooks run in
 ;;; registration order and each one sees the previous one's result, i.e. they

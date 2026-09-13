@@ -110,6 +110,11 @@ sah [options] [--] [prompt | @file ...]
 > sah sees them, so `-c`, `-h`, `--help` and `--version` are reserved by Chez.
 > Use `-C`/`--continue` and `-H`/`--usage`. Prefix a prompt that starts with
 > `-` with `--`.
+>
+> From **git-bash / MSYS on Windows**, an argument that looks like a path is
+> rewritten before sah sees it, so `sah "/compact"` arrives as
+> `C:/Program Files/Git/compact`. Use `MSYS_NO_PATHCONV=1 sah "/compact"`
+> (and give `SAH_HOME` a Windows path in that case).
 
 ## Configuration
 
@@ -268,7 +273,9 @@ session id, or a `.ss` file path). On exiting the REPL, sah prints
 and `sah --session <id>` all enter the REPL.
 
 Inside the REPL: `/compact [instructions]`, `/context` (what the next request
-would carry) and `/tree` (list entries, move the cursor).
+would carry), `/tree` (list entries, move the cursor), `/label`, `/name` and
+`/help`. Commands are a capability, not a mode: they work in print mode too
+(`sah "/context"`).
 
 ## Data conventions
 
@@ -331,10 +338,13 @@ src/core/           the agent's own concepts and infrastructure:
 src/extend/         the customization surface:
                       md.ss      frontmatter parsing
                       commands.ss  the /command registry
+                      input.ss   the input pipeline (commands -> input hook ->
+                                 registered handlers); nothing here knows what
+                                 a skill or a template is
                       skills.ss  SKILL.md discovery + progressive disclosure
                       prompts.ss /name templates ($1, $@, ${N:-default})
                       loader.ss  loads extensions, skills, prompts
-                      input.ss   commands -> input hook -> skills -> templates
+                      builtin-commands.ss  the commands sah ships with
 src/ai/             chat.ss + providers/openai-compatible.ss
 src/session/        log.ss (immutable entry tree) + manager.ss (SexprL files)
                     + discovery.ss (find/pick) + pi-format.ss (pi JSONL
@@ -376,7 +386,7 @@ main → run-agent ──► build context (context.ss: system + session context
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss   # 937 checks, offline (mock model)
+scheme --script tests/run-tests.ss   # 947 checks, offline (mock model)
 scheme --script bench/bench-fp.ss    # data-structure measurements
 scheme --script sah.ss --repl        # run from source
 ```

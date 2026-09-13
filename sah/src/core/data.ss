@@ -44,22 +44,61 @@
     [(msg ,role ,content) content]
     [,other ""]))
 
-(define (entry-kind e) (and (pair? e) (car e)))
-(define (entry-id e) (and (pair? e) (>= (length e) 2) (list-ref e 1)))
-(define (entry-parent e) (and (pair? e) (>= (length e) 3) (list-ref e 2)))
-(define (entry-ts e) (and (pair? e) (>= (length e) 4) (list-ref e 3)))
-(define (entry-message e) (and (pair? e) (>= (length e) 5) (list-ref e 4)))
+;;----------------------------------------------------------------------------
+;; reading entries
+;;----------------------------------------------------------------------------
+;; Every entry is `(KIND ID PARENT TS . PAYLOAD)`, so the first four slots are
+;; uniform and only the payload differs. That payload is the *same slot* for
+;; different kinds -- `entry-label`, `entry-summary` and `entry-first-kept` all
+;; read slot 5, for example. They are kept as separate names because the name is
+;; what documents the kind; the implementation is one line each and there is only
+;; one place (below) that knows how to index a list.
+;;
+;; The payload slots, as data.ss is the single place that defines them:
+;;
+;;   kind             slot4        slot5          slot6     slot7
+;;   message          MSG          -              -         -
+;;   compaction       SUMMARY      FIRST-KEPT-ID  TOKENS    DETAILS
+;;   branch-summary   FROM-ID      SUMMARY        -         -
+;;   label            TARGET-ID    LABEL          -         -
+;;   session-info     NAME         -              -         -
+;;   custom           CUSTOM-TYPE  DATA           -         -
+;;   custom-message   CUSTOM-TYPE  CONTENT        DISPLAY   -
+;;   model-change     PROVIDER     MODEL          -         -
+;;   thinking-level   LEVEL        -              -         -
+;;
+;; Note the one trap that table makes visible: a summary is slot 4 for a
+;; compaction (right after the timestamp) but slot 5 for a branch-summary, so
+;; `entry-summary` dispatches instead of hard-coding a slot.
+;;
+;; `log-check-shapes` in tests/run-tests.ss asserts this table for every kind.
+(define (entry-field e n)
+  (and (pair? e) (> (length e) n) (list-ref e n)))
 
-;; field accessors for the metadata entries
-(define (entry-target e) (and (pair? e) (>= (length e) 5) (list-ref e 4)))  ; label, custom-type, from-id, name
-(define (entry-custom-type e) (and (pair? e) (>= (length e) 5) (list-ref e 4)))
-(define (entry-display e) (and (pair? e) (>= (length e) 7) (list-ref e 6)))
-(define (entry-data e) (and (pair? e) (>= (length e) 6) (list-ref e 5)))          ; custom
-(define (entry-label e) (and (pair? e) (>= (length e) 6) (list-ref e 5)))
-(define (entry-summary e) (and (pair? e) (>= (length e) 6) (list-ref e 5)))
-(define (entry-first-kept e) (and (pair? e) (>= (length e) 6) (list-ref e 5)))
-(define (entry-tokens-before e) (and (pair? e) (>= (length e) 7) (list-ref e 6)))
-(define (entry-details e) (and (pair? e) (>= (length e) 8) (list-ref e 7)))
+(define (entry-kind e) (and (pair? e) (car e)))
+(define (entry-id e) (entry-field e 1))
+(define (entry-parent e) (entry-field e 2))
+(define (entry-ts e) (entry-field e 3))
+
+(define (entry-message e) (entry-field e 4))
+(define (entry-custom-type e) (entry-field e 4))
+(define (entry-name e) (entry-field e 4))
+(define (entry-target e) (entry-field e 4))     ; label
+(define (entry-from e) (entry-field e 4))       ; branch-summary
+(define (entry-label e) (entry-field e 5))
+(define (entry-data e) (entry-field e 5))
+(define (entry-first-kept e) (entry-field e 5))
+(define (entry-display e) (entry-field e 6))
+(define (entry-tokens-before e) (entry-field e 6))
+(define (entry-details e) (entry-field e 7))
+
+;; summary text: slot 4 for a compaction, slot 5 for a branch-summary
+(define (entry-summary e)
+  (if (eq? (entry-kind e) 'compaction) (entry-field e 4) (entry-field e 5)))
+
+;; The payload of an entry as a list, for callers that want to look at it
+;; without caring which kind it is (the format converter, mostly).
+(define (entry-payload e) (if (and (pair? e) (>= (length e) 5)) (cddddr e) '()))
 
 (define (entries->messages es)
   (match es

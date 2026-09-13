@@ -122,3 +122,11 @@
     (if (not p)
         'handled
         (expand-template (prompt-body p) (split-args args)))))
+
+;;----------------------------------------------------------------------------
+;; /name as an input handler (extend/input.ss, stage 3)
+;;----------------------------------------------------------------------------
+
+(register-input-handler!
+ (lambda (name args)
+   (and (find-prompt name) (expand-prompt-command name args))))

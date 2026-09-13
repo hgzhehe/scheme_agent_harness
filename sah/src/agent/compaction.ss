@@ -207,8 +207,23 @@
 (define (last-compaction-details es)
   (let ((c (last-compaction-of es)))
     (if c
-        (list (cons 'summary (list-ref c 4)) (cons 'details (list-ref c 7)))
+        (list (cons 'summary (entry-summary c)) (cons 'details (entry-details c)))
         '())))
+
+;; The summarisation pipeline, shared by compaction (agent/compaction.ss) and
+;; branch summarisation (agent/branch.ss): serialize the messages, summarise with
+;; the cumulative file lists attached, and report the file operations so a caller
+;; can store them. Both callers used to spell this out, which is how the two
+;; drifted (one counted context tokens differently, the other did not).
+;; -> (values SUMMARY+TEXT FILE-OPS)
+(define (summarize-entries config entries previous-summary previous-details instructions)
+  (let* ((messages (entries->messages entries))
+         (ops (collect-file-ops messages (assq-ref previous-details 'details)))
+         (summary (summarize config (serialize-conversation messages)
+                             (and (string? (assq-ref previous-details 'summary))
+                                  (assq-ref previous-details 'summary))
+                             instructions)))
+    (values (string-append summary (render-file-lists ops)) ops)))
 
 ;; Hooks may cancel a compaction or attach instructions to the summary (pi's
 ;; `session_before_compact`). -> (values CANCEL-REASON INSTRUCTIONS)
@@ -239,19 +254,15 @@
     (if (not first-kept)
         (begin (printf "[sah] nothing to compact~%") #f)
         (let* ((to-summarize (pvec-range->list toks 0 first-kept))
-               (messages (entries->messages to-summarize))
                (prev (last-compaction-details to-summarize))
-               (ops (collect-file-ops messages (assq-ref prev 'details)))
-               (conversation (serialize-conversation messages))
-               (prev-summary (assq-ref prev 'summary))
                (tokens-before (context-tokens session config))
                (reason-name (match reason [manual "manual"] [threshold "threshold"] [overflow "overflow"] [,o "auto"])))
           (printf "[sah] compacting (~a): folding ~a entr~a into a summary, keeping from #~a~%"
                   reason-name (length to-summarize)
                   (if (= (length to-summarize) 1) "y" "ies") first-kept)
           (emit (list 'ev 'compaction-start))
-          (let* ((summary (summarize config conversation (and (string? prev-summary) prev-summary) custom-instructions))
-                 (summary+ (string-append summary (render-file-lists ops))))
+          (let-values (((summary+ ops)
+                        (summarize-entries config to-summarize prev prev custom-instructions)))
             (session-add-compaction! session summary+ first-kept tokens-before ops)
             (emit (list 'ev 'compaction-end tokens-before))
             (printf "[sah] compacted: ~a tokens before, summary ~a chars~%"

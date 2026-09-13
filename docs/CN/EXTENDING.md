@@ -123,3 +123,26 @@ pi 的扩展系统更大，是因为它的扩展是 TypeScript 模块：需要�
 - 抛异常的 hook 会打印 `[sah] hook NAME failed: ...` 然后跳过——所以轮次中间出现
   堆栈，通常是扩展的问题，不是 sah 的。
 - 一切都在启动时加载：改完扩展重启 sah。没有热重载。
+
+## 内置命令与输入管线
+
+命令由 `main` 为所有模式注册，所以在 print 模式下也能用：
+
+```bash
+sah "/context"          # 下一次请求会带什么
+```
+
+内置命令有 `/compact`、`/context`、`/tree`、`/label`、`/name`、`/help`。同名的扩展
+命令会输给内置的（内置在扩展之后注册，而最后注册的同名命令胜出）。
+
+一条用户消息会依次经过几个阶段，每个阶段查自己的注册表：
+
+1. **命令** —— `(register-command! 名称 描述 处理器)`；处理器返回 `#f`（只做副作用）、
+   字符串（用它替代发给 agent 的内容）或 `'handled`。
+2. **input hook** —— `(register-hook! 'input …)`；返回 `#f`、`'(transform TEXT)` 或
+   `'handled`。
+3. **已注册的输入 handler** —— `(register-input-handler! (lambda (name args) …))`，
+   用来认领你自己的 `/名称`。`/skill:NAME` 和 `/template` 就是其中两个，这也是管线
+   不需要知道技能和模板是什么的原因。
+
+没有任何阶段认领的内容，就作为普通文本发给 agent。

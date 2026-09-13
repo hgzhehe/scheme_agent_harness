@@ -105,6 +105,10 @@ sah [options] [--] [prompt | @file ...]
 > 在**编译版**里，Chez 运行时会先解析一部分选项，所以 `-c`、`-h`、`--help`、
 > `--version` 被 Chez 占用。请用 `-C`/`--continue` 和 `-H`/`--usage`。以 `-`
 > 开头的 prompt 前面加 `--`。
+>
+> 在 Windows 的 **git-bash / MSYS** 下，看起来像路径的参数会在 sah 看到之前被
+> 改写，所以 `sah "/compact"` 到达时是 `C:/Program Files/Git/compact`。请用
+> `MSYS_NO_PATHCONV=1 sah "/compact"`（这种情形下 `SAH_HOME` 也要给 Windows 路径）。
 
 ## 配置
 
@@ -255,7 +259,8 @@ EOF
 `sah --session <id>` 都会直接进入 REPL。
 
 REPL 内：`/compact [instructions]`、`/context`（下一次请求会带什么）、`/tree`
-（列出 entry 并移动游标）。
+（列出 entry 并移动游标）、`/label`、`/name`、`/help`。命令是**能力**而不是模式：
+在 print 模式下同样可用（`sah "/context"`）。
 
 ## 数据约定
 
@@ -316,6 +321,8 @@ src/core/           agent 自身的概念与基础设施：
 src/extend/         定制面：
                       md.ss      frontmatter 解析
                       commands.ss  /命令注册表
+                      input.ss   输入管线（命令 -> input hook -> 已注册 handler）；
+                                 这个文件不知道什么是 skill 或模板
                       skills.ss  SKILL.md 发现 + 渐进披露
                       prompts.ss /名称模板（$1、$@、${N:-默认}）
                       loader.ss  加载扩展、技能、模板
@@ -359,7 +366,7 @@ main → run-agent ──► 构建上下文（context.ss：system + 会话上�
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss   # 937 项检查，离线（mock 模型）
+scheme --script tests/run-tests.ss   # 947 项检查，离线（mock 模型）
 scheme --script bench/bench-fp.ss    # 数据结构测量
 scheme --script sah.ss --repl        # 从源码运行
 ```

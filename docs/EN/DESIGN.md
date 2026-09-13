@@ -250,3 +250,41 @@ import/export cycle is lossless.
 
 Measured: exporting a real six-entry branched session, importing it, and
 exporting again produces byte-identical entries.
+
+## Conventions worth keeping
+
+These came out of a review of the whole tree (bloat, data shapes, state
+transitions, orthogonality) and are the rules that the code now follows:
+
+1. **Events observe, hooks transform** (`core/event.ss` vs `core/hooks.ss`). A
+   subscriber is notified and cannot change what the agent does; a hook is called
+   at a stage and may rewrite the value or block an action. `session-start` fires
+   both, on purpose: one to observe, one to be able to abort.
+2. **One place decides what the model sees.** `entry->context-messages` in
+   `core/data.ss` is the only projector; nine entry kinds reduce to four that
+   produce messages and five that produce nothing, so metadata can be appended at
+   any time without disturbing a conversation.
+3. **One place defines each entry shape.** The slot table in `core/data.ss` is
+   the definition, `entry-field` is the only function that indexes a list, and
+   `tests/run-tests.ss` asserts the table for all nine kinds. (Writing that table
+   down immediately exposed a real trap: a summary is slot 4 on a compaction but
+   slot 5 on a branch-summary.)
+4. **One place changes session state.** Every mutation goes through
+   `session-push!` and one `session-flush!`, so "when does the file need a full
+   rewrite" has a single implementation. Multi-step changes get their own
+   function (`session-branch-summary!`) rather than being sequenced at the call
+   site, and the expensive/fallible work (the model call) happens *before* any
+   state moves.
+5. **Commands are capabilities, not modes.** They are registered by `main` for
+   every mode, so `sah "/context"` works in print mode as well as the REPL.
+6. **The input pipeline is a list of stages**, and each stage consults its own
+   registry: commands, then input hooks, then registered handlers (which is how
+   `/skill:NAME` and `/template` participate without `extend/input.ss` knowing
+   what either is).
+
+An honest note on size: these changes removed duplicated *logic* (16 accessors
+over 2 distinct bodies became 5 primitives plus one-line aliases; nine identical
+mutation wrappers became one; two copies of the summarisation pipeline became
+one) but the file total went **up**, from 3812 to 3928 lines, because the rules
+above were written down where they are enforced. Of those 3928 lines, 24% are
+comments and 10% are blank; the code itself is 2599 lines.
