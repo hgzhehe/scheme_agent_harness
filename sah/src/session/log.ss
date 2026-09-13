@@ -197,7 +197,7 @@
   (let* ((path (log-path l leaf)) (last-c (last-compaction-of path)))
     (if (not last-c)
         (values #f path)
-        (let* ((fk (list-ref last-c 5))
+        (let* ((fk (entry-first-kept last-c))
                (cid (entry-id last-c))
                (kept (filter (lambda (e) (and (>= (entry-id e) fk)
                                               (not (eqv? (entry-id e) cid))))
