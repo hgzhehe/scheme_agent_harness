@@ -29,8 +29,8 @@ hello.scm prints 42.
 - **One provider** — DeepSeek (OpenAI-compatible chat completions).
 - **Four tools** — `read`, `write`, `shell`, `eval`.
 - **Pattern-matched core** — messages, events, entries and tools are positional
-  tagged lists; `llm.ss` / `agent.ss` / `session.ss` / `tools.ss` dispatch with
-  `match` ([`src/match.ss`](../../sah/src/match.ss)).
+  tagged lists; `ai/` / `agent/` / `session/` / `tools/` dispatch with `match`
+  ([`src/vendor/match.ss`](../../sah/src/vendor/match.ss)).
 - **Scheme-native sessions** — `SexprL`: one Scheme datum per line, readable
   with `read`, tree-shaped (`id`/`parent`) so branching can land later.
 - **Scheme-native config** — `~/.sah/config.scm` is an alist datum.
@@ -280,37 +280,45 @@ order is not guaranteed:
 - tool-call `arguments` stay parsed Scheme data internally and are stringified
   to JSON only on the wire
 
-Pattern matching is provided by [`src/match.ss`](../../sah/src/match.ss)
-(Friedman / Hilsdale / Dybvig, MIT). `llm.ss`, `agent.ss`, `session.ss` and
-`tools.ss` are largely written as `match` clauses over these shapes.
+Pattern matching is provided by [`src/vendor/match.ss`](../../sah/src/vendor/match.ss)
+(Friedman / Hilsdale / Dybvig, MIT). `ai/`, `agent/`, `session/` and `tools/`
+are largely written as `match` clauses over these shapes.
 
 ## Source layout
 
 Inside [`sah/`](../../sah/):
 
 ```
-sah.ss              development entry point; loads src/* and calls main
-build.scm           compiles src/* into dist/sah.exe + dist/sah.boot
-SYSTEM.md           built-in system prompt (mirrored in src/main.ss)
+sah.ss              development entry point; loads src/ and calls main
+build.scm           compiles src/ into dist/sah.exe + dist/sah.boot
+SYSTEM.md           the system prompt (overridable; see config.ss)
 config.example.scm  sample ~/.sah/config.scm
-src/util.ss         paths, files, ids, small list/string helpers
-src/json.ss         JSON <-> Scheme datum
-src/transport.ss    HTTP POST via a curl subprocess
-src/llm.ss          canonical messages <-> OpenAI/DeepSeek JSON; chat()
-src/tools.ss        tool registry + read/write/bash/eval
-src/session.ss      SexprL session store
-src/agent.ss        the agent loop + event emission + print handler
-src/main.ss         config loading, CLI, repl, entry point
+src/vendor/         third-party match.ss (+ LICENSE)
+src/core/           util.ss json.ss event.ss data.ss transport.ss config.ss
+src/ai/             chat.ss + providers/openai-compatible.ss
+src/session/        manager.ss (SexprL store) + discovery.ss (find/pick)
+src/tools/          registry.ss + read.ss write.ss shell.ss eval.ss
+src/agent/          agent.ss (loop) + context.ss + compaction.ss
+src/modes/          cli.ss + print.ss + repl.ss
+src/main.ss         entry point
 tests/run-tests.ss  offline test suite
 ```
+
+`src/` is split by layer (core → ai → session → tools → agent → modes), and
+files are loaded in that order (`sah.ss`, `build.scm`). Inside `core/`:
+`util` = paths/files/ids, `json` = JSON ↔ datum, `event` = the event bus,
+`data` = canonical message/entry shapes, `transport` = curl, `config` = settings
+and the system prompt. Tool implementations register themselves into the
+registry when loaded, so adding a tool is a new file plus one load line.
 
 Data flow:
 
 ```
-main → run-agent ──► build context (system + session messages)
-                  ──► llm-chat (llm.ss → transport.ss → curl)
-                  ──► persist assistant message (session.ss)
-                  ──► for each tool call: call-tool (tools.ss)
+main → run-agent ──► build context (context.ss: system + session context)
+                  ──► llm-chat (ai/chat.ss → providers/openai-compatible.ss
+                               → core/transport.ss → curl)
+                  ──► persist assistant message (session/manager.ss)
+                  ──► for each tool call: call-tool (tools/registry.ss)
                   ──► persist tool result, repeat / stop
         every step is emitted as an event; the print handler renders it
 ```
@@ -319,7 +327,7 @@ main → run-agent ──► build context (system + session messages)
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss   # 34 checks, offline (mock model)
+scheme --script tests/run-tests.ss   # 43 checks, offline (mock model)
 scheme --script sah.ss --repl        # run from source
 ```
 
@@ -328,5 +336,5 @@ standalone executable, and [`PLAN.md`](PLAN.md) for the roadmap.
 
 ## Not here yet
 
-Streaming, `edit`, compaction, session tree navigation, multiple providers,
-extensions, RPC/JSON modes, TUI, sandboxing. See the roadmap.
+Streaming, `edit`, session tree navigation, multiple providers, extensions,
+RPC/JSON modes, TUI, sandboxing. See the roadmap.

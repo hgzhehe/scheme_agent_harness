@@ -192,9 +192,6 @@
 ;; summarization + compaction
 ;;----------------------------------------------------------------------------
 
-(define (assistant-text-of msg)
-  (match msg [(msg assistant ,content ,calls ,stop ,usage) content] [,other ""]))
-
 (define (summarize config conversation-text previous-summary custom-instructions)
   (let* ((base (if previous-summary
                    (string-append "Previous summary:\n" previous-summary
@@ -206,7 +203,7 @@
                    base))
          (msgs (list `(msg system "You are a summarization assistant. Produce a structured context checkpoint.")
                      `(msg user ,text))))
-    (assistant-text-of (llm-chat config msgs '()))))
+    (assistant-text (llm-chat config msgs '()))))
 
 ;; compact the session in place; returns #t if a compaction entry was added
 (define (compact! session config reason custom-instructions)

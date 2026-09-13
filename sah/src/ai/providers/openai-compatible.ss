@@ -1,23 +1,13 @@
-;;; llm.ss -- OpenAI-compatible chat completions (DeepSeek by default)
+;;; providers/openai-compatible.ss -- OpenAI-compatible chat completions
+;;; (DeepSeek). This is the provider boundary: the only place that speaks
+;;; alists, because JSON object key order is not guaranteed and therefore
+;;; unsafe to pattern match.
 ;;;
-;;; Internal (canonical) messages are POSITIONAL tagged lists so they can be
-;;; destructured directly with `match`:
-;;;
-;;;   (msg user      CONTENT)
-;;;   (msg system    CONTENT)
-;;;   (msg assistant CONTENT CALLS STOP USAGE)
-;;;   (msg tool      CALL-ID NAME CONTENT)
-;;;
-;;;   CALL = (call ID NAME ARGS)      ; ARGS is parsed Scheme data
-;;;
-;;; `arguments` stays parsed Scheme data internally and is only stringified when
-;;; crossing the wire. This is the canonical-form idea in miniature.
-;;;
-;;; The provider boundary (JSON) is the only place that speaks alists, because
-;;; JSON object key order is not guaranteed and therefore unsafe to pattern match.
+;;; encode: canonical message -> request JSON
+;;; decode: response JSON -> canonical message
 
 ;;----------------------------------------------------------------------------
-;; encode: internal -> OpenAI/DeepSeek JSON datum
+;; encode
 ;;----------------------------------------------------------------------------
 
 (define (call->openai c)
@@ -67,7 +57,7 @@
     (stream . #f)))
 
 ;;----------------------------------------------------------------------------
-;; decode: OpenAI/DeepSeek JSON datum -> internal message
+;; decode
 ;;----------------------------------------------------------------------------
 
 (define (decode-usage u)
@@ -99,34 +89,10 @@
     `(msg assistant ,content ,calls ,stop ,(decode-usage usage))))
 
 ;;----------------------------------------------------------------------------
-;; migration: messages from session files written before the positional form
-;;----------------------------------------------------------------------------
-
-(define (normalize-call c)
-  (match c
-    [(call ,id ,name ,args) c]
-    [((id . ,id) (name . ,name) (arguments . ,args)) `(call ,id ,name ,args)]
-    [,other other]))
-
-(define (normalize-message m)
-  (match m
-    [(msg assistant ,content ,calls ,stop ,usage) m]
-    [(msg tool ,call-id ,name ,content) m]
-    [(msg ,role ,content) m]
-    [((role . ,role) (content . ,content)
-      (tool-calls . ,tcs) (stop . ,stop) (usage . ,usage))
-     `(msg ,role ,content ,(if tcs (map normalize-call (vector->list tcs)) '()) ,stop ,usage)]
-    [((role . tool) (tool-call-id . ,id) (name . ,name) (content . ,content))
-     `(msg tool ,id ,name ,content)]
-    [((role . ,role) (content . ,content))
-     `(msg ,role ,content)]
-    [,other (error 'normalize-message (format "unrecognized message: ~s" other))]))
-
-;;----------------------------------------------------------------------------
 ;; provider call
 ;;----------------------------------------------------------------------------
 
-(define (chat config messages tools)
+(define (openai-compatible-chat config messages tools)
   (let* ((url (string-append (assq-ref config 'base-url) "/chat/completions"))
          (auth (string-append "Bearer " (assq-ref config 'api-key)))
          (body (write-json-string
@@ -144,11 +110,3 @@
                    (finish (assq-ref choice 'finish_reason))
                    (usage (assq-ref json 'usage)))
               (decode-assistant rawmsg finish usage)))))))
-
-;; Indirection so tests can substitute a mock model without touching the network.
-(define *chat-impl* #f)
-
-(define (llm-chat config messages tools)
-  (if *chat-impl*
-      (*chat-impl* config messages tools)
-      (chat config messages tools)))

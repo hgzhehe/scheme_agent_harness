@@ -14,5 +14,6 @@ scheme --script sah.ss -- "hello"  # run from source
 scheme --script tests/run-tests.ss # offline tests
 ```
 
-Layout: `sah.ss` entry, `build.scm` bundler, `src/*.ss` modules, `tests/`.
+Layout: `sah.ss` entry, `build.scm` bundler, layered `src/` modules
+(`core/ ai/ session/ tools/ agent/ modes/`), `tests/`.
 See the docs above for CLI, configuration, tools and the session format.

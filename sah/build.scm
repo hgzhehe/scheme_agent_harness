@@ -31,7 +31,7 @@
 
 (define root (script-dir))
 
-(load (string-append root "/src/util.ss"))
+(load (string-append root "/src/core/util.ss"))
 
 (define (basename p)
   (let loop ((i (- (string-length p) 1)))
@@ -102,17 +102,30 @@
                   (if petite (list petite main) (list main)))))))
 
 (define src-files
-  '("src/match.ss"
-    "src/event.ss"
-    "src/util.ss"
-    "src/json.ss"
-    "src/transport.ss"
-    "src/shell.ss"
-    "src/llm.ss"
-    "src/tools.ss"
-    "src/session.ss"
-    "src/compact.ss"
-    "src/agent.ss"
+  ;; load order mirrors the module layering: vendor -> core -> ai -> session ->
+  ;; tools -> agent -> modes -> main
+  '("src/vendor/match.ss"
+    "src/core/util.ss"
+    "src/core/json.ss"
+    "src/core/event.ss"
+    "src/core/data.ss"
+    "src/core/transport.ss"
+    "src/core/config.ss"
+    "src/ai/providers/openai-compatible.ss"
+    "src/ai/chat.ss"
+    "src/session/manager.ss"
+    "src/session/discovery.ss"
+    "src/tools/registry.ss"
+    "src/tools/read.ss"
+    "src/tools/write.ss"
+    "src/tools/shell.ss"
+    "src/tools/eval.ss"
+    "src/agent/compaction.ss"
+    "src/agent/context.ss"
+    "src/agent/agent.ss"
+    "src/modes/cli.ss"
+    "src/modes/print.ss"
+    "src/modes/repl.ss"
     "src/main.ss"))
 
 (define (escape-scheme-string s)

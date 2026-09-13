@@ -6,8 +6,10 @@
 ;;;   scheme --script sah.ss --continue -- "and now refactor it"
 ;;;
 ;;; For a compiled standalone executable, see build.scm and INSTALL.md.
+;;;
+;;; Load order mirrors the module layering (see docs/EN/PLAN.md):
+;;;   vendor -> core -> ai -> session -> tools -> agent -> modes -> main
 
-;; Resolve our own directory before anything else is loaded.
 (define (sah-script-dir)
   (let ((p (car (command-line))))
     (let loop ((i (- (string-length p) 1)))
@@ -17,17 +19,45 @@
 
 (define *root* (sah-script-dir))
 
-(load (string-append *root* "/src/match.ss"))
-(load (string-append *root* "/src/event.ss"))
-(load (string-append *root* "/src/util.ss"))
-(load (string-append *root* "/src/json.ss"))
-(load (string-append *root* "/src/transport.ss"))
-(load (string-append *root* "/src/llm.ss"))
-(load (string-append *root* "/src/shell.ss"))
-(load (string-append *root* "/src/tools.ss"))
-(load (string-append *root* "/src/session.ss"))
-(load (string-append *root* "/src/compact.ss"))
-(load (string-append *root* "/src/agent.ss"))
-(load (string-append *root* "/src/main.ss"))
+(define (load-src rel) (load (string-append *root* "/src/" rel)))
+
+;; vendor (third-party)
+(load-src "vendor/match.ss")
+
+;; core: primitives and canonical data
+(load-src "core/util.ss")
+(load-src "core/json.ss")
+(load-src "core/event.ss")
+(load-src "core/data.ss")
+(load-src "core/transport.ss")
+(load-src "core/config.ss")
+
+;; ai: models / providers
+(load-src "ai/providers/openai-compatible.ss")
+(load-src "ai/chat.ss")
+
+;; session: persistence and discovery
+(load-src "session/manager.ss")
+(load-src "session/discovery.ss")
+
+;; tools
+(load-src "tools/registry.ss")
+(load-src "tools/read.ss")
+(load-src "tools/write.ss")
+(load-src "tools/shell.ss")
+(load-src "tools/eval.ss")
+
+;; agent: loop, context, compaction
+(load-src "agent/compaction.ss")
+(load-src "agent/context.ss")
+(load-src "agent/agent.ss")
+
+;; modes
+(load-src "modes/cli.ss")
+(load-src "modes/print.ss")
+(load-src "modes/repl.ss")
+
+;; entry point
+(load-src "main.ss")
 
 (main (cdr (command-line)))

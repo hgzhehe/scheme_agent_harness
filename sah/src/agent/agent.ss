@@ -1,23 +1,15 @@
-;;; agent.ss -- the minimal agent loop.
+;;; agent.ss -- the agent loop.
 ;;;
 ;;; loop:
 ;;;   (auto-)compact if the context is near the window
-;;;   build messages (system + compaction-aware session context)
 ;;;   call the model (compacting once and retrying on context overflow)
 ;;;   persist the assistant reply
 ;;;   if it requested tools, run them, persist results, repeat
 ;;;   else stop
 ;;;
-;;; Messages and events are positional tagged lists (see llm.ss), so every
-;;; branch below is a `match` on an explicit shape. Everything observable is
-;;; emitted through `emit` (event.ss), so repl/print/rpc/json modes are all just
-;;; event consumers.
-
-(define (assistant-text msg)
-  (match msg
-    [(msg assistant ,content ,calls ,stop ,usage) content]
-    [(msg ,role ,content) content]
-    [,other ""]))
+;;; Messages and events are positional tagged lists (see core/data.ss), so every
+;;; branch below is a `match`. Everything observable is emitted through `emit`
+;;; (core/event.ss), so print/repl/rpc/json modes are all just event consumers.
 
 ;;----------------------------------------------------------------------------
 ;; context-overflow recovery
@@ -31,10 +23,6 @@
         (string-contains? "too many tokens" m)
         (string-contains? "reduce the length" m))))
 
-(define (build-request-messages session config)
-  (cons `(msg system ,(assq-ref config 'system))
-        (session-context-messages session)))
-
 ;; On provider "context too long" errors: compact once, rebuild, retry.
 (define (chat-with-recovery session config tools)
   (guard (e (#t
@@ -47,7 +35,7 @@
     (llm-chat config (build-request-messages session config) tools)))
 
 ;;----------------------------------------------------------------------------
-;; The loop
+;; the loop
 ;;----------------------------------------------------------------------------
 
 (define (run-tool session call)

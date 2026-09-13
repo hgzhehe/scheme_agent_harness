@@ -27,8 +27,8 @@ hello.scm prints 42.
 - **单 provider** —— DeepSeek（OpenAI 兼容的 chat completions）。
 - **四个工具** —— `read`、`write`、`shell`、`eval`。
 - **模式匹配内核** —— 消息、事件、entry、工具都是位置化 tagged list；
-  `llm.ss` / `agent.ss` / `session.ss` / `tools.ss` 用 `match` 分发
-  （[`src/match.ss`](../../sah/src/match.ss)）。
+  `ai/` / `agent/` / `session/` / `tools/` 用 `match` 分发
+  （[`src/vendor/match.ss`](../../sah/src/vendor/match.ss)）。
 - **Scheme 原生会话** —— `SexprL`：每行一个 Scheme datum，可用 `read` 读回，
   结构是树形（`id`/`parent`），以后加分叉不用改格式。
 - **Scheme 原生配置** —— `~/.sah/config.scm` 就是一个 alist。
@@ -267,37 +267,44 @@ EOF
 - 工具调用的 `arguments` 内部保持为解析好的 Scheme 数据，只在过 wire 时才
   stringify 成 JSON
 
-模式匹配由 [`src/match.ss`](../../sah/src/match.ss) 提供
-（Friedman / Hilsdale / Dybvig，MIT）。`llm.ss`、`agent.ss`、`session.ss`、
-`tools.ss` 基本都写成对这些形状的 `match` 分支。
+模式匹配由 [`src/vendor/match.ss`](../../sah/src/vendor/match.ss) 提供
+（Friedman / Hilsdale / Dybvig，MIT）。`ai/`、`agent/`、`session/`、`tools/`
+基本都写成对这些形状的 `match` 分支。
 
 ## 源码结构
 
 位于 [`sah/`](../../sah/)：
 
 ```
-sah.ss              开发入口；加载 src/* 并调用 main
-build.scm           把 src/* 编译成 dist/sah.exe + dist/sah.boot
-SYSTEM.md           内置 system prompt（与 src/main.ss 保持一致）
+sah.ss              开发入口；加载 src/ 并调用 main
+build.scm           把 src/ 编译成 dist/sah.exe + dist/sah.boot
+SYSTEM.md           system prompt（可覆盖，见 core/config.ss）
 config.example.scm  ~/.sah/config.scm 样例
-src/util.ss         路径、文件、id、小的 list/string 工具
-src/json.ss         JSON <-> Scheme datum
-src/transport.ss    通过 curl 子进程发 HTTP POST
-src/llm.ss          canonical 消息 <-> OpenAI/DeepSeek JSON；chat()
-src/tools.ss        工具注册表 + read/write/bash/eval
-src/session.ss      SexprL 会话存储
-src/agent.ss        agent 循环 + 事件发射 + 打印处理器
-src/main.ss         配置加载、CLI、repl、入口
+src/vendor/         第三方 match.ss（含 LICENSE）
+src/core/           util.ss json.ss event.ss data.ss transport.ss config.ss
+src/ai/             chat.ss + providers/openai-compatible.ss
+src/session/        manager.ss（SexprL 存储）+ discovery.ss（查找/选择）
+src/tools/          registry.ss + read.ss write.ss shell.ss eval.ss
+src/agent/          agent.ss（循环）+ context.ss + compaction.ss
+src/modes/          cli.ss + print.ss + repl.ss
+src/main.ss         入口
 tests/run-tests.ss  离线测试套件
 ```
+
+`src/` 按层拆分（core → ai → session → tools → agent → modes），加载顺序即此顺序
+（见 `sah.ss`、`build.scm`）。`core/` 内部：`util` 路径/文件/id，`json` JSON ↔
+datum，`event` 事件总线，`data` 规范的消息/条目形状，`transport` curl，
+`config` 设置与 system prompt。工具实现加载时把自己注册进注册表，所以加一个
+工具 = 新增一个文件 + 一行加载。
 
 数据流：
 
 ```
-main → run-agent ──► 构建上下文（system + 会话消息）
-                  ──► llm-chat（llm.ss → transport.ss → curl）
-                  ──► 落盘 assistant 消息（session.ss）
-                  ──► 对每个 tool call：call-tool（tools.ss）
+main → run-agent ──► 构建上下文（context.ss：system + 会话上下文）
+                  ──► llm-chat（ai/chat.ss → providers/openai-compatible.ss
+                               → core/transport.ss → curl）
+                  ──► 落盘 assistant 消息（session/manager.ss）
+                  ──► 对每个 tool call：call-tool（tools/registry.ss）
                   ──► 落盘 tool 结果，重复 / 停止
         每一步都作为事件发射；打印处理器负责渲染
 ```
@@ -306,7 +313,7 @@ main → run-agent ──► 构建上下文（system + 会话消息）
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss   # 34 项检查，离线（mock 模型）
+scheme --script tests/run-tests.ss   # 43 项检查，离线（mock 模型）
 scheme --script sah.ss --repl        # 从源码运行
 ```
 
@@ -314,5 +321,5 @@ scheme --script sah.ss --repl        # 从源码运行
 
 ## 尚未实现
 
-流式、`edit`、压缩、会话树导航、多 provider、扩展、RPC/JSON 模式、TUI、沙箱。
+流式、`edit`、会话树导航、多 provider、扩展、RPC/JSON 模式、TUI、沙箱。
 见路线图。

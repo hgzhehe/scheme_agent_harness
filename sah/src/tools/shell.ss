@@ -150,3 +150,16 @@
                [(shell cmd ,exe) (run-in-file exe command)]
                [,other (run-in-file (or (getenv "COMSPEC") "cmd.exe") command)])))
     (if (string=? out "") "(no output)" out)))
+
+;;----------------------------------------------------------------------------
+;; the `shell` tool
+;;----------------------------------------------------------------------------
+
+(register-tool! 'shell
+  "Run a command in the shell of the terminal sah was launched from (PowerShell, cmd, or bash) and return its combined stdout/stderr."
+  (schema '((command "string" "Shell command to run")))
+  (lambda (args)
+    (let ((cmd (assq-ref args 'command)))
+      (if (string? cmd)
+          (run-shell cmd)
+          (error 'shell "missing command")))))
