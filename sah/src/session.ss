@@ -8,13 +8,24 @@
 ;;;   (session VERSION ID CWD CREATED MODEL)   header
 ;;;   (message ID PARENT TS MSG)               conversation
 ;;;
-;;; v0 rewrites the whole file on append (sessions are small). The on-disk form
-;;; is a tree via id/parent, so branches can land later without a format change.
-;;; Entries written by older versions (alists) are migrated on load.
+;;; Appends are O(1): entries are held newest-first in memory (so appending is
+;;; a cons) and the output port is kept open (so appending is one write, not a
+;;; whole-file rewrite). A session loaded from disk opens its port lazily on the
+;;; first append (one rewrite, then O(1)). The on-disk form is a tree via
+;;; id/parent, so branches can land later without a format change. Entries
+;;; written by older versions (alists) are migrated on load.
 
+;;; Storage: entries are kept newest-first in a list (O(1) append) and the
+;;; output port is held open, so appending is O(1) I/O instead of rewriting the
+;;; whole file every time. A session loaded from disk opens its port lazily on
+;;; the first append (one rewrite, then O(1)).
 (define-record-type session
   (fields (immutable id) (immutable cwd) (immutable file)
-          (mutable entries) (immutable created) (immutable model)))
+          (mutable entries-rev) (mutable port)
+          (immutable created) (immutable model)))
+
+;; chronological view (oldest first)
+(define (session-entries s) (reverse (session-entries-rev s)))
 
 (define *sah-home-override* #f)
 
@@ -31,23 +42,40 @@
 (define (session-dir cwd)
   (path-join (sah-home) "sessions" (cwd-slug cwd)))
 
-(define (session-save! s)
-  (let ((file (session-file s)))
-    (guard (e (#t #t)) (delete-file file))
-    (call-with-output-file file
-      (lambda (p)
-        (for-each (lambda (e)
-                    (write e p)
-                    (newline p))
-                  (session-entries s))))))
+(define (open-session-port path)
+  ;; textual port, LF line endings (matches the on-disk SexprL form). Delete
+  ;; first: Chez refuses to open an existing file for output by default.
+  (when (file-exists? path) (delete-file path))
+  (open-file-output-port path
+                         (file-options)
+                         (buffer-mode line)
+                         (make-transcoder (utf-8-codec) (eol-style lf) (error-handling-mode replace))))
+
+(define (session-write! p entry)
+  (write entry p)
+  (newline p)
+  (flush-output-port p))
 
 (define (session-append! s entry)
-  (session-entries-set! s (append (session-entries s) (list entry)))
-  (session-save! s)
+  (session-entries-rev-set! s (cons entry (session-entries-rev s)))
+  (let ((p (session-port s)))
+    (if p
+        (session-write! p entry)
+        ;; loaded from disk: rewrite once, then keep the port open
+        (let ((np (open-session-port (session-file s))))
+          (for-each (lambda (e) (session-write! np e)) (session-entries s))
+          (session-port-set! s np))))
   s)
 
+(define (session-close! s)
+  (let ((p (session-port s)))
+    (when p
+      (guard (e (#t #t)) (flush-output-port p))
+      (guard (e (#t #t)) (close-port p))
+      (session-port-set! s #f))))
+
 (define (session-last-id s)
-  (match (reverse (session-entries s))
+  (match (session-entries-rev s)
     [() #f]
     [((message ,id ,parent ,ts ,msg) . ,rest) id]
     [((session ,version ,id ,cwd ,created ,model) . ,rest) id]
@@ -61,7 +89,8 @@
          (id (short-id))
          (file (path-join dir (string-append (number->string (now-ms)) "_" id ".ss"))))
     (ensure-dir! dir)
-    (let ((s (make-session id cwd file '() (now-ms) model)))
+    (let ((s (make-session id cwd file '() #f (now-ms) model)))
+      (session-port-set! s (open-session-port file))
       (session-append! s `(session 1 ,id ,cwd ,(now-ms) ,model))
       s)))
 
@@ -93,9 +122,9 @@
          (header (if (pair? entries) (car entries) '())))
     (match header
       [(session ,version ,id ,cwd ,created ,model)
-       (make-session id cwd path entries created model)]
+       (make-session id cwd path (reverse entries) #f created model)]
       [,other
-       (make-session (short-id) (current-directory) path entries (now-ms) "")])))
+       (make-session (short-id) (current-directory) path (reverse entries) #f (now-ms) "")])))
 
 (define (session-latest cwd)
   (let ((dir (session-dir cwd)))
@@ -164,23 +193,30 @@
       (format "~4,'0d-~2,'0d-~2,'0d ~2,'0d:~2,'0d"
               (date-year d) (date-month d) (date-day d) (date-hour d) (date-minute d)))))
 
-(define (session-first-user s)
-  (let loop ((ms (session-messages s)))
-    (match ms
-      [() ""]
-      [((msg user ,content) . ,rest) content]
-      [(,other . ,rest) (loop rest)])))
+;; read only what the picker needs: header + first user message
+(define (session-summary path)
+  (guard (e (#t (list #f 0 "")))
+    (call-with-input-file
+      path
+      (lambda (p)
+        (let* ((h (normalize-entry (read p)))
+               (id (match h [(session ,v ,id ,c ,cr ,m) id] [,o #f]))
+               (created (match h [(session ,v ,id ,c ,cr ,m) cr] [,o 0])))
+          (let loop ()
+            (let ((e (guard (x (#t (eof-object))) (read p))))
+              (if (eof-object? e)
+                  (list id created "")
+                  (match (normalize-entry e)
+                    [((message ,i ,par ,ts (msg user ,content)) . ,rest) (list id created content)]
+                    [,other (loop)])))))))))
 
 ;; newest first (by creation filename) as ((file . p) (id . i) (created . ms) (preview . s))
 (define (session-list-for-cwd cwd)
   (let ((dir (session-dir cwd)))
     (map (lambda (p)
-           (let ((s (guard (e (#t #f)) (session-load p))))
-             (if s
-                 (list (cons 'file p) (cons 'id (session-id s))
-                       (cons 'created (session-created s))
-                       (cons 'preview (session-first-user s)))
-                 (list (cons 'file p) (cons 'id #f) (cons 'created 0) (cons 'preview "")))))
+           (let ((sm (session-summary p)))
+             (list (cons 'file p) (cons 'id (car sm))
+                   (cons 'created (cadr sm)) (cons 'preview (caddr sm)))))
          (reverse (sort-strings
                    (map (lambda (f) (path-join dir f))
                         (dir-files dir (lambda (f) (string-suffix? ".ss" f)))))))))
