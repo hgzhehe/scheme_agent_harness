@@ -32,6 +32,7 @@
 ;;;   (ev agent-settled)                  nothing outstanding: retries,
 ;;;                                       compaction and follow-ups are done
 ;;;   (ev compaction-start)  (ev compaction-end TOKENS-BEFORE)
+;;;   (ev auto-retry-start REASON)  (ev auto-retry-end)
 ;;;   (ev branch-summary SUMMARY)
 ;;;   (ev session-end SESSION)
 ;;;

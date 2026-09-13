@@ -127,7 +127,9 @@
         (cons 'version 3)
         (cons 'id (session-id session))
         (cons 'timestamp (ms->iso (session-created session)))
-        (cons 'cwd (session-cwd session))))
+        (cons 'cwd (session-cwd session))
+        ;; provenance survives in both directions
+        (cons 'parentSession (if (session-parent session) (session-parent session) 'null))))
 
 ;; One sah entry -> one pi entry (an alist with symbol keys, ready for
 ;; write-json-string).

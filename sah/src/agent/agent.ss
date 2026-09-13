@@ -118,6 +118,9 @@
      (printf "  [compacting context...]~%")]
     [(ev compaction-end ,tokens)
      (printf "  [compacted: ~a tokens before]~%" tokens)]
+    [(ev auto-retry-start ,reason)
+     (printf "  [retrying after ~a]~%" reason)]
+    [(ev auto-retry-end) #t]
     [(ev branch-summary ,summary)
      (printf "  [summarised the abandoned branch: ~a chars]~%" (string-length summary))]
     [(ev message-end ,msg)

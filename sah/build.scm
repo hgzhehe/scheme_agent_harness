@@ -138,7 +138,7 @@
     "src/agent/agent.ss"
     "src/modes/cli.ss"
     "src/modes/print.ss"
-    "src/modes/convert.ss"
+    "src/modes/oneshot.ss"
     "src/modes/repl.ss"
     "src/main.ss"))
 

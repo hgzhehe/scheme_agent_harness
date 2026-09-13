@@ -147,6 +147,8 @@
                            (begin (session-add-name! session (string-trim args))
                                   (printf "session named ~a~%" (string-trim args))))
                        #f))
+  (register-command! 'fork "Copy this session's current path into a new session file."
+                     (lambda (args) (fork-command session args) #f))
   (register-command! 'help "List commands, templates and skills."
                      (lambda (args) (print-help) #f)))
 
@@ -160,3 +162,16 @@
           (begin
             (session-add-label! session n (if (string=? text "") #f text))
             (printf "~a entry #~a~%" (if (string=? text "") "cleared label on" "labelled") n))))))
+
+;; /fork [entry-id] -- write the path root->entry into a session of its own
+(define (fork-command session args)
+  (let* ((lg (session-log session))
+         (txt (string-trim args))
+         (n (if (string=? txt "") (log-leaf lg) (string->number txt))))
+    (if (not (and n (exact? n) (>= n 0) (< n (log-count lg))))
+        (printf "usage: /fork [entry-id]   (see /tree for ids)~%")
+        (let ((new (session-extract session n)))
+          (session-close! new)
+          (printf "forked ~a entr~a into a new session~%  id: ~a~%  file: ~a~%  continue with: sah --session ~a~%"
+                  (session-count new) (if (= (session-count new) 1) "y" "ies")
+                  (session-id new) (session-file new) (session-id new))))))

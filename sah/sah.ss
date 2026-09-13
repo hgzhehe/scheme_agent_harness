@@ -77,7 +77,7 @@
 ;; modes
 (load-src "modes/cli.ss")
 (load-src "modes/print.ss")
-(load-src "modes/convert.ss")
+(load-src "modes/oneshot.ss")
 (load-src "modes/repl.ss")
 
 ;; entry point

@@ -126,24 +126,66 @@
   (and (eq? (entry-kind e) 'message)
        (match (entry-message e) [(msg user ,content) #t] [,other #f])))
 
-;; Index of the first entry to keep verbatim, or #f if there is nothing worth
-;; compacting. `toks` is the root->leaf path as a measured vector.
+;; A cut point is a place where the model's view can be split in two without
+;; leaving it with half a turn: a user message (a turn boundary) or an assistant
+;; message (by then the previous turn's tool batch is complete, because the loop
+;; appends all of a batch's results before the next model call). Cutting *before a
+;; tool result* would orphan the call it answers.
+(define (safe-cut-entry? e)
+  (and (eq? (entry-kind e) 'message)
+       (match (entry-message e)
+         [(msg user ,content) #t]
+         [(msg assistant ,content ,calls ,stop ,usage) #t]
+         [,other #f])))
+
+;; First safe cut point at or after `from`, or #f when there is none.
+(define (safe-cut-forward toks from)
+  (let loop ((i (max from 0)))
+    (cond ((>= i (pvec-count toks)) #f)
+          ((safe-cut-entry? (pvec-ref toks i)) i)
+          (else (loop (+ i 1))))))
+
+;; Largest user-message index at or before `j`, or #f.
+(define (user-at-or-before toks j)
+  (cond ((or (< j 0) (>= j (pvec-count toks))) #f)
+        ((user-message-entry? (pvec-ref toks j)) j)
+        (else (user-at-or-before toks (- j 1)))))
+
+;; Where to start keeping, or #f when there is nothing worth compacting.
+;; -> (values FIRST-KEPT TURN-START)   TURN-START is the user message of the turn
+;;    FIRST-KEPT lands in, when that turn is being split (else #f).
 ;;
-;; `keep` is a token budget for the tail. pvec-measure-boundary binary-searches
-;; the cached per-entry token measure for the largest prefix that fits in
-;; (total - keep), i.e. the smallest suffix that still holds `keep` tokens.
-;; We then step back to the nearest user-message boundary so that a tool call is
-;; never separated from its result. `force` (manual /compact, or a provider
-;; overflow) keeps the last turn even when it is under budget.
+;; `toks` is the root->leaf path as a measured vector. pvec-measure-boundary
+;; binary-searches the cached per-entry token measure for the largest prefix that
+;; fits in (total - keep), i.e. the smallest suffix that still holds `keep`
+;; tokens.
+;;
+;; The cut then moves FORWARD to the next safe point, not backward to the
+;; previous user message. That is the difference between being able to compact a
+;; huge turn and not being able to compact it at all: stepping back to the turn's
+;; own user message would keep the entire turn, so a single turn larger than the
+;; budget used to compact nothing (or almost nothing) and the context could
+;; exceed the window no matter how often compaction ran. Moving forward keeps at
+;; most the budget, and the part of the turn left behind is covered by the
+;; two-part summary below (pi calls this a split turn).
 (define (find-first-kept toks keep force)
-  (let ((total (pvec-measure toks))
-        (cut (pvec-measure-boundary toks (lambda (m) (<= m (- (pvec-measure toks) keep))))))
-    (define (user-at-or-before j)
-      (cond ((< j 1) #f)
-            ((user-message-entry? (pvec-ref toks j)) j)
-            (else (user-at-or-before (- j 1)))))
-    (or (user-at-or-before cut)
-        (and force (user-at-or-before (- (pvec-count toks) 1))))))
+  (let* ((n (pvec-count toks))
+         (cut (pvec-measure-boundary toks (lambda (m) (<= m (- (pvec-measure toks) keep)))))
+         (turn-start (user-at-or-before toks (min cut (- n 1))))
+         ;; the token boundary, or the next safe point after it; never the last
+         ;; entry (something has to remain in context) and never 0
+         (forward (safe-cut-forward toks cut))
+         (first-kept (cond
+                       ((and forward (< forward n)) forward)
+                       ;; no safe point left: fall back to the turn boundary
+                       (turn-start turn-start)
+                       (force (user-at-or-before toks (- n 1)))
+                       (else #f))))
+    (if (and first-kept (< first-kept 1))
+        #f
+        (values first-kept
+                ;; split only when the cut really lands inside a turn
+                (and turn-start (> first-kept turn-start) turn-start)))))
 
 ;;----------------------------------------------------------------------------
 ;; cumulative file tracking
@@ -210,21 +252,46 @@
         (list (cons 'summary (entry-summary c)) (cons 'details (entry-details c)))
         '())))
 
+;; Summarisation instructions for the half of a turn that is being left behind.
+(define TURN-PREFIX-INSTRUCTIONS
+  (string-append
+   "The messages above are the BEGINNING of the turn that is still in progress "
+   "(its later half is being kept verbatim in the context). Summarize only what "
+   "this first half already established, so the assistant can continue the turn "
+   "without repeating work:\n"
+   "- what was asked for at the start of the turn\n"
+   "- which tools were already run and what they found (exact paths and results)\n"
+   "- what has already been concluded or ruled out\n"
+   "Be terse and concrete. Do not speculate about what happens next."))
+
 ;; The summarisation pipeline, shared by compaction (agent/compaction.ss) and
 ;; branch summarisation (agent/branch.ss): serialize the messages, summarise with
 ;; the cumulative file lists attached, and report the file operations so a caller
 ;; can store them. Both callers used to spell this out, which is how the two
 ;; drifted (one counted context tokens differently, the other did not).
 ;; -> (values SUMMARY+TEXT FILE-OPS)
-(define (summarize-entries config entries previous-summary previous-details instructions)
-  (let* ((messages (entries->messages entries))
-         (ops (collect-file-ops messages (assq-ref previous-details 'details)))
-         (summary (summarize config (serialize-conversation messages)
-                             (and (string? (assq-ref previous-details 'summary))
-                                  (assq-ref previous-details 'summary))
-                             instructions)))
-    (values (string-append summary (render-file-lists ops)) ops)))
-
+;;
+;; SPLIT-AT, when given, is the index where a partial turn starts. The prefix is
+;; then summarized in two parts -- the history before that turn, and the part of
+;; the turn being left behind -- because one structured history summary is poor
+;; material for "what has happened so far in the turn we are in". pi does the
+;; same, then merges.
+(define (summarize-entries config entries previous-details instructions split-at)
+  (let* ((ops (collect-file-ops (entries->messages entries) (assq-ref previous-details 'details)))
+         (prev (assq-ref previous-details 'summary))
+         (prev (and (string? prev) prev))
+         (body
+          (if (not split-at)
+              (summarize config (serialize-conversation (entries->messages entries))
+                         prev instructions)
+              (let* ((history (take-list split-at entries))
+                     (turn (drop-list split-at entries))
+                     (h (summarize config (serialize-conversation (entries->messages history))
+                                   prev instructions))
+                     (t (summarize config (serialize-conversation (entries->messages turn))
+                                   #f TURN-PREFIX-INSTRUCTIONS)))
+                (string-append h "\n\n---\n\n## The turn being continued\n" t)))))
+    (values (string-append body (render-file-lists ops)) ops)))
 ;; Hooks may cancel a compaction or attach instructions to the summary (pi's
 ;; `session_before_compact`). -> (values CANCEL-REASON INSTRUCTIONS)
 (define (run-before-compact-hooks reason instructions)
@@ -249,25 +316,27 @@
 (define (compact-now! session config reason custom-instructions)
   (let* ((settings (compaction-settings config))
          (keep (assq-ref settings 'keep-recent-tokens))
-         (toks (log-path-measured (session-log session) #f))
-         (first-kept (find-first-kept toks keep (if (memq reason '(manual overflow)) #t #f))))
-    (if (not first-kept)
-        (begin (printf "[sah] nothing to compact~%") #f)
-        (let* ((to-summarize (pvec-range->list toks 0 first-kept))
-               (prev (last-compaction-details to-summarize))
-               (tokens-before (context-tokens session config))
-               (reason-name (match reason [manual "manual"] [threshold "threshold"] [overflow "overflow"] [,o "auto"])))
-          (printf "[sah] compacting (~a): folding ~a entr~a into a summary, keeping from #~a~%"
-                  reason-name (length to-summarize)
-                  (if (= (length to-summarize) 1) "y" "ies") first-kept)
-          (emit (list 'ev 'compaction-start))
-          (let-values (((summary+ ops)
-                        (summarize-entries config to-summarize prev prev custom-instructions)))
-            (session-add-compaction! session summary+ first-kept tokens-before ops)
-            (emit (list 'ev 'compaction-end tokens-before))
-            (printf "[sah] compacted: ~a tokens before, summary ~a chars~%"
-                    tokens-before (string-length summary+))
-            #t)))))
+         (toks (log-path-measured (session-log session) #f)))
+    (let-values (((first-kept split-at)
+                  (find-first-kept toks keep (if (memq reason '(manual overflow)) #t #f))))
+      (if (not first-kept)
+          (begin (printf "[sah] nothing to compact~%") #f)
+          (let* ((to-summarize (pvec-range->list toks 0 first-kept))
+                 (prev (last-compaction-details to-summarize))
+                 (tokens-before (context-tokens session config))
+                 (reason-name (match reason [manual "manual"] [threshold "threshold"] [overflow "overflow"] [,o "auto"])))
+            (printf "[sah] compacting (~a): folding ~a entr~a into a summary, keeping from #~a~a~%"
+                    reason-name (length to-summarize)
+                    (if (= (length to-summarize) 1) "y" "ies") first-kept
+                    (if split-at (format " (splitting the turn that starts at #~a)" split-at) ""))
+            (emit (list 'ev 'compaction-start))
+            (let-values (((summary+ ops)
+                          (summarize-entries config to-summarize prev custom-instructions split-at)))
+              (session-add-compaction! session summary+ first-kept tokens-before ops)
+              (emit (list 'ev 'compaction-end tokens-before))
+              (printf "[sah] compacted: ~a tokens before, summary ~a chars~%"
+                      tokens-before (string-length summary+))
+              #t))))))
 
 ;;----------------------------------------------------------------------------
 ;; auto-compaction hook used by the agent loop

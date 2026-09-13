@@ -13,9 +13,6 @@
 ;;; The result is a small unified-diff-shaped summary, so the model can check
 ;;; what happened without re-reading the file.
 
-(define (take-list n lst)
-  (if (or (= n 0) (null? lst)) '() (cons (car lst) (take-list (- n 1) (cdr lst)))))
-
 (define (edit-occurrences hay needle)
   ;; start indices of every (possibly overlapping) occurrence
   (let ((n (string-length needle)) (m (string-length hay)))

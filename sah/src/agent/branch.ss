@@ -46,7 +46,8 @@
         #f
         (begin
           (printf "[sah] summarising the abandoned branch (~a entries)~%" (length gone))
-          (let-values (((summary+ ops) (summarize-entries config gone '() '() BRANCH-SUMMARY-INSTRUCTIONS)))
+          (let-values (((summary+ ops)
+                        (summarize-entries config gone '() BRANCH-SUMMARY-INSTRUCTIONS #f)))
             (session-branch-summary! session (if (< target 0) #f target) old-leaf summary+)
             (emit `(ev branch-summary ,summary+))
             summary+)))))

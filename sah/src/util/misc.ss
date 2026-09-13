@@ -40,3 +40,10 @@
 (define (get-line-or-eof port)
   (guard (e (#t (eof-object)))
     (get-line port)))
+
+;; Chez has list-head but no take/drop; both are used for slicing entry lists.
+(define (take-list n lst)
+  (if (or (<= n 0) (null? lst)) '() (cons (car lst) (take-list (- n 1) (cdr lst)))))
+
+(define (drop-list n lst)
+  (if (or (<= n 0) (null? lst)) lst (drop-list (- n 1) (cdr lst))))

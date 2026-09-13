@@ -867,7 +867,8 @@
            (write-json-string (list (cons 'type "session") (cons 'version 3)
                                     (cons 'id (session-id cv))
                                     (cons 'timestamp (ms->iso (session-created cv)))
-                                    (cons 'cwd (session-cwd cv))))
+                                    (cons 'cwd (session-cwd cv))
+                                    (cons 'parentSession 'null)))
            "\n"
            (apply string-append
                   (map (lambda (e) (string-append (write-json-string (sah-entry->pi e)) "\n"))
@@ -982,8 +983,120 @@
 (check "branch: a failed summarization moves nothing"
        atom-before
        (list (session-count atom) (log-leaf (session-log atom))))
-(printf "~%---~%~a passed, ~a failed~%" *pass* *fail*)
-(if (> *fail* 0) (exit 1) (exit 0))
+
 
 ;;----------------------------------------------------------------------------
+(printf "== split turn (a turn bigger than the budget) ==~%")
 
+;; an earlier section registers a before-compact hook that vetoes everything, so
+;; run this section with a known registry
+(define split-hooks (hooks-snapshot))
+(hooks-restore! '())
+
+;; The mock answers summarization requests and remembers how many it saw, so a
+;; two-part (split) summary is distinguishable from a one-part summary.
+(define sum-calls 0)
+(set! *chat-impl*
+      (lambda (config messages tools)
+        (set! sum-calls (+ sum-calls 1))
+        (list 'msg 'assistant (format "PART~a" sum-calls) '() 'stop '())))
+
+(define big-cfg (list (cons 'compact #t) (cons 'context-window 64000)
+                      (cons 'reserve-tokens 16384) (cons 'keep-recent-tokens 200)
+                      (cons 'system "t") (cons 'api-key "x") (cons 'base-url "")))
+
+;; one turn: a user message and then ten tool round-trips, each result ~100 tokens
+(define big (session-new tmp "mock"))
+(session-add-message! big '(msg user "one big task"))
+(for-each
+ (lambda (i)
+   (session-add-message! big `(msg assistant "" ((call ,(string-append "c" (number->string i)) read ((path . "f")))) tool-use ()))
+   (session-add-message! big `(msg tool ,(string-append "c" (number->string i)) read ,(make-string 400 #\x))))
+ '(1 2 3 4 5 6 7 8 9 10))
+
+(check "split: the turn really is bigger than the keep budget" #t
+       (> (total-tokens (session-entries big)) (* 2 200)))
+(define big-before (length (session-context-messages big)))
+(set! sum-calls 0)
+(define big-result (compact! big big-cfg 'threshold #f))
+(check "split: a single huge turn can still be compacted" #t big-result)
+(check "split: the summary is produced in two parts" 2 sum-calls)
+(define big-centry (car (reverse (session-entries big))))
+(check "split: the kept suffix is smaller than the budget"
+       #t (< (total-tokens (drop-list (entry-first-kept big-centry) (session-entries big))) 200))
+(check "split: the context shrank" #t (< (length (session-context-messages big)) big-before))
+(check "split: the cut lands inside the turn, not before it" #t
+       (> (entry-first-kept big-centry) 0))
+(check "split: the summary marks where the turn continues" #t
+       (string-contains? "The turn being continued" (entry-summary big-centry)))
+(check "split: nothing is lost (all entries are still on disk)"
+       22 (session-count big))
+(check "split: no tool result at the cut is orphaned" #t
+       (let ((e (log-ref (session-log big) (entry-first-kept big-centry))))
+         (or (eq? (entry-kind e) 'message) (eq? (entry-kind e) 'compaction))))
+
+;; the pipeline contract, independent of where the token boundary happens to
+;; land: no split point is one summary, a split point is two merged ones
+(set! sum-calls 0)
+(summarize-entries big-cfg (session-entries big) '() "x" #f)
+(check "split: no split point means one summary" 1 sum-calls)
+(set! sum-calls 0)
+(define merged (car (call-with-values
+                     (lambda () (summarize-entries big-cfg (session-entries big) '() "x" 2))
+                     list)))
+(check "split: a split point means two summaries" 2 sum-calls)
+(check "split: the merged text marks the continuing turn" #t
+       (string-contains? "The turn being continued" merged))
+(check "split: the merged text keeps both parts" '(#t #t)
+       (list (string-contains? "PART1" merged) (string-contains? "PART2" merged)))
+(hooks-restore! split-hooks)
+
+;;----------------------------------------------------------------------------
+(printf "== fork (extract a path into its own session) ==~%")
+
+(define fk (session-new tmp "mock"))
+(session-add-message! fk '(msg user "one"))
+(session-add-message! fk '(msg assistant "two" () stop ()))
+(session-add-message! fk '(msg user "three"))
+(session-add-message! fk '(msg assistant "four" () stop ()))
+;; branch at #1 and leave a summary behind, so the fork has to drop a reference
+;; that points outside the extracted path
+(branch-summarize! fk (list (cons 'system "t") (cons 'api-key "x") (cons 'base-url "")) 1)
+(check "fork: the source session now has a branch" #f (log-linear? (session-log fk)))
+
+(define forked (session-extract fk 1))
+(check "fork: the new session holds the path, renumbered"
+       '((message 0 #f) (message 1 0))
+       (map (lambda (e) (list (entry-kind e) (entry-id e) (entry-parent e))) (session-entries forked)))
+(check "fork: the new session records its parent file"
+       (session-file fk) (session-parent forked))
+(check "fork: the new session has its own id" #f (string=? (session-id fk) (session-id forked)))
+(session-close! forked)
+(check "fork: the fork reloads from disk with the same entries and parent"
+       (list 2 (session-file fk))
+       (let ((again (session-load (session-file forked))))
+         (list (session-count again) (session-parent again))))
+
+;; a branch_summary whose from-id is not on the extracted path keeps its text and
+;; loses the dangling reference (ids are positions: a stale index would silently
+;; point at a different entry)
+(define forked2 (session-extract fk (log-leaf (session-log fk))))
+(check "fork: an off-path reference becomes #f, the summary text survives"
+       (list #f #t)
+       (let ((e (car (filter (lambda (x) (eq? (entry-kind x) 'branch-summary))
+                             (session-entries forked2)))))
+         (list (entry-from e) (> (string-length (entry-summary e)) 0))))
+(check "fork: a compaction's first-kept stays valid (it is always an ancestor)"
+       #t
+       (let* ((lg (log-push-compaction (session-log fk) "S" 0 1 '()))
+              (s (session-new tmp "mock")))
+         ;; build the same branch but with a compaction on the path, via a fork
+         (let ((f3 (session-extract fk 1)))
+           (session-close! f3)
+           (let ((saved (session-load (session-file f3))))
+             (and (not (pair? (filter (lambda (x) (eq? (entry-kind x) 'compaction))
+                                     (session-entries saved)))) #t)))))
+(session-close! forked2)
+
+(printf "~%---~%~a passed, ~a failed~%" *pass* *fail*)
+(if (> *fail* 0) (exit 1) (exit 0))
