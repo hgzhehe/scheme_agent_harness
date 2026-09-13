@@ -98,6 +98,7 @@ sah [options] [--] [prompt | @file ...]
 | `--session <path\|id>` | use a specific session file, or a full/partial session id |
 | `--export-pi <file>` | write the session as pi's JSONL (`-` for stdout) |
 | `--import-pi <file>` | import a pi JSONL session as a new sah session |
+| `--fork` | copy this session's current path into a new session |
 | `--key <key>` | API key (overrides config and env) |
 | `--model <id>` | model id (default `deepseek-flash`) |
 | `--base-url <url>` | API base URL |
@@ -273,8 +274,8 @@ session id, or a `.ss` file path). On exiting the REPL, sah prints
 and `sah --session <id>` all enter the REPL.
 
 Inside the REPL: `/compact [instructions]`, `/context` (what the next request
-would carry), `/tree` (list entries, move the cursor), `/label`, `/name` and
-`/help`. Commands are a capability, not a mode: they work in print mode too
+would carry), `/tree` (list entries, move the cursor, branch here), `/label`,
+`/name`, `/fork` (a copy of this path as a new session) and `/help`. Commands are a capability, not a mode: they work in print mode too
 (`sah "/context"`).
 
 ## Data conventions
@@ -344,7 +345,7 @@ src/extend/         the customization surface:
                       skills.ss  SKILL.md discovery + progressive disclosure
                       prompts.ss /name templates ($1, $@, ${N:-default})
                       loader.ss  loads extensions, skills, prompts
-                      builtin-commands.ss  the commands sah ships with
+                      builtin-commands.ss  the commands sah ships with (incl. /fork)
 src/ai/             chat.ss + providers/openai-compatible.ss
 src/session/        log.ss (immutable entry tree) + manager.ss (SexprL files)
                     + discovery.ss (find/pick) + pi-format.ss (pi JSONL
@@ -352,7 +353,7 @@ src/session/        log.ss (immutable entry tree) + manager.ss (SexprL files)
 src/tools/          registry.ss + read.ss write.ss edit.ss shell.ss eval.ss
 src/agent/          agent.ss (loop) + context.ss + compaction.ss
                     + branch.ss (summarise an abandoned branch)
-src/modes/          cli.ss + convert.ss (--export-pi/--import-pi) + print.ss
+src/modes/          cli.ss + oneshot.ss (--export-pi/--import-pi/--fork)
                     + repl.ss
 src/main.ss         entry point
 examples/           extension / skill / prompt-template examples
@@ -386,7 +387,7 @@ main → run-agent ──► build context (context.ss: system + session context
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss   # 947 checks, offline (mock model)
+scheme --script tests/run-tests.ss   # 967 checks, offline (mock model)
 scheme --script bench/bench-fp.ss    # data-structure measurements
 scheme --script sah.ss --repl        # run from source
 ```

@@ -288,3 +288,45 @@ mutation wrappers became one; two copies of the summarisation pipeline became
 one) but the file total went **up**, from 3812 to 3928 lines, because the rules
 above were written down where they are enforced. Of those 3928 lines, 24% are
 comments and 10% are blank; the code itself is 2599 lines.
+
+### Cutting a turn in half (split turns)
+
+The cut point is the one place where compaction can be *wrong* in a way that
+matters, so it is worth stating the rule:
+
+- The token boundary is a binary search over the log's cached measure (see the
+  measurements above).
+- The cut then moves **forward** to the next safe point, not backward to the
+  previous user message. A safe point is a user message (a turn boundary) or an
+  assistant message (by then the turn's tool batch is complete, because the loop
+  appends every result of a batch before calling the model again). Cutting before
+  a tool result would orphan the call it answers.
+- Moving *forward* is what makes a single turn larger than the context budget
+  compactable at all. Stepping back to that turn's own user message would keep
+  the whole turn, so the old behaviour compacted nothing and the context could
+  exceed the window no matter how often compaction ran. This was a live failure
+  mode, now covered by a test that builds one 2 000-token turn with a 200-token
+  budget.
+- When the cut lands inside a turn, the prefix is summarized in two parts — the
+  history, and the part of that turn being left behind — and merged, because one
+  structured history summary is poor material for "what has happened so far in
+  the turn we are in". pi calls this a split turn.
+
+`retainedTail` (pi's self-contained copy of the kept tail inside the compaction
+entry) is deliberately not implemented: it exists so a reader that only
+understands `firstKeptEntryId` can rebuild the context. sah has one reader, and
+the log is always present; the pi export carries the whole log, so the reference
+resolves there too.
+
+### Forking
+
+`session-extract` (session/manager.ss) writes the path root→entry into a new
+session file. Because ids are positions, extraction **renumbers**; keeping the old
+numbers would silently point at different entries. Two kinds of reference can
+point outside the extracted path — a branch summary's `from-id` and a label's
+`target-id` — and those become `#f`: the text is kept and the dangling reference
+is dropped rather than left pointing at a stranger.
+
+The header gained an optional parent session, so a fork keeps its provenance;
+`session-load` accepts both shapes and `pi-format.ss` maps it to and from pi's
+`parentSession`. Reachable as `/fork [entry-id]` and `sah --fork [--session <id>]`.

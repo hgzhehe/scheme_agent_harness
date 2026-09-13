@@ -94,6 +94,7 @@ sah [options] [--] [prompt | @file ...]
 | `--session <path|id>` | 指定会话文件，或完整/部分会话 id |
 | `--export-pi <file>` | 把会话写成 pi 的 JSONL（`-` 表示 stdout） |
 | `--import-pi <file>` | 导入 pi 的 JSONL 会话，生成一个新的 sah 会话 |
+| `--fork` | 把当前会话的这条路径复制成一个新会话 |
 | `--key <key>` | API key（覆盖配置和环境变量） |
 | `--model <id>` | 模型 id（默认 `deepseek-flash`） |
 | `--base-url <url>` | API base URL |
@@ -259,7 +260,8 @@ EOF
 `sah --session <id>` 都会直接进入 REPL。
 
 REPL 内：`/compact [instructions]`、`/context`（下一次请求会带什么）、`/tree`
-（列出 entry 并移动游标）、`/label`、`/name`、`/help`。命令是**能力**而不是模式：
+（列出 entry、移动游标即分叉）、`/label`、`/name`、`/fork`（把这条路径复制成新会话）、
+`/help`。命令是**能力**而不是模式：
 在 print 模式下同样可用（`sah "/context"`）。
 
 ## 数据约定
@@ -326,7 +328,7 @@ src/extend/         定制面：
                       skills.ss  SKILL.md 发现 + 渐进披露
                       prompts.ss /名称模板（$1、$@、${N:-默认}）
                       loader.ss  加载扩展、技能、模板
-                      input.ss   命令 -> input hook -> 技能 -> 模板
+                      builtin-commands.ss  内置命令（含 /fork）
 src/ai/             chat.ss + providers/openai-compatible.ss
 src/session/        log.ss（不可变 entry 树）+ manager.ss（SexprL 文件）
                     + discovery.ss（查找/选择）+ pi-format.ss（读写 pi 的
@@ -334,7 +336,7 @@ src/session/        log.ss（不可变 entry 树）+ manager.ss（SexprL 文件�
 src/tools/          registry.ss + read.ss write.ss edit.ss shell.ss eval.ss
 src/agent/          agent.ss（循环）+ context.ss + compaction.ss
                     + branch.ss（为被放弃的分支生成摘要）
-src/modes/          cli.ss + convert.ss（--export-pi/--import-pi）
+src/modes/          cli.ss + oneshot.ss（--export-pi/--import-pi/--fork）
                     + print.ss + repl.ss
 src/main.ss         入口
 examples/           扩展 / 技能 / 提示模板 示例
@@ -366,7 +368,7 @@ main → run-agent ──► 构建上下文（context.ss：system + 会话上�
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss   # 947 项检查，离线（mock 模型）
+scheme --script tests/run-tests.ss   # 967 项检查，离线（mock 模型）
 scheme --script bench/bench-fp.ss    # 数据结构测量
 scheme --script sah.ss --repl        # 从源码运行
 ```
