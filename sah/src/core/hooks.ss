@@ -53,9 +53,18 @@
 
 (define *hooks* '())
 
-;; registration order is call order, so prepend and walk backwards
+;; registration order is call order, so prepend and walk backwards.
+;; Returns the cell it created, which is the token `unregister-hook!` takes: a
+;; hook has no name to key on, so the inverse can only be by identity.
 (define (register-hook! name proc)
-  (set! *hooks* (cons (cons name proc) *hooks*)))
+  (let ((cell (cons name proc)))
+    (set! *hooks* (cons cell *hooks*))
+    cell))
+
+;; The inverse of `register-hook!`: remove exactly that registration.
+(define (unregister-hook! cell)
+  (set! *hooks* (remq cell *hooks*))
+  #t)
 
 ;; Oldest registration first, which is the documented order ('hooks run in
 ;; registration order and each sees the previous one's result', and what pi

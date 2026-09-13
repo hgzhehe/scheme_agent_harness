@@ -36,7 +36,15 @@
 ;;;   (ev compaction-start)  (ev compaction-end TOKENS-BEFORE)
 ;;;   (ev auto-retry-start REASON)  (ev auto-retry-end)
 ;;;   (ev branch-summary SUMMARY)
+;;;   (ev plugin-op NAME OP-KIND LINE)  one op performed (a definition or an effect);
+;;;                                     LINE is its derived readable line
+;;;   (ev plugin-mount NAME)
+;;;   (ev plugin-undo NAME OP-KIND LINE)  (ev plugin-dispose NAME)
 ;;;   (ev session-end SESSION)
+;;;
+;;; The plugin events are what make installing and unloading a HISTORY rather
+;;; than only a current state: a subscriber accumulates them append-only, in the
+;;; order they happened, across mounts and unmounts alike.
 ;;;
 ;;; `agent-end` vs `agent-settled`: the first says "this run stopped asking for
 ;;; tools", the second says "the harness is idle". A consumer that wants to

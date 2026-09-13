@@ -20,6 +20,14 @@
                         (match c [(command ,n ,d ,h) (not (eq? n name))] [,other #t]))
                       *commands*))))
 
+;; The inverse of `register-command!`.
+(define (unregister-command! name)
+  (set! *commands*
+        (filter (lambda (c)
+                  (match c [(command ,n ,d ,h) (not (eq? n name))] [,other #t]))
+                *commands*))
+  #t)
+
 (define (all-commands) (reverse *commands*))
 
 ;; Snapshot/restore, so a reload (see extend/loader.ss) can put the registry
@@ -59,3 +67,20 @@
                 (match c
                   [(command ,n ,d ,handler) (handler args)]
                   [,other 'handled])))))))
+
+(define (op-register-command name description handler)
+  (list 'op-register-command name description handler))
+
+;; The plugin op for this registry, registered by the layer that owns it.
+(op-register-handler!
+ 'op-register-command 'registry
+ (lambda (op env) #f)
+ (lambda (op env) (match op [(op-register-command ,n ,d ,h) (find-command n)]))
+ (lambda (op env) (match op [(op-register-command ,n ,d ,h) (register-command! n d h) n]))
+ (lambda (op env pre handle)
+   (match op
+     [(op-register-command ,n ,d ,h)
+      (match pre
+        [#f (unregister-command! n)]
+        [(command ,pn ,pd ,ph) (register-command! pn pd ph)])])))
+;; no SHOW argument: the op set derives the line from the kind and position 1

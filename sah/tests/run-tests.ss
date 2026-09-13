@@ -23,6 +23,32 @@
       (begin (set! *fail* (+ *fail* 1))
              (printf "FAIL ~a~%  expected: ~s~%  actual:   ~s~%" name expected actual))))
 
+
+;;----------------------------------------------------------------------------
+;; per-section timing.  A slow section must be visible immediately, or the only
+;; way to find it is to run the whole suite and guess.
+(define *section-name* "start")
+(define *section-start* (now-ms))
+(define *section-times* '())
+
+(define (section! name)
+  (let ((elapsed (- (now-ms) *section-start*)))
+    (set! *section-times* (cons (cons *section-name* elapsed) *section-times*))
+    (when (> elapsed 200)
+      (printf "  [slow: ~a ms in ~a]~%" elapsed *section-name*)))
+  (set! *section-name* name)
+  (set! *section-start* (now-ms))
+  (printf "== ~a ==~%" name))
+
+(define (report-section-times)
+  (let ((done (- (now-ms) *section-start*)))
+    (set! *section-times* (cons (cons *section-name* done) *section-times*)))
+  (printf "~%slowest sections:~%")
+  (for-each (lambda (kv)
+              (when (> (cdr kv) 50)
+                (printf "  ~6a ms  ~a~%" (cdr kv) (car kv))))
+            (take-list 10 (list-sort (lambda (a b) (> (cdr a) (cdr b))) *section-times*))))
+
 (define (check-true name v) (check name #t (and v #t)))
 
 ;; message content, used by most of the session tests
@@ -30,7 +56,7 @@
   (match m [(msg assistant ,c ,a ,s ,u) c] [(msg ,role ,c) c] [,other ""]))
 
 ;;----------------------------------------------------------------------------
-(printf "== json ==~%")
+(section! "json")
 
 (check "json: read simple object"
        '((a . 1) (b . "x"))
@@ -64,7 +90,7 @@
        (read-json-string "[0,-3,3.14,1e3]"))
 
 ;;----------------------------------------------------------------------------
-(printf "== llm encoding ==~%")
+(section! "llm encoding")
 
 (check "llm: message->openai (user)"
        '((role . "user") (content . "hi"))
@@ -105,7 +131,7 @@
        (normalize-message '((role . tool) (tool-call-id . "c1") (name . read) (content . "out"))))
 
 ;;----------------------------------------------------------------------------
-(printf "== tools ==~%")
+(section! "tools")
 
 (define tmp (path-join (or (getenv "TEMP") "/tmp") (string-append "sah-test-" (short-id))))
 (ensure-dir! tmp)
@@ -132,7 +158,7 @@
        (call-with-values (lambda () (call-tool 'frobnicate '())) (lambda (out err) err)))
 
 ;;----------------------------------------------------------------------------
-(printf "== shell ==~%")
+(section! "shell")
 
 (check "shell: detect-shell returns a shell"
        #t
@@ -166,7 +192,7 @@
 (set! *shell-override* #f)
 
 ;;----------------------------------------------------------------------------
-(printf "== eval ==~%")
+(section! "eval")
 
 (call-with-values
   (lambda () (call-tool 'eval (list (cons 'code "(+ 40 2)"))))
@@ -185,7 +211,7 @@
   (lambda (out err) (check "eval: runtime error reported" #t err)))
 
 ;;----------------------------------------------------------------------------
-(printf "== session (SexprL) ==~%")
+(section! "session (SexprL)")
 
 (set! *sah-home-override* (path-join tmp "sah-home"))
 (define s (session-new "/some/project" "deepseek-flash"))
@@ -214,7 +240,7 @@
        1 (log-leaf (session-log s2)))
 
 ;;----------------------------------------------------------------------------
-(printf "== agent loop (mock model) ==~%")
+(section! "agent loop (mock model)")
 
 (define tf2 (path-join tmp "agent-input.txt"))
 (string->file tf2 "the-answer")
@@ -269,7 +295,7 @@
        (guard (e (#t #t)) (run-agent s4 (list (cons 'system "t") (cons 'max-steps 2)) "go") #f))
 
 ;;----------------------------------------------------------------------------
-(printf "== compaction ==~%")
+(section! "compaction")
 
 ;; mock: summarization requests get a summary, everything else a normal reply
 (define *is-summarize* #f)
@@ -340,7 +366,7 @@
                (else (loop (cdr es))))))
 
 ;;----------------------------------------------------------------------------
-(printf "== fp: persistent measured vector ==~%")
+(section! "fp: persistent measured vector")
 
 (define (iota n) (let loop ((i 0) (a '())) (if (= i n) (reverse a) (loop (+ i 1) (cons i a)))))
 (define (take n l) (if (or (= n 0) (null? l)) '() (cons (car l) (take (- n 1) (cdr l)))))
@@ -416,7 +442,7 @@
          (list (pvec-count a) (pvec-measure a) (pvec-count b))))
 
 ;;----------------------------------------------------------------------------
-(printf "== session tree (branches) ==~%")
+(section! "session tree (branches)")
 
 (define sb (session-new tmp "mock"))
 (session-add-message! sb '(msg user "first"))
@@ -450,7 +476,7 @@
          (and (eq? (log-ref lg 3) dot) (not (equal? (log-leaf lg) tip)))))
 
 ;;----------------------------------------------------------------------------
-(printf "== extension hooks ==~%")
+(section! "extension hooks")
 
 (register-hook! 'tool-call
   (lambda (name args)
@@ -523,7 +549,7 @@
 (check "hooks: input passes anything else through" "just a message" (process-input "just a message"))
 
 ;;----------------------------------------------------------------------------
-(printf "== commands ==~%")
+(section! "commands")
 
 (register-command! 'greet "Say hello." (lambda (args) (string-append "say hello to " args)))
 (register-command! 'quiet "Do nothing." (lambda (args) 'handled))
@@ -537,7 +563,7 @@
 (check "commands: not a command" #f (parse-command "hello"))
 
 ;;----------------------------------------------------------------------------
-(printf "== skills and prompt templates ==~%")
+(section! "skills and prompt templates")
 
 (define cus (path-join tmp "custom"))
 (ensure-dir! (path-join cus "skills" "pdf-tools"))
@@ -600,7 +626,7 @@
 (check "extensions: the hook it registered is called at session-start" #t *demo-loaded*)
 
 ;;----------------------------------------------------------------------------
-(printf "== edit tool ==~%")
+(section! "edit tool")
 
 (define ef (path-join tmp "edit-me.txt"))
 (string->file ef "alpha\nbeta\ngamma\ndelta\n")
@@ -637,7 +663,7 @@
  (lambda (out err) (check "edit: overlapping edits are rejected" #t err)))
 
 ;;----------------------------------------------------------------------------
-(printf "== session entry kinds + tree algorithms ==~%")
+(section! "session entry kinds + tree algorithms")
 
 (define st (session-new tmp "mock"))
 (session-add-message! st '(msg user "a"))
@@ -706,7 +732,7 @@
 (session-add-message! bs '(msg user "three"))
 (session-add-message! bs '(msg assistant "four" () stop ()))
 ;;
-(printf "== branch summarization ==~%")
+(section! "branch summarization")
 (define bs-count-before (session-count bs))
 (define bs-cfg (list (cons 'system "t") (cons 'api-key "x") (cons 'base-url "")))
 
@@ -734,7 +760,7 @@
        #f (branch-summarize! bs bs-cfg (log-leaf (session-log bs))))
 ;;----------------------------------------------------------------------------
 ;;----------------------------------------------------------------------------
-(printf "== event stream ==~%")
+(section! "event stream")
 
 (define seen '())
 (define tok (subscribe! (lambda (ev) (set! seen (cons (match ev [(ev ,kind . ,rest) kind]) seen)))))
@@ -777,7 +803,7 @@
        (reverse ev-log))
 
 ;;----------------------------------------------------------------------------
-(printf "== pi session format conversion ==~%")
+(section! "pi session format conversion")
 
 (define cv (session-new tmp "deepseek-flash"))
 (session-add-message! cv '(msg user "hello"))
@@ -889,7 +915,7 @@
                 (string? (session-id again))))))
 
 ;;----------------------------------------------------------------------------
-(printf "== entry shapes, command registry, atomicity ==~%")
+(section! "entry shapes, command registry, atomicity")
 
 ;; the slot table in core/data.ss, asserted for every kind
 (define sl (log-empty))
@@ -956,7 +982,7 @@
 
 
 ;;----------------------------------------------------------------------------
-(printf "== split turn (a turn bigger than the budget) ==~%")
+(section! "split turn (a turn bigger than the budget)")
 
 ;; an earlier section registers a before-compact hook that vetoes everything, so
 ;; run this section with a known registry
@@ -1022,7 +1048,7 @@
 (hooks-restore! split-hooks)
 
 ;;----------------------------------------------------------------------------
-(printf "== fork (extract a path into its own session) ==~%")
+(section! "fork (extract a path into its own session)")
 
 (define fk (session-new tmp "mock"))
 (session-add-message! fk '(msg user "one"))
@@ -1069,7 +1095,7 @@
 (session-close! forked2)
 
 ;;----------------------------------------------------------------------------
-(printf "== manifest ==~%")
+(section! "manifest")
 
 ;; the list is the single source of truth, so it has to be complete: a source
 ;; file that is on disk but not listed is invisible to every entry point
@@ -1102,7 +1128,7 @@
        (filter (lambda (f) (member f '("modes/cli.ss" "main.ss"))) sah-kernel-source-files))
 
 ;;----------------------------------------------------------------------------
-(printf "== tools: ls, grep, find ==~%")
+(section! "tools: ls, grep, find")
 
 (define tt (path-join tmp "tools"))
 (ensure-dir! (path-join tt "sub"))
@@ -1179,7 +1205,7 @@
                (walk-files tt default-walk-skip-dirs)))
 
 ;;----------------------------------------------------------------------------
-(printf "== tools: allow and exclude ==~%")
+(section! "tools: allow and exclude")
 
 (check "tools: no restriction is every tool" 8 (length (active-tools '())))
 (check "tools: allowlist" '(read grep) (map tool-name (active-tools '((tools . (read grep))))))
@@ -1217,7 +1243,7 @@
        (map tool-name (active-tools '((exclude-tools . (write edit ls grep find shell eval))))))
 
 ;;----------------------------------------------------------------------------
-(printf "== extensions: before-agent-start ==~%")
+(section! "extensions: before-agent-start")
 
 (define hs (hooks-snapshot))
 (set! *chat-impl* (lambda (cfg msgs tools) '(msg assistant "ok" () stop (usage))))
@@ -1250,7 +1276,7 @@
 (hooks-restore! hs)
 
 ;;----------------------------------------------------------------------------
-(printf "== extensions: reload ==~%")
+(section! "extensions: reload")
 
 (define home (path-join tmp "home"))
 (define proj (path-join tmp "proj"))
@@ -1291,7 +1317,7 @@
 (hooks-restore! hs)
 
 ;;----------------------------------------------------------------------------
-(printf "== resources: project overrides global ==~%")
+(section! "resources: project overrides global")
 
 (ensure-dir! (path-join home "skills/dup"))
 (ensure-dir! (path-join proj ".sah/skills/dup"))
@@ -1325,7 +1351,7 @@
 (load-prompts! tmp)
 
 ;;----------------------------------------------------------------------------
-(printf "== message model: stop reason, tool errors ==~%")
+(section! "message model: stop reason, tool errors")
 
 (check "llm: finish_reason maps onto the stop-reason taxonomy"
        '(tool-use tool-use length error stop stop)
@@ -1371,7 +1397,7 @@
          (assq-ref (sah-msg->pi (pi-msg->sah pi)) 'isError)))
 
 ;;----------------------------------------------------------------------------
-(printf "== tools: read ranges and the output cap ==~%")
+(section! "tools: read ranges and the output cap")
 
 (define rtf (path-join tmp "ranged.txt"))
 (string->file rtf "l1\nl2\nl3\nl4\nl5\n")
@@ -1412,7 +1438,7 @@
        (tool-out 'eval (list (cons 'code "(display \"short\")"))))
 
 ;;----------------------------------------------------------------------------
-(printf "== extensions: veto hooks and after-reply ==~%")
+(section! "extensions: veto hooks and after-reply")
 
 (define hs2 (hooks-snapshot))
 (set! *chat-impl* (lambda (cfg msgs tools) '(msg assistant "R" () stop (usage))))
@@ -1466,7 +1492,7 @@
 (hooks-restore! hs2)
 
 ;;----------------------------------------------------------------------------
-(printf "== streaming (SSE assembly) ==~%")
+(section! "streaming (SSE assembly)")
 
 (check "stream: only `data:` lines yield frames, and [DONE] ends it"
        '("{\"a\":1}" #f #f #f done #f)
@@ -1560,5 +1586,293 @@
                                      "\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}"))))))
          (equal? blocking streamed)))
 
+;;============================================================================
+;; names introduced by the env tests, so a failure names the section
+(define (sess-names e)
+  (filter (lambda (s) (string-prefix? "env-" (symbol->string s))) (env-defined e)))
+
+(section! "env: the lexical chain")
+
+(check "env: the root layer sees sah's own bindings"
+       '(#t #t #t)
+       (list (env-has? (env-root) 'assq-ref)
+             (env-has? (env-root) 'register-tool!)
+             (env-has? (env-root) 'env-eval)))
+
+(define ea (env-layer (env-root) 'session 'a))
+(check "env: a new layer has defined nothing" '() (sess-names ea))
+
+(env-eval ea '(define env-x 1))
+(env-eval ea '(define (env-get) env-x))
+(env-eval ea '(define (env-fact n) (if (= n 0) 1 (* n (env-fact (- n 1))))))
+(check "env: define is visible" 1 (env-eval ea 'env-x))
+(check "env: a recursive define works" 120 (env-eval ea '(env-fact 5)))
+(check "env: what a layer defined is a DIFF, nothing recorded"
+       '(env-fact env-get env-x) (sess-names ea))
+(check "env: env-ref on an unbound name is 'absent, not #f"
+       'absent (env-ref ea 'env-nope))
+(env-eval ea '(define env-false #f))
+(check "env: #f is distinguishable from absent"
+       (list #f 'absent) (list (env-ref ea 'env-false) (env-ref ea 'env-nope)))
+
+(define eb (env-layer (env-root) 'session 'b))
+(env-eval eb '(define env-x 99))
+(check "env: two layers may use the same name"
+       '(1 99) (list (env-eval ea 'env-x) (env-eval eb 'env-x)))
+
+(define ec (env-layer ea 'session 'c))
+(check "env: a child layer sees the parent's binding" 1 (env-eval ec 'env-x))
+(env-eval ec '(define env-x 2))
+(check "env: the child's define does not write back"
+       '(1 2) (list (env-eval ea 'env-x) (env-eval ec 'env-x)))
+(env-eval ec '(set! env-x 5))
+(check "env: the child's set! does not write back"
+       '(1 5) (list (env-eval ea 'env-x) (env-eval ec 'env-x)))
+(check "env: a parent closure called in the child sees the PARENT's binding"
+       1 (env-eval ec '(env-get)))
+
+(env-eval ea '(define env-later 7))
+(check "env: a name the parent adds later is invisible in the child"
+       #f (env-has? ec 'env-later))
+(define ed (env-layer ec 'session 'd))
+(check "env: depth" 3 (env-depth ed))
+(check "env: a leaf sees the root layer's definitions" 120 (env-eval ed '(env-fact 5)))
+(check "env: the leaf's inherited closure sees the ancestor's value"
+       1 (env-eval ed '(env-get)))
+
+;;============================================================================
+(section! "env: the naming rules")
+
+;; a fresh layer: the chain section above DEFINED env-x in ec, so by now ec owns
+;; it.  These tests need a name that is still inherited.
+(define rc (env-layer ea 'session 'rules))
+(check "rules: set! of an inherited name is refused, with its origin named"
+       '(error #t)
+       (call-with-values (lambda () (env-try-form! rc '(set! env-x 5)))
+         (lambda (status message)
+           (list status (string-contains? "not writable" message)))))
+(check "rules: set! of sah's own binding is refused too"
+       'error
+       (call-with-values (lambda () (env-try-form! rc '(set! assq-ref 1)))
+         (lambda (status message) status)))
+(check "rules: set! of an unbound name is refused, not silently created"
+       'error
+       (call-with-values (lambda () (env-try-form! rc '(set! env-ghost 1)))
+         (lambda (status message) status)))
+(check "rules: defining over an inherited name is allowed but NOT silent"
+       '(shadowed #t)
+       (call-with-values (lambda () (env-try-form! rc '(define env-x 6)))
+         (lambda (status message)
+           (list status (string-contains? "shadows" message)))))
+(check "rules: inside its own layer, redefining is plain ok"
+       '(ok ok)
+       (list (call-with-values (lambda () (env-try-form! rc '(define env-own 1)))
+               (lambda (s m) s))
+             (call-with-values (lambda () (env-try-form! rc '(define env-own 2)))
+               (lambda (s m) s))))
+(check "rules: latest wins in the own layer" 2 (env-eval rc 'env-own))
+
+;;============================================================================
+(section! "env: replay")
+
+(define marker (path-join (or (getenv "TEMP") "/tmp") "sah-env-replay-marker.txt"))
+(string->file marker "must survive replay")
+
+(define sources
+  (list "(define env-a 1)"
+        "(define-syntax env-dbl (syntax-rules () ((_ x) (* 2 x))))"
+        "(set! env-a 10)"
+        "(set! env-nope 1)"                       ; not owned: refused
+        "(define env-bad (car 1))"                 ; owned, but fails
+        (format "(delete-file ~s)" marker)          ; world effect: skipped
+        "(env-dbl 21)"))                            ; not env-only: skipped
+
+(define er (env-layer (env-root) 'session 'r))
+(define rr (env-replay! er sources))
+(check "replay: replayed / skipped / failed counts"
+       '(3 2 2)
+       (list (assq-ref rr 'replayed) (assq-ref rr 'skipped) (assq-ref rr 'failed)))
+(check "replay: the definition landed" 10 (env-eval er 'env-a))
+(check "replay: define-syntax was replayed and works" 42 (env-eval er '(env-dbl 21)))
+(check "replay: set! of an unbound name was refused, not silently created"
+       #f (env-has? er 'env-nope))
+(check "replay: a world-effect form was NOT run (the file survives)"
+       #t (file-exists? marker))
+(check "replay: both failures are recorded, and neither is fatal"
+       2 (length (assq-ref rr 'failures)))
+(check "replay: the failed definition is absent" #f (env-has? er 'env-bad))
+(check "replay: skipped forms are reported for diagnosis"
+       2 (length (assq-ref rr 'skipped-forms)))
+
+(define er2 (env-layer (env-root) 'session 'r2))
+(env-replay! er2 sources)
+(check "replay: into a fresh layer gives the same definitions"
+       (sess-names er) (sess-names er2))
+
+(define er3 (env-layer ea 'session 'r3))
+(define rr3 (env-replay! er3 (list "(define env-x 2)")))
+(check "replay: a shadowing define is reported, not silent"
+       1 (length (assq-ref rr3 'notices)))
+
+(delete-file marker)
+
+;;============================================================================
+(section! "plugin: the op set")
+
+(check "plugin: the registered op kinds" '(op-define op-register-command op-register-hook op-register-tool)
+       (op-kinds))
+(check "plugin: every registered op has its four tables (SHOW is optional)"
+       '()
+       (filter (lambda (k) (not (andmap procedure?
+                                        (take-list 4 (cddr (assq k *op-handlers*))))))
+               (op-kinds)))
+(check "plugin: an op outside the algebra is refused, not ignored"
+       #t
+       (guard (e (#t (string-contains? "not in the op set" (condition-message e))))
+         (op-undo-kind '(op-shell "rm -rf /"))
+         #f))
+
+;;============================================================================
+(section! "plugin: mount, use, unload")
+
+(plugin tool-p (imports) (exports)
+  (op-register-tool 'plug "a tool from a plugin" (schema '()) (lambda (args) "PLUG")))
+
+(define tools-before (list-sort symbol-< (map tool-name (all-tools))))
+(check "use: before mounting, the tool is not there" #f (and (find-tool 'plug) #t))
+(check "mount: the plugin reports as defined first" 'defined (cdr (assq 'tool-p (plugin-list))))
+
+(plugin-mount! 'tool-p)
+(check "mount: the plugin is mounted" 'mounted (cdr (assq 'tool-p (plugin-list))))
+(check "use: the tool is now registered" #t (and (find-tool 'plug) #t))
+(check "use: and it is callable"
+       "PLUG"
+       (call-with-values (lambda () (call-tool 'plug '())) (lambda (out err) out)))
+(check "unload: the frame chain IS the undo log, and the line is DERIVED"
+       '("register-tool plug")
+       (plugin-frames 'tool-p))
+(check "unload: the detail view carries the SOURCE, under a printer bound"
+       '(#t #t #t)
+       (let* ((d (car (plugin-frame-data 'tool-p)))
+              (form (cdr (assq 'form (cdr d)))))
+         ;; the derived line, the source (a closure reads as code, not as
+         ;; #<procedure>), and the length bound that stops any explosion
+         (list (equal? (car d) "register-tool plug")
+               (string-contains? "(lambda (args)" form)
+               (<= (string-length form) 123))))
+
+(plugin-dispose! 'tool-p)
+(check "unload: the tool is gone" #f (and (find-tool 'plug) #t))
+(check "unload: the registry is back to the baseline"
+       tools-before (list-sort symbol-< (map tool-name (all-tools))))
+(check "unload: the plugin is back to defined" 'defined (cdr (assq 'tool-p (plugin-list))))
+
+(plugin-mount! 'tool-p)
+(check "remount: mounting again works (the layer is rebuilt)"
+       #t (and (find-tool 'plug) #t))
+(plugin-dispose! 'tool-p)
+
+;; hooks: removal is by identity, so an unrelated hook must survive
+(plugin hook-p (imports) (exports)
+  (op-register-hook 'tool-call (lambda (name args) #f)))
+(define hooks-before (length (hooks-for 'tool-call)))
+(plugin-mount! 'hook-p)
+(check "hooks: mounting adds exactly one" (+ hooks-before 1) (length (hooks-for 'tool-call)))
+(plugin-dispose! 'hook-p)
+(check "hooks: unloading removes exactly that one, not all"
+       hooks-before (length (hooks-for 'tool-call)))
+
+;; commands
+(plugin cmd-p (imports) (exports)
+  (op-register-command 'plugcmd "from a plugin" (lambda (args) #f)))
+(check "commands: not there before" #f (and (find-command 'plugcmd) #t))
+(plugin-mount! 'cmd-p)
+(check "commands: registered by the plugin" #t (and (find-command 'plugcmd) #t))
+(plugin-dispose! 'cmd-p)
+(check "commands: removed by unloading" #f (and (find-command 'plugcmd) #t))
+
+;; a definition, and the `quote` trick that makes a run-time object bindable
+(plugin closure-p (imports) (exports twice)
+  (op-define 'twice (lambda (x) (* 2 x))))
+(plugin-mount! 'closure-p)
+(check "define: the name lands in the plugin's own layer"
+       #t (env-has? (plugin-env 'closure-p) 'twice))
+(check "define: a CLOSURE was bound into the layer and is callable"
+       42 (env-eval (plugin-env 'closure-p) '(twice 21)))
+(check "exports: declared and actually defined" '(twice) (plugin-exports 'closure-p))
+
+;;============================================================================
+(section! "plugin: imports and linking")
+
+(plugin lib-a (imports) (exports answer)
+  (op-define 'answer 42))
+(plugin lib-b (imports lib-a) (exports doubled)
+  (op-define 'doubled answer))
+
+(plugin-mount! 'lib-b)
+(check "import: a plugin reads an imported binding"
+       42 (env-eval (plugin-env 'lib-b) 'doubled))
+(check "import: the import is declared, and queryable"
+       '(lib-a) (plugin-requirements 'lib-b))
+(check "import: env-origin says which layer a name came from"
+       'lib-a (env-label (env-origin (plugin-env 'lib-b) 'answer)))
+
+;; conflicts are errors, not a silent first-wins
+(plugin c1 (imports) (exports shared) (op-define 'shared 1))
+(plugin c2 (imports) (exports shared) (op-define 'shared 2))
+(plugin c3 (imports c1 c2) (exports))
+(check "conflict: importing two plugins that export the same name is an error"
+       #t
+       (guard (e (#t (and (string-contains? "export the same name" (condition-message e))
+                          (string-contains? "narrow" (condition-message e)) #t)))
+         (plugin-mount! 'c3)
+         #f))
+
+;; missing import, cycle, and a declared-but-undefined export
+(plugin needs-ghost (imports ghost) (exports))
+(check "missing import: reported, and the plugin does not run"
+       #t
+       (guard (e (#t (string-contains? "not defined" (condition-message e))))
+         (plugin-mount! 'needs-ghost) #f))
+
+(plugin cyc1 (imports cyc2) (exports))
+(plugin cyc2 (imports cyc1) (exports))
+(check "cycle: reported"
+       #t
+       (guard (e (#t (string-contains? "cycle" (condition-message e))))
+         (plugin-mount! 'cyc1) #f))
+
+(plugin liar (imports) (exports nope))
+(check "declared export that is not defined: reported"
+       #t
+       (guard (e (#t (string-contains? "declares exports it does not define"
+                                        (condition-message e))))
+         (plugin-mount! 'liar) #f))
+
+;;============================================================================
+(section! "plugin: order independence and cascading unload")
+
+(plugin ord-1 (imports) (exports) (op-register-tool 'ord1 "1" (schema '()) (lambda (a) "1")))
+(plugin ord-2 (imports) (exports) (op-register-tool 'ord2 "2" (schema '()) (lambda (a) "2")))
+
+(define (mount-both a b)
+  (plugin-dispose! a) (plugin-dispose! b)
+  (plugin-mount! a) (plugin-mount! b)
+  (list-sort symbol-< (map tool-name (all-tools))))
+(check "order: mounting in either order gives the same registry"
+       (mount-both 'ord-1 'ord-2) (mount-both 'ord-2 'ord-1))
+(plugin-dispose! 'ord-1) (plugin-dispose! 'ord-2)
+
+(plugin base-p (imports) (exports v) (op-define 'v 7))
+(plugin dep-p (imports base-p) (exports w) (op-define 'w 8))
+(plugin-mount! 'dep-p)
+(check "cascade: both are mounted" '(mounted mounted)
+       (list (cdr (assq 'base-p (plugin-list))) (cdr (assq 'dep-p (plugin-list)))))
+(plugin-dispose! 'base-p)
+(check "cascade: disposing a plugin also disposes its dependents"
+       '(defined defined)
+       (list (cdr (assq 'base-p (plugin-list))) (cdr (assq 'dep-p (plugin-list)))))
+
+(report-section-times)
 (printf "~%---~%~a passed, ~a failed~%" *pass* *fail*)
 (if (> *fail* 0) (exit 1) (exit 0))

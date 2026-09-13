@@ -49,6 +49,9 @@
        (load path)
        (set! *loaded-extensions* (cons path *loaded-extensions*))))
    (extension-files cwd))
+  ;; a file that declares plugins makes them live here; each plugin's effects are
+  ;; its own, and its frame chain is how they can be taken back
+  (plugin-mount-all!)
   (reverse *loaded-extensions*))
 
 ;;----------------------------------------------------------------------------
@@ -95,6 +98,10 @@
 ;; `config` is updated in place (its `system` pair), so a caller holding the same
 ;; alist sees the new skills block without having to thread a new one around.
 (define (reload-resources! config cwd)
+  ;; plugins unwind their OWN effects first (their frame chains), so a deleted
+  ;; plugin really disappears; the baseline restore is still what covers plain
+  ;; extension files, which have no frames
+  (plugin-dispose-all!)
   (baseline-restore!)
   (load-extensions! cwd)
   (load-skills! cwd)

@@ -20,8 +20,15 @@
                           [,other #t]))
                       *tools*))))
 
-(define (all-tools) (reverse *tools*))
+;; The inverse of `register-tool!`.  It exists because a plugin must be able to
+;; undo what it did: the design requires the inverse to be taken at install time,
+;; and without this there is no way to remove a registration at all (measured:
+;; no unregister/dispose name existed anywhere in src before this).
+(define (unregister-tool! name)
+  (set! *tools* (filter (lambda (t) (not (eq? (tool-name t) name))) *tools*))
+  #t)
 
+(define (all-tools) (reverse *tools*))
 ;; Snapshot/restore, so a reload (see extend/loader.ss) can put the registry
 ;; back to the state it had before any extension ran. The registry is the only
 ;; state, so a snapshot is just the list.
@@ -125,3 +132,22 @@
                                 `((type . ,(cadr p)) (description . ,(caddr p)))))
                         props))
     (required . ,(list->vector required))))
+
+(define (op-register-tool name description parameters handler)
+  (list 'op-register-tool name description parameters handler))
+
+;; The plugin op for this registry.  It is registered HERE, in the layer that owns
+;; the tools registry, so the op set never has to reach into a later layer.
+(op-register-handler!
+ 'op-register-tool 'registry
+ (lambda (op env) #f)
+ (lambda (op env) (match op [(op-register-tool ,n ,d ,p ,h) (find-tool n)]))
+ (lambda (op env) (match op [(op-register-tool ,n ,d ,p ,h) (register-tool! n d p h) n]))
+ (lambda (op env pre handle)
+   (match op
+     [(op-register-tool ,n ,d ,p ,h)
+      (match pre
+        [#f (unregister-tool! n)]
+        [(tool ,pn ,pd ,pp ,ph) (register-tool! pn pd pp ph)])]))
+ ;; no SHOW argument: the op set derives the line from the kind and position 1
+ )

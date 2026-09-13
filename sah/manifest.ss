@@ -23,6 +23,8 @@
     "core/hooks.ss"
     "core/transport.ss"
     "core/config.ss"
+    "core/env.ss"
+    "core/plugin.ss"
     "extend/md.ss"
     "extend/commands.ss"
     "extend/input.ss"
