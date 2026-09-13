@@ -37,7 +37,6 @@
 ;;----------------------------------------------------------------------------
 ;; tool execution, with the tool-call / tool-result hook points
 ;;----------------------------------------------------------------------------
-
 ;; Hooks decide whether a call runs and may rewrite its arguments.
 ;; -> (values BLOCK-REASON-or-#f FINAL-ARGS)
 (define (run-tool-call-hooks name args)
@@ -82,15 +81,19 @@
   (let loop ((steps 0))
     (when (>= steps (assq-ref config 'max-steps))
       (error 'agent (format "max steps (~a) exceeded" (assq-ref config 'max-steps))))
+    (emit `(ev turn-start ,steps))
     (maybe-auto-compact! session config)
+    (emit '(ev message-start))
     (let ((reply (chat-with-recovery session config (all-tools))))
       (session-add-message! session reply)
       (emit `(ev message-end ,reply))
+      (emit `(ev turn-end ,steps))
       (match reply
         [(msg assistant ,content ,calls ,stop ,usage)
          (if (null? calls)
              (begin
                (emit '(ev agent-end))
+               (emit '(ev agent-settled))
                reply)
              (begin
                (for-each (lambda (c) (run-tool session c)) calls)
@@ -103,6 +106,9 @@
 
 (define (print-event-handler event)
   (match event
+    [(ev session-start ,session) #t]
+    [(ev turn-start ,step) #t]
+    [(ev message-start) #t]
     [(ev tool-start ,id ,name ,args)
      (printf "  -> ~a ~s~%" name args)]
     [(ev tool-end ,id ,name ,is-error ,out)
@@ -112,6 +118,8 @@
      (printf "  [compacting context...]~%")]
     [(ev compaction-end ,tokens)
      (printf "  [compacted: ~a tokens before]~%" tokens)]
+    [(ev branch-summary ,summary)
+     (printf "  [summarised the abandoned branch: ~a chars]~%" (string-length summary))]
     [(ev message-end ,msg)
      (let ((txt (assistant-text msg)))
        (when (> (string-length txt) 0)

@@ -40,8 +40,10 @@
                                     "This is a branch that was abandoned. Preserve what was learned: what was tried, what worked, what failed and why, and anything the next attempt should not repeat."))
                (summary+ (string-append summary (render-file-lists ops))))
           (printf "[sah] summarising the abandoned branch (~a messages, ~a entries)~%"
+                  
                   (length messages) (length gone))
           ;; move the cursor first, so the summary is a child of `target-id`
           (session-log-set! session (log-set-leaf lg (if (< target 0) #f target)))
           (session-add-branch-summary! session (if (< target 0) #f old-leaf) summary+)
+          (emit `(ev branch-summary ,summary+))
           summary+))))

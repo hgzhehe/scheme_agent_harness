@@ -261,7 +261,7 @@
 (define cfg (list (cons 'system "test") (cons 'max-steps 5) (cons 'model "mock")
                   (cons 'api-key "x") (cons 'base-url "")))
 (define events '())
-(on-event! (lambda (ev) (set! events (cons (match ev [(ev ,kind . ,rest) kind]) events))))
+(subscribe! (lambda (ev) (set! events (cons (match ev [(ev ,kind . ,rest) kind]) events))))
 
 (run-agent s3 cfg "what is in the file?")
 
@@ -761,7 +761,50 @@
 (check "branch: nothing to summarise from the same cursor"
        #f (branch-summarize! bs bs-cfg (log-leaf (session-log bs))))
 ;;----------------------------------------------------------------------------
+;;----------------------------------------------------------------------------
+(printf "== event stream ==~%")
+
+(define seen '())
+(define tok (subscribe! (lambda (ev) (set! seen (cons (match ev [(ev ,kind . ,rest) kind]) seen)))))
+(emit '(ev agent-start))
+(check "events: a subscriber sees events" '(agent-start) seen)
+(define tok2 (subscribe! (lambda (ev) (set! seen (cons 'second seen)))))
+(emit '(ev agent-end))
+(check "events: every subscriber is called, in registration order" '(second agent-end agent-start) seen)
+(unsubscribe! tok2)
+(set! seen '())
+(emit '(ev agent-start))
+(check "events: unsubscribe stops delivery" '(agent-start) seen)
+(unsubscribe! tok)
+(set! seen '())
+(emit '(ev agent-start))
+(check "events: the last unsubscribe leaves nobody" '() seen)
+
+;; one broken subscriber must not stop the others
+(define good '())
+(subscribe! (lambda (ev) (error 'boom "broken subscriber")))
+(subscribe! (lambda (ev) (set! good (cons 'ok good))))
+(emit '(ev agent-start))
+(check "events: a raising subscriber is skipped, the rest still run" '(ok) good)
+
+;; the agent loop emits the whole lifecycle
+(set! *calls* 0)
+(set! *chat-impl* (lambda (config messages tools)
+                    (set! *calls* (+ *calls* 1))
+                    (if (= *calls* 1)
+                        (list 'msg 'assistant "calling" (list (list 'call "c1" 'read (list (cons 'path tf2)))) 'tool-use '())
+                        (list 'msg 'assistant "done" '() 'stop '()))))
+(define ev-log '())
+(define ev-tok (subscribe! (lambda (ev) (set! ev-log (cons (match ev [(ev ,kind . ,rest) kind]) ev-log)))))
+(run-agent (session-new tmp "mock") (list (cons 'system "t") (cons 'max-steps 5)) "go")
+(unsubscribe! ev-tok)
+(check "events: the loop emits start/turn/message/tool/settled in order"
+       '(agent-start turn-start message-start message-end turn-end
+         tool-start tool-end turn-start message-start message-end turn-end
+         agent-end agent-settled)
+       (reverse ev-log))
 (printf "~%---~%~a passed, ~a failed~%" *pass* *fail*)
 (if (> *fail* 0) (exit 1) (exit 0))
 
 ;;----------------------------------------------------------------------------
+
