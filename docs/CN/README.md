@@ -83,6 +83,8 @@ sah [options] [--] [prompt | @file ...]
 |------|------|
 | `--repl` | 交互模式 |
 | `-C`, `--continue` | 续接本目录最近一次会话 |
+| `-r`, `--resume` | 从本目录已保存的会话里选一个 |
+| `--session <path\|id>` | 指定会话文件，或完整/部分会话 id |
 | `--key <key>` | API key（覆盖配置和环境变量） |
 | `--model <id>` | 模型 id（默认 `deepseek-chat`） |
 | `--base-url <url>` | API base URL |
@@ -216,6 +218,11 @@ EOF
 ```
 
 会话通过 `id`/`parent` 构成树，所以以后原地分叉不需要改格式。
+
+续接方式：`-C` / `--continue`（本目录最近一次）、`-r` / `--resume`（从列表里选）、
+`--session <id|path>`（完整或部分会话 id，或 `.ss` 文件路径）。退出 REPL 时 sah 会
+打印 `To resume this session: sah --session <id>`。不带 prompt 时，`sah`、`sah -r`、
+`sah --session <id>` 都会直接进入 REPL。
 
 ## 数据约定
 

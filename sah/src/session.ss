@@ -116,3 +116,71 @@
 
 (define (session-messages s)
   (entries->messages (session-entries s)))
+
+;;----------------------------------------------------------------------------
+;; session discovery: --session <path|id> and the -r picker (pi-style)
+;;----------------------------------------------------------------------------
+
+(define (dir-files dir pred)
+  (guard (e (#t '()))
+    (filter pred (directory-list dir))))
+
+(define (all-session-files)
+  (let ((root (path-join (sah-home) "sessions")))
+    (apply append
+           (map (lambda (d)
+                  (let ((dir (path-join root d)))
+                    (map (lambda (f) (path-join dir f))
+                         (dir-files dir (lambda (f) (string-suffix? ".ss" f))))))
+                (dir-files root (lambda (f) #t))))))
+
+;; id from a session file without loading it all (handles the legacy alist format)
+(define (session-file-id path)
+  (guard (e (#t #f))
+    (match (normalize-entry (call-with-input-file path read))
+      [(session ,version ,id ,cwd ,created ,model) id]
+      [,other #f])))
+
+(define (session-lookup spec)
+  ;; spec is a path to an existing file, or a (partial) session id
+  (cond
+    ((file-exists? spec) spec)
+    (else
+     (let* ((pre (string-downcase spec))
+            (hits (filter (lambda (f)
+                            (let ((id (session-file-id f)))
+                              (and id (string-prefix? pre (string-downcase id)))))
+                          (all-session-files))))
+       (cond ((null? hits) #f)
+             ((null? (cdr hits)) (car hits))
+             (else (error 'session (format "ambiguous session id ~a matches ~a" spec hits))))))))
+
+(define (clip s n)
+  (if (> (string-length s) n) (string-append (substring s 0 n) "...") s))
+
+(define (format-ms ms)
+  (guard (e (#t (number->string ms)))
+    (let ((d (time-utc->date (make-time 'time-utc 0 (quotient ms 1000)) 0)))
+      (format "~4,'0d-~2,'0d-~2,'0d ~2,'0d:~2,'0d"
+              (date-year d) (date-month d) (date-day d) (date-hour d) (date-minute d)))))
+
+(define (session-first-user s)
+  (let loop ((ms (session-messages s)))
+    (match ms
+      [() ""]
+      [((msg user ,content) . ,rest) content]
+      [(,other . ,rest) (loop rest)])))
+
+;; newest first (by creation filename) as ((file . p) (id . i) (created . ms) (preview . s))
+(define (session-list-for-cwd cwd)
+  (let ((dir (session-dir cwd)))
+    (map (lambda (p)
+           (let ((s (guard (e (#t #f)) (session-load p))))
+             (if s
+                 (list (cons 'file p) (cons 'id (session-id s))
+                       (cons 'created (session-created s))
+                       (cons 'preview (session-first-user s)))
+                 (list (cons 'file p) (cons 'id #f) (cons 'created 0) (cons 'preview "")))))
+         (reverse (sort-strings
+                   (map (lambda (f) (path-join dir f))
+                        (dir-files dir (lambda (f) (string-suffix? ".ss" f)))))))))

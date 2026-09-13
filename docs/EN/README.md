@@ -86,6 +86,8 @@ sah [options] [--] [prompt | @file ...]
 |--------|-------------|
 | `--repl` | interactive REPL mode |
 | `-C`, `--continue` | continue the most recent session for this directory |
+| `-r`, `--resume` | pick from saved sessions for this directory |
+| `--session <path\|id>` | use a specific session file, or a full/partial session id |
 | `--key <key>` | API key (overrides config and env) |
 | `--model <id>` | model id (default `deepseek-chat`) |
 | `--base-url <url>` | API base URL |
@@ -223,6 +225,12 @@ EOF
 
 Sessions form a tree via `id`/`parent`, so in-place branching can be added
 without a format change.
+
+Resume with `-C` / `--continue` (most recent for this directory), `-r` /
+`--resume` (pick from a list), or `--session <id|path>` (a full or partial
+session id, or a `.ss` file path). On exiting the REPL, sah prints
+`To resume this session: sah --session <id>`. With no prompt, `sah`, `sah -r`
+and `sah --session <id>` all enter the REPL.
 
 ## Data conventions
 

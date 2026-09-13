@@ -74,6 +74,8 @@
   (printf "Options:~%")
   (printf "  --repl              interactive REPL mode~%")
   (printf "  -C, --continue      continue the most recent session for this cwd~%")
+  (printf "  -r, --resume        pick from saved sessions for this cwd~%")
+  (printf "  --session <path|id> use a specific session file or (partial) session id~%")
   (printf "  --key <key>         API key (overrides config/env)~%")
   (printf "  --model <id>        model id (default deepseek-chat)~%")
   (printf "  --base-url <url>    API base url~%")
@@ -92,6 +94,10 @@
        (loop (cdr args) (cons '(mode . repl) opts) prompt))
       ((or (string=? (car args) "-C") (string=? (car args) "--continue"))
        (loop (cdr args) (cons '(continue . #t) opts) prompt))
+      ((or (string=? (car args) "-r") (string=? (car args) "--resume"))
+       (loop (cdr args) (cons '(resume . #t) opts) prompt))
+      ((string=? (car args) "--session")
+       (loop (cddr args) (cons `(session . ,(cadr args)) opts) prompt))
       ((or (string=? (car args) "-H") (string=? (car args) "--usage")
            (string=? (car args) "-h") (string=? (car args) "--help"))
        (loop (cdr args) (cons '(help . #t) opts) prompt))
@@ -129,6 +135,57 @@
          (loop))))))
 
 ;;----------------------------------------------------------------------------
+;; Session selection (--session / -r / -C)
+;;----------------------------------------------------------------------------
+
+(define (pick-session cwd)
+  (let ((items (session-list-for-cwd cwd)))
+    (if (null? items)
+        (begin (printf "no saved sessions for this directory~%") #f)
+        (begin
+          (printf "Select a session:~%")
+          (let loop ((is items) (n 1))
+            (when (pair? is)
+              (let ((it (car is)))
+                (printf "  ~a) ~a  ~a  ~a~%"
+                        n
+                        (format-ms (assq-ref it 'created))
+                        (or (assq-ref it 'id) "?")
+                        (clip (assq-ref it 'preview) 60))
+                (loop (cdr is) (+ n 1)))))
+          (printf "Enter a number (q to cancel): ")
+          (flush-output-port (current-output-port))
+          (let ((line (get-line-or-eof (current-input-port))))
+            (if (eof-object? line)
+                #f
+                (let ((s (string-trim line)))
+                  (cond
+                    ((or (string=? s "") (string=? s "q")) #f)
+                    (else
+                     (let ((n (string->number s)))
+                       (if (and n (exact? n) (>= n 1) (<= n (length items)))
+                           (session-load (assq-ref (list-ref items (- n 1)) 'file))
+                           (begin (printf "invalid selection: ~a~%" s) #f))))))))))))
+
+(define (resolve-session opts cwd)
+  (cond
+    ((assq-ref opts 'session)
+     (let ((p (session-lookup (assq-ref opts 'session))))
+       (if p
+           (session-load p)
+           (begin (printf "error: session not found: ~a~%" (assq-ref opts 'session))
+                  (exit 1)))))
+    ((assq-ref opts 'resume)
+     (or (pick-session cwd)
+         (begin (printf "no session selected~%") (exit 0))))
+    ((assq-ref opts 'continue) (session-latest cwd))
+    (else #f)))
+
+(define (print-resume-hint session)
+  (when (and (session-file session) (file-exists? (session-file session)))
+    (printf "~%To resume this session: sah --session ~a~%" (session-id session))))
+
+;;----------------------------------------------------------------------------
 ;; Entry point
 ;;----------------------------------------------------------------------------
 
@@ -147,13 +204,11 @@
        (exit 1))
       (else
        (on-event! print-event-handler)
-       (let* ((existing (and (assq-ref opts 'continue) (session-latest cwd)))
-              (session (or existing (session-new cwd (assq-ref config 'model)))))
+       (let ((session (or (resolve-session opts cwd)
+                          (session-new cwd (assq-ref config 'model)))))
          (printf "[sah] session=~a model=~a~%" (session-id session) (assq-ref config 'model))
          (printf "[sah] log=~a~%" (session-file session))
-         (if (eq? (assq-ref opts 'mode) 'repl)
-             (repl session config)
-             (if (string=? prompt "")
-                 (begin (print-usage) (exit 0))
-                 (guard (e (#t (printf "error: ~a~%" (err->string e)) (exit 1)))
-                   (run-agent session config prompt)))))))))
+         (if (or (eq? (assq-ref opts 'mode) 'repl) (string=? prompt ""))
+             (begin (repl session config) (print-resume-hint session))
+             (guard (e (#t (printf "error: ~a~%" (err->string e)) (exit 1)))
+               (run-agent session config prompt))))))))

@@ -5,6 +5,10 @@
   (let ((hit (assq key alist)))
     (if hit (cdr hit) #f)))
 
+(define (string-prefix? prefix s)
+  (and (>= (string-length s) (string-length prefix))
+       (string=? prefix (substring s 0 (string-length prefix)))))
+
 (define (string-suffix? suffix s)
   (and (>= (string-length s) (string-length suffix))
        (string=? suffix (substring s (- (string-length s) (string-length suffix)) (string-length s)))))
