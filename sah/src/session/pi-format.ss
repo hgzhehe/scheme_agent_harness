@@ -120,10 +120,6 @@
      `((role . "toolResult") (toolCallId . ,id) (toolName . ,(symbol->string name))
        (content . #(((type . "text") (text . ,content))))
        (isError . ,(and is-error #t)))]
-    [(msg tool ,id ,name ,content)
-     `((role . "toolResult") (toolCallId . ,id) (toolName . ,(symbol->string name))
-       (content . #(((type . "text") (text . ,content))))
-       (isError . #f))]
     [,other `((role . "user") (content . ,(format "~s" other)))])) 
 
 (define (sah-header->pi session)

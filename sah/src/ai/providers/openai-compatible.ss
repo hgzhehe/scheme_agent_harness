@@ -35,10 +35,6 @@
      `((role . "tool")
        (tool_call_id . ,call-id)
        (content . ,(string-content content)))]
-    [(msg tool ,call-id ,name ,content)
-     `((role . "tool")
-       (tool_call_id . ,call-id)
-       (content . ,(string-content content)))]
     [(msg ,role ,content)
      `((role . ,(symbol->string role))
        (content . ,(string-content content)))]

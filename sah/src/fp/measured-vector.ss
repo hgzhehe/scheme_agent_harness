@@ -75,10 +75,6 @@
 ;; sum of (f element): the measure used for token accounting
 (define (monoid-sum-of f) (make-monoid 0 + f))
 
-;; measure that ignores elements (the vector is used purely positionally)
-(define (monoid-nothing)
-  (make-monoid #f (lambda (a b) #f) (lambda (x) #f)))
-
 ;;----------------------------------------------------------------------------
 ;; nodes
 ;;----------------------------------------------------------------------------
@@ -102,11 +98,6 @@
                 (loop (+ i 1) (if n (c acc (vnode-m n)) acc))))))))
 
 ;; a level-0 node holding x at index 0
-(define (pv-leaf mon x)
-  (let ((cs (make-vector 32 #f)))
-    (vector-set! cs 0 x)
-    (make-vnode 0 (pv-children-measure mon 0 cs) cs)))
-
 ;; A chain of single-child nodes from `level` down to `node0` (a level-0 node).
 ;; level 0 returns node0 itself, because a level-0 node's children are elements.
 (define (pv-path-node mon level node0)
@@ -139,7 +130,6 @@
   (let ((id (monoid-id mon)))
     (make-pvec mon 0 0 #f 0 #f 0 id id)))
 
-(define (pvec-empty? v) (= 0 (pvec-count v)))
 (define (pvec-measure v) (pvec-m v))
 
 (define (pvec-from-list mon xs)

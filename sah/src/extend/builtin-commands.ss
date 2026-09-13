@@ -23,7 +23,6 @@
                           (format "(~a tool call~a)" n (if (= n 1) "" "s")))))]
     [(msg tool ,id ,name ,content ,is-error)
      (string-append "tool " (symbol->string name) (if is-error " [error]" "") ": " (clip content 44))]
-    [(msg tool ,id ,name ,content) (string-append "tool " (symbol->string name) ": " (clip content 44))]
     [,other ""]))
 
 (define (entry-preview e)
@@ -124,7 +123,7 @@
                         (prompt-name p)
                         (make-string (max 1 (- 12 (string-length (prompt-name p)))) #\space)
                         (prompt-description p)
-                        (let ((h (list-ref p 5))) (if (string=? h "") "" (string-append "  " h)))))
+                        (let ((h (prompt-hint p))) (if (string=? h "") "" (string-append "  " h)))))
               (all-prompts)))
   (when (pair? (all-skills))
     (printf "skills (load with /skill:NAME):~%")

@@ -82,8 +82,6 @@
       "\n")]
     [(msg tool ,id ,name ,content ,is-error)
      (string-append "[Tool result " (symbol->string name) "]: " (truncate-text content 2000))]
-    [(msg tool ,id ,name ,content)
-     (string-append "[Tool result " (symbol->string name) "]: " (truncate-text content 2000))]
     [,other ""]))
 
 (define (serialize-conversation msgs)

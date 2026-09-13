@@ -14,14 +14,14 @@
 ;;;
 ;;; Arguments: $1 $2 ... $9, $@ / $ARGUMENTS for all of them, and ${N:-default}
 ;;; for a fallback. A template is a positional tagged list:
-;;;   (prompt NAME DESCRIPTION PATH BODY ARG-HINT)
+;;;   (prompt NAME DESCRIPTION BODY ARG-HINT)
 
 (define *prompts* '())
 
 (define (prompt-name p) (list-ref p 1))
 (define (prompt-description p) (list-ref p 2))
-(define (prompt-path p) (list-ref p 3))
-(define (prompt-body p) (list-ref p 4))
+(define (prompt-body p) (list-ref p 3))
+(define (prompt-hint p) (list-ref p 4))
 
 ;; Project first: `find-prompt` returns the first match, and duplicate names are
 ;; dropped, so a project template overrides a global one of the same name.
@@ -35,7 +35,9 @@
       (let-values (((fm body) (split-frontmatter text)))
         (let* ((desc (or (assq-ref fm 'description) (first-line body)))
                (hint (or (assq-ref fm 'argument-hint) "")))
-          (list 'prompt fallback-name desc path body hint))))))
+          ;; 'prompt NAME DESCRIPTION BODY HINT -- the file path is not part of
+          ;; the record; nothing read it, and the body is what gets expanded
+          (list 'prompt fallback-name desc body hint))))))
 
 (define (discover-prompts dirs)
   (apply append

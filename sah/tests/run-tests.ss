@@ -72,7 +72,7 @@
 
 (check "llm: message->openai (tool result)"
        '((role . "tool") (tool_call_id . "c1") (content . "out"))
-       (message->openai '(msg tool "c1" read "out")))
+       (message->openai '(msg tool "c1" read "out" #f)))
 
 (check "llm: assistant tool-calls stringify arguments"
        '((path . "a.scm"))
@@ -250,7 +250,6 @@
        "the-answer"
        (match (caddr msgs)
          [(msg tool ,id ,name ,content ,e) content]
-         [(msg tool ,id ,name ,content) content]
          [,other #f]))
 (check "agent: fourth is final assistant" "done"
        (match (cadddr msgs) [(msg assistant ,c ,calls ,stop ,usage) c] [,other #f]))
@@ -513,7 +512,6 @@
          (cond ((null? ms) #f)
                ((match (car ms)
                   [(msg tool ,i ,n ,c ,e) (string-contains? c "refusing rm -rf")]
-                  [(msg tool ,i ,n ,c) (string-contains? c "refusing rm -rf")]
                   [,o #f]) #t)
                (else (loop (cdr ms))))))
 
@@ -577,7 +575,7 @@
        (string-contains? "User: extra arg" (process-input "/skill:pdf-tools extra arg")))
 
 (check "prompts: frontmatter description" "Review staged changes" (prompt-description (find-prompt "review")))
-(check "prompts: argument-hint parsed" "<file>" (list-ref (find-prompt "review") 5))
+(check "prompts: argument-hint parsed" "<file>" (prompt-hint (find-prompt "review")))
 (check "prompts: description falls back to the first line"
        "First line becomes the description." (prompt-description (find-prompt "plain")))
 (check "prompts: $1 and $@" "Review a.scm carefully. All args: a.scm b.scm. Fallback: b.scm."
@@ -786,7 +784,7 @@
 (session-add-message! cv '(msg assistant "hi there"
                                 ((call "call_1" read ((path . "a.scm"))))
                                 tool-use ((input . 100) (output . 5) (cache-read . 50) (cache-write . 0))))
-(session-add-message! cv '(msg tool "call_1" read "file contents"))
+(session-add-message! cv '(msg tool "call_1" read "file contents" #f))
 (session-add-message! cv '(msg assistant "done" () stop ((input . 120) (output . 2))))
 (session-add-label! cv 1 "checkpoint")
 (session-add-name! cv "conversion demo")
@@ -983,7 +981,7 @@
 (for-each
  (lambda (i)
    (session-add-message! big `(msg assistant "" ((call ,(string-append "c" (number->string i)) read ((path . "f")))) tool-use ()))
-   (session-add-message! big `(msg tool ,(string-append "c" (number->string i)) read ,(make-string 400 #\x))))
+   (session-add-message! big `(msg tool ,(string-append "c" (number->string i)) read ,(make-string 400 #\x) #f)))
  '(1 2 3 4 5 6 7 8 9 10))
 
 (check "split: the turn really is bigger than the keep budget" #t

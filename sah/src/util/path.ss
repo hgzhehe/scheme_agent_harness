@@ -46,18 +46,6 @@
        (let ((s (get-string-all p)))
          (if (eof-object? s) "" s)))))
 
-(define (write-string-lf path s)
-  ;; Write `s` with LF endings and no end-of-line translation. Needed for
-  ;; generated shell scripts, which must not contain CR characters.
-  (when (file-exists? path) (delete-file path))
-  (let ((p (open-file-output-port
-            path
-            (file-options no-fail)
-            (buffer-mode block)
-            (make-transcoder (utf-8-codec) (eol-style lf) (error-handling-mode replace)))))
-    (put-string p s)
-    (close-port p)))
-
 (define (string->file path s)
   ;; Overwrite/create. Delete first because this Chez refuses to open an
   ;; existing file for output, then write (raises if the delete fails).

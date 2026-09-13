@@ -96,9 +96,7 @@
 (define (report-hook-error name e)
   (printf "[sah] hook ~a failed: ~a~%" name (err->string e)))
 
-(define (hooks-loaded?) (pair? *hooks*))
-
 ;; Snapshot/restore, so a caller can run a stage with a known set of hooks (a
-;; test, or a REPL that reloads extensions). The registry is the only state.
+;; test, or the reload path in extend/loader.ss). The registry is the only state.
 (define (hooks-snapshot) *hooks*)
 (define (hooks-restore! snapshot) (set! *hooks* snapshot) #t)

@@ -36,11 +36,9 @@
 ;;; (Sessions written before this were numbered with random hex ids; see
 ;;; `migrate-entries` in session/manager.ss.)
 
-(define (message-kind msg) (and (pair? msg) (car msg)))
-
-;; Tool messages carry an error flag; sessions written before format v3 read as
-;; "no error" (`normalize-message` pads the slot), and a message built by hand in
-;; a test may still have four slots.
+;; Tool messages carry an error flag. A message with four slots (hand-built, or
+;; from a pre-v3 session) simply does not match the five-slot pattern and reads
+;; as "no error"; `normalize-message` pads it at the load boundary.
 (define (tool-message-error? msg)
   (match msg
     [(msg tool ,id ,name ,content ,e) (and e #t)]
@@ -151,7 +149,6 @@
      (+ (estimate-tokens-text (or content ""))
         (fold-left (lambda (a c) (+ a (call-tokens c))) 0 (if (pair? calls) calls '())))]
     [(msg tool ,id ,name ,content ,e) (estimate-tokens-text content)]
-    [(msg tool ,id ,name ,content) (estimate-tokens-text content)]
     [,other 0]))
 
 ;; measure of the session log: sum of the per-entry estimates. Used for O(1)
