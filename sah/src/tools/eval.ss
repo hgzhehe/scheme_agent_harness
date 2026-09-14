@@ -1,4 +1,4 @@
-;;; eval.ss -- the `eval` tool: expose the host Scheme to the model.
+;;; eval.ss -- session-local Scheme evaluation.
 
 (define (read-all-forms str)
   (let ((p (open-input-string str)))
@@ -6,21 +6,22 @@
       (let ((d (read p)))
         (if (eof-object? d) (reverse acc) (loop (cons d acc)))))))
 
-(define (eval-string code)
+(define (eval-string rt session code)
   (let ((forms (read-all-forms code)))
     (with-output-to-string
       (lambda ()
         (for-each (lambda (form)
-                    (let ((v (eval form (interaction-environment))))
+                    (let ((v (session-eval-form! rt session form)))
                       (unless (eq? v (void))
                         (write v)
                         (newline))))
                   forms)))))
 
-(register-tool! 'eval
-  "Evaluate Scheme code in the running sah process (Chez Scheme) and return captured output plus printed values. Use it to compute, transform data, or inspect the host."
+(define eval-tool
+  (make-tool-datum 'eval
+  "Evaluate Chez Scheme in this session's lexical scope. Definitions are journaled and replayed when the session is resumed."
   (schema '((code "string" "One or more Scheme expressions")))
   (lambda (args)
     (let ((code (assq-ref args 'code)))
       (unless (string? code) (error 'eval "code must be a string"))
-      (eval-string code))))
+      (eval-string (require-runtime) (require-session) code)))))

@@ -2,16 +2,19 @@
 ;;
 ;; Copy to ~/.sah/config.scm and edit. It is a plain Scheme datum, read with
 ;; `read` -- not evaluated. Every key is optional; CLI flags and the
-;; DEEPSEEK_API_KEY / SAH_API_KEY environment variables override it.
+;; SAH_API_KEY (or DEEPSEEK_API_KEY for provider=deepseek) overrides it.
+;; `api-key` may also use pi-style "$ENV_VAR" or "!command" resolution.
 ;;
 ;; The system prompt is normally resolved from ~/.sah/SYSTEM.md (or the built-in
 ;; default, whose tool list is generated from the tools actually enabled).
 ;; Uncomment `system` below only to override it from here.
 
 ((provider . deepseek)
+ (api . openai-completions)
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-REPLACE_ME")
  (model    . "deepseek-flash")
+ (max-output-tokens . 8192)
  (max-steps . 1000)
  (compact . #t)              ; automatic context compaction
  (context-window . 64000)   ; model context window, in prompt tokens -- the whole

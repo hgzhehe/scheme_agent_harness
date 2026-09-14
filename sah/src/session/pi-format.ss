@@ -15,6 +15,7 @@
 ;;;   (thinking-level ... LEVEL)               {"type":"thinking_level_change"}
 ;;;   (custom ... CUSTOM-TYPE DATA)            {"type":"custom", customType, data}
 ;;;   (custom-message ... ...)                 {"type":"custom_message", ...}
+;;;   (scope-form ... FORM)                    customType "sah-scope-form"
 ;;;
 ;;; Differences that cannot be mapped away, and what we do:
 ;;;
@@ -167,6 +168,9 @@
       [(thinking-level ,i ,p ,t ,level)
        `((type . "thinking_level_change") (id . ,id) (parentId . ,parent) (timestamp . ,ts)
          (thinkingLevel . ,level))]
+      [(scope-form ,i ,p ,t ,form)
+       `((type . "custom") (id . ,id) (parentId . ,parent) (timestamp . ,ts)
+         (customType . "sah-scope-form") (data . ,(format "~s" form)))]
       [,other
        `((type . "custom") (id . ,id) (parentId . ,parent) (timestamp . ,ts)
          (customType . "sah-unknown") (data . ,other))])))
@@ -259,8 +263,24 @@
                        ,(let ((l (assq-ref d 'label)))
                           (if (or (not l) (symbol? l) (not (string? l))) #f l)))]
       [session_info `(session-info ,i ,parent ,ts ,(or (assq-ref d 'name) ""))]
-      [custom `(custom ,i ,parent ,ts ,(or (assq-ref d 'customType) "")
-                         ,(or (assq-ref d 'data) '()))]
+      [custom
+       (let ((custom-type (or (assq-ref d 'customType) ""))
+             (data (or (assq-ref d 'data) '())))
+         (if (and (equal? custom-type "sah-scope-form")
+                  (string? data))
+             (guard
+               (e (#t
+                   (error 'pi-import
+                          "invalid sah scope form at entry ~a: ~a"
+                          i (err->string e))))
+               (let* ((port (open-input-string data))
+                      (form (read port))
+                      (tail (read port)))
+                 (unless (eof-object? tail)
+                   (error 'pi-import
+                          "multiple datums in sah scope form at entry ~a" i))
+                 `(scope-form ,i ,parent ,ts ,form)))
+             `(custom ,i ,parent ,ts ,custom-type ,data)))]
       [custom_message `(custom-message ,i ,parent ,ts ,(or (assq-ref d 'customType) "")
                                          ,(pi-content->text (assq-ref d 'content))
                                          ,(if (eq? (assq-ref d 'display) #f) #f #t))]

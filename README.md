@@ -28,9 +28,9 @@ session history are all Scheme.
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss          # offline tests (967 checks)
+scheme --script tests/run-tests.ss          # offline contract tests
 scheme --script sah.ss -- "hello"            # run from source
-scheme --script build.scm                    # build dist/sah.exe + dist/sah.boot
+scheme --script build.scm                    # build the runnable dist/ bundle
 ./dist/sah.exe "hello"                       # run the standalone executable
 ```
 
@@ -44,5 +44,6 @@ repeat) against DeepSeek (OpenAI-compatible). It ships eight tools — `read`,
 `write`, `edit`, `ls`, `grep`, `find`, `shell`, `eval` — and keeps everything as
 plain Scheme data: sessions
 are `SexprL` (one readable datum per line), config is an alist, and the `eval`
-tool evaluates Scheme in the agent's own process, so definitions persist across
-turns. Built with Chez Scheme; the production artifact is `sah.exe` + `sah.boot`.
+tool uses a session-local lexical scope whose durable definitions replay along
+the current journal branch. Built with Chez Scheme; the production artifact is the `dist/` bundle
+(`sah.exe` + `sah.boot`, plus runtime DLLs when required on Windows).

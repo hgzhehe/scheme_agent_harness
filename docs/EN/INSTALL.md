@@ -39,12 +39,14 @@ Output (`dist/`):
 ```
 dist/sah.exe     copy of the Chez runtime   (dist/sah on Linux/macOS)
 dist/sah.boot    self-contained boot (Chez base boot + compiled program)
+dist/*.dll       Windows runtime sidecars, when required by the Chez distribution
 ```
 
 The runtime file is `sah.exe` on Windows and `sah` on Linux/macOS; it is
-chmod'ed executable on POSIX, so `./dist/sah` runs directly. These **two files
-must stay together** and keep their names: `sah.exe` looks for `sah.boot` next
-to itself.
+chmod'ed executable on POSIX, so `./dist/sah` runs directly. `sah.exe` and
+`sah.boot` must stay together and keep their names. Some Windows Chez
+distributions also require runtime DLLs copied into `dist/` by the build; keep
+those in the same directory too.
 
 ### Boot discovery
 
@@ -61,7 +63,8 @@ differences are keyed off it (`src/util/platform.ss`) rather than off OS tests,
 following Chez's own convention.
 
 When both base boots are found the result is **self-contained**: the whole chain
-is embedded in `dist/sah.boot`, so the pair runs anywhere. Otherwise the build
+is embedded in `dist/sah.boot`, so the bundle does not depend on an installed
+boot tree. Otherwise the build
 says `NOT self-contained` and the artifact only runs where that Chez
 installation is present. Either way the build finishes by smoke-testing the
 artifact (`<artifact> --usage`) and reports the result.
@@ -87,18 +90,16 @@ and the version label differ. Override the executable path with
 3. Makes a subordinate boot `build/sah.boot` referencing the chosen runtime.
 4. Concatenates the runtime boot chain + the subordinate boot → `dist/sah.boot`.
 5. Copies the runtime executable → `dist/sah.exe` (`dist/sah` on POSIX).
+6. On Windows, copies DLLs located beside the selected Chez runtime.
 
 The generated program also **embeds the source text** and evaluates it into the
-interaction environment at startup. That is what lets the `eval` tool reach
-sah's own bindings (`assq-ref`, `short-id`, the tool registry, …) in the
-compiled executable, not just the base Chez library.
+interaction environment at startup so plugin programs loaded later can use
+sah's extension DSL. Session `eval` uses a separate Chez language root and does
+not inherit these runtime internals.
 
-Because of that, the executable **enters through the interaction environment**
-rather than through the compiled bindings. `load` — which is how extensions,
-skills and prompts are read — evaluates into the interaction environment, so a
-compiled `main` would read a second, separate copy of every registry and an
-extension's `register-hook!` / `register-tool!` would silently do nothing. One
-process must have one set of registries.
+The executable enters through the interaction environment so loaded extensions
+and the explicitly constructed runtime share one top-level world. Dynamic
+capabilities are still owned by the runtime record, not by global registries.
 
 > The build aborts early if a running `sah.exe` holds the file (Windows locks
 > executables). Close it and retry.
@@ -107,14 +108,14 @@ process must have one set of registries.
 
 ## 3. Install
 
-Installing means putting `sah.exe` and `sah.boot` in a directory on `PATH`.
+Installing means putting every artifact from `dist/` in a directory on `PATH`.
 
 ### Windows (PowerShell)
 
 ```powershell
 $dest = "$env:USERPROFILE\bin"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Copy-Item dist\sah.exe, dist\sah.boot $dest -Force
+Copy-Item dist\* $dest -Force
 
 # add to PATH for the current user (one time)
 $p = [Environment]::GetEnvironmentVariable("Path", "User")

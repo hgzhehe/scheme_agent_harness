@@ -36,7 +36,8 @@
                        (grep-one-file (car fs) needle ignore-case (- limit (length acc))))))
              (loop (cdr fs) (append (reverse ms) acc)))))))
 
-(register-tool! 'grep
+(define grep-tool
+  (make-tool-datum 'grep
   "Search files for a literal string (a plain substring, not a regular expression) and return matching lines as path:line: text."
   (schema '((pattern "string" "Literal text to search for")
             (path "string" "File or directory to search (default: the working directory)" optional)
@@ -56,4 +57,4 @@
             (if (null? hits)
                 (format "no match for ~s in ~a file~a"
                         needle (length files) (if (= (length files) 1) "" "s"))
-                (string-join hits "\n"))))))))
+                (string-join hits "\n")))))))))

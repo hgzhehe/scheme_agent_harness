@@ -7,21 +7,18 @@
 
 ## What counts as "core"
 
-Three mechanisms, and nothing else:
+Five centers define the current kernel:
 
-1. **An event stream as the single source of truth.** Every observable step
-   (agent start, tool start/end, compaction start/end, message end) is emitted
-   through one bus (`core/event.ss`). Print mode, the REPL and any future
-   RPC/JSON mode are just consumers.
-2. **A session that is an immutable tree of entries with a cursor.** The context
-   sent to the model is *derived* from the tree on every request, never stored.
-   Compaction is therefore an ordinary entry, not a destructive edit.
-3. **Tools as a registry, data as positional tagged lists.** Adding a tool is one
-   new file plus one load line; everything crossing a boundary destructures with
-   `match`.
-
-4. **Extension points** — named hooks, plus tools and commands registered from
-   extension files (see [EXTENDING.md](EXTENDING.md)).
+1. **A runtime owns all dynamic state.** Tools, commands, hooks, event
+   subscribers, plugins, and resources belong to one runtime instance.
+2. **A defunctionalized machine describes control.** Provider, tool,
+   compaction, and journal work is requested as effects.
+3. **A session is an immutable entry tree with a cursor.** Both model context
+   and the session's lexical scope are derived from the current path.
+4. **A plugin is an op program.** The dependency graph is linked, the complete
+   plan is prepared, and only then is it committed with reverse rollback.
+5. **Events observe while hooks may alter control.** Both are owned by
+   `core/runtime.ss`, with hook failure policy defined centrally.
 
 ## The session log (`src/session/log.ss`)
 
@@ -279,17 +276,16 @@ exporting again produces byte-identical entries.
 These came out of a review of the whole tree (bloat, data shapes, state
 transitions, orthogonality) and are the rules that the code now follows:
 
-1. **Events observe, hooks transform** (`core/event.ss` vs `core/hooks.ss`). A
-   subscriber is notified and cannot change what the agent does; a hook is called
-   at a stage and may rewrite the value or block an action. `session-start` fires
-   both, on purpose: one to observe, one to be able to abort.
+1. **Events observe, hooks transform.** Both live in `core/runtime.ss`, but a
+   subscriber failure cannot change control while each hook stage has an
+   explicit fail-open or fail-closed policy.
 2. **One place decides what the model sees.** `entry->context-messages` in
-   `core/data.ss` is the only projector; nine entry kinds reduce to four that
-   produce messages and five that produce nothing, so metadata can be appended at
+   `core/data.ss` is the only projector; ten entry kinds reduce to four that
+   produce messages and six that produce nothing, so metadata can be appended at
    any time without disturbing a conversation.
 3. **One place defines each entry shape.** The slot table in `core/data.ss` is
    the definition, `entry-field` is the only function that indexes a list, and
-   `tests/run-tests.ss` asserts the table for all nine kinds. (Writing that table
+   contract tests cover the projection rules for every kind. (Writing that table
    down immediately exposed a real trap: a summary is slot 4 on a compaction but
    slot 5 on a branch-summary.)
 4. **One place changes session state.** Every mutation goes through
@@ -300,17 +296,13 @@ transitions, orthogonality) and are the rules that the code now follows:
    state moves.
 5. **Commands are capabilities, not modes.** They are registered by `main` for
    every mode, so `sah "/context"` works in print mode as well as the REPL.
-6. **The input pipeline is a list of stages**, and each stage consults its own
-   registry: commands, then input hooks, then registered handlers (which is how
-   `/skill:NAME` and `/template` participate without `extend/input.ss` knowing
-   what either is).
-
-An honest note on size: these changes removed duplicated *logic* (16 accessors
-over 2 distinct bodies became 5 primitives plus one-line aliases; nine identical
-mutation wrappers became one; two copies of the summarisation pipeline became
-one) but the file total went **up**, from 3812 to 3928 lines, because the rules
-above were written down where they are enforced. Of those 3928 lines, 24% are
-comments and 10% are blank; the code itself is 2599 lines.
+6. **The input pipeline is a list of stages.** Commands, input hooks, skills,
+   and prompt handlers compose through the runtime-owned pipeline in
+   `core/capability.ss`.
+7. **The cursor determines both messages and Scheme state.** Branch/resume
+   replays only the `scope-form` entries on the current path.
+8. **Control and effects are separate.** `agent/machine.ss` chooses the next
+   step; `agent/agent.ss` interprets the requested effect.
 
 ### Cutting a turn in half (split turns)
 

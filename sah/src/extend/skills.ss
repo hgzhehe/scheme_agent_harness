@@ -23,8 +23,6 @@
 ;;; A skill is a positional tagged list:
 ;;;   (skill NAME DESCRIPTION PATH BODY)
 
-(define *skills* '())
-
 (define (skill-name s) (list-ref s 1))
 (define (skill-description s) (list-ref s 2))
 (define (skill-path s) (list-ref s 3))
@@ -78,14 +76,15 @@
 
 ;; Called once at startup; extensions are loaded first so they could register
 ;; additional skill directories later if they want to.
-(define (load-skills! cwd)
-  (set! *skills* (dedupe-by skill-name (discover-skills (skill-dirs cwd))))
-  *skills*)
+(define (load-skills! rt cwd)
+  (runtime-skills-set!
+   rt (dedupe-by skill-name (discover-skills (skill-dirs cwd))))
+  (runtime-skills rt))
 
-(define (all-skills) *skills*)
+(define (all-skills rt) (runtime-skills rt))
 
-(define (find-skill name)
-  (let loop ((l *skills*))
+(define (find-skill rt name)
+  (let loop ((l (runtime-skills rt)))
     (cond ((null? l) #f)
           ((name= (skill-name (car l)) name) (car l))
           (else (loop (cdr l))))))
@@ -95,8 +94,8 @@
 ;;----------------------------------------------------------------------------
 
 ;; Only name + description + path: the body stays out of context until needed.
-(define (skills-block)
-  (if (null? *skills*)
+(define (skills-block rt)
+  (if (null? (runtime-skills rt))
       ""
       (string-append
        "\n<skills>\n"
@@ -109,23 +108,23 @@
                               "    <description>" (skill-description s) "</description>\n"
                               "    <path>" (skill-path s) "</path>\n"
                               "  </skill>"))
-             *skills*)
+             (runtime-skills rt))
         "\n")
        "\n</skills>\n")))
 
 ;; /skill:NAME [args] -> the skill body plus the args, as a prompt
-(define (expand-skill-command args)
+(define (expand-skill-command rt args)
   (let* ((sp (string-index args #\space))
          (name (if sp (substring args 0 sp) args))
          (rest (if sp (string-trim (substring args (+ sp 1) (string-length args))) ""))
-         (s (find-skill name)))
+         (s (find-skill rt name)))
     (if (not s)
         (begin (printf "no such skill: ~a~%" name) 'handled)
         (string-append "Follow this skill:\n\n" (skill-body s)
                        (if (string=? rest "") "" (string-append "\n\nUser: " rest))))))
 
 ;;----------------------------------------------------------------------------
-;; /skill:NAME as an input handler (extend/input.ss, stage 3)
+;; /skill:NAME as a runtime-owned input handler.
 ;;----------------------------------------------------------------------------
 
 ;; "/skill:foo bar" parses as the command name `skill:foo`, so the skill name is
@@ -136,7 +135,7 @@
          (string-append (substring n (+ sp 1) (string-length n))
                         (if (string=? args "") "" (string-append " " args))))))
 
-(register-input-handler!
- (lambda (name args)
-   (let ((sk (skill-command-arg name args)))
-     (and sk (expand-skill-command sk)))))
+(define (skill-input-handler rt)
+  (lambda (name args)
+    (let ((skill-args (skill-command-arg name args)))
+      (and skill-args (expand-skill-command rt skill-args)))))

@@ -10,8 +10,9 @@
 ;;; The format mapping lives in session/pi-format.ss; the fork itself is
 ;;; `session-extract` in session/manager.ss.
 
-(define (run-export-pi path cwd opts)
-  (let ((session (or (resolve-session opts cwd) (session-latest cwd))))
+(define (run-export-pi rt path cwd opts)
+  (let ((session (or (resolve-session rt opts cwd)
+                     (session-latest rt cwd))))
     (if (not session)
         (begin (printf "error: no session for this directory to export~%") (exit 1))
         (let ((jsonl (session->pi-jsonl session)))
@@ -40,8 +41,8 @@
            (let ((port (open-session-port file)))
              (session-write! port
                              (if parent
-                                 `(session 2 ,pi-id ,cwd-in ,created ,model ,parent)
-                                 `(session 2 ,pi-id ,cwd-in ,created ,model)))
+                                 `(session 3 ,pi-id ,cwd-in ,created ,model ,parent)
+                                 `(session 3 ,pi-id ,cwd-in ,created ,model)))
              (for-each (lambda (e) (session-write! port e)) entries)
              (close-port port))
            (printf "imported ~a pi entries into ~a~%  session id: ~a~%  cwd: ~a~%"
@@ -50,14 +51,14 @@
 
 ;;----------------------------------------------------------------------------
 
-(define (run-fork spec cwd model)
+(define (run-fork rt spec cwd model)
   (let ((session (cond (spec (let ((p (session-lookup spec)))
-                               (if p (session-load p)
+                               (if p (session-load rt p)
                                    (begin (printf "error: session not found: ~a~%\n" spec) (exit 1)))))
-                       (else (or (session-latest cwd)
+                       (else (or (session-latest rt cwd)
                                  (begin (printf "error: no session for this directory to fork~%")
                                         (exit 1)))))))
-    (let ((new (fork-leaf! session)))
+    (let ((new (fork-leaf! rt session)))
       (session-close! new)
       (printf "forked ~a entries from ~a into ~a~%  new session id: ~a~%\n  continue with: sah --session ~a~%"
               (session-count new) (session-id session) (session-file new)
@@ -66,9 +67,9 @@
 ;; Extracting the current leaf, unless a `before-fork` hook vetoes it. A veto
 ;; exits non-zero: --fork is used from scripts, where a silently unchanged
 ;; session would be worse than a failure.
-(define (fork-leaf! session)
+(define (fork-leaf! rt session)
   (let* ((id (log-leaf (session-log session)))
-         (veto (veto-reason 'before-fork session id)))
+         (veto (runtime-veto-reason rt 'before-fork session id)))
     (if veto
         (begin (printf "fork cancelled: ~a~%" veto) (exit 1))
-        (session-extract session id))))
+        (session-extract rt session id))))

@@ -7,8 +7,8 @@
 ;;; renaming a source file cannot leave one entry point behind.
 ;;;
 ;;; Order mirrors the module layering:
-;;;   vendor -> fp -> util -> core -> extend -> ai -> session -> tools
-;;;   -> agent -> modes -> main
+;;;   vendor -> fp -> util -> algebra/runtime -> composition -> ai/session
+;;;   -> leaf capabilities -> machine -> drivers
 
 (define sah-kernel-source-files
   '("vendor/match.ss"
@@ -18,27 +18,25 @@
     "util/path.ss"
     "util/json.ss"
     "util/misc.ss"
-    "core/event.ss"
     "core/data.ss"
-    "core/hooks.ss"
     "core/transport.ss"
+    "core/scope.ss"
+    "core/runtime.ss"
+    "core/capability.ss"
     "core/config.ss"
-    "core/env.ss"
     "core/plugin.ss"
     "extend/md.ss"
-    "extend/commands.ss"
-    "extend/input.ss"
     "extend/skills.ss"
     "extend/prompts.ss"
     "extend/loader.ss"
     "extend/builtin-commands.ss"
     "ai/providers/openai-compatible.ss"
+    "ai/providers/openai-responses.ss"
     "ai/chat.ss"
     "session/log.ss"
     "session/manager.ss"
     "session/discovery.ss"
     "session/pi-format.ss"
-    "tools/registry.ss"
     "tools/read.ss"
     "tools/write.ss"
     "tools/edit.ss"
@@ -50,6 +48,7 @@
     "agent/compaction.ss"
     "agent/branch.ss"
     "agent/context.ss"
+    "agent/machine.ss"
     "agent/agent.ss"))
 
 ;; the CLI entry points; tests and benchmarks exercise the kernel only

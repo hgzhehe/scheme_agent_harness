@@ -5,7 +5,7 @@
 ;;; independent of it. The built-in commands (extend/builtin-commands.ss) are
 ;;; registered by main, so this file is only the loop.
 
-(define (repl session config)
+(define (repl rt session config)
   (printf "sah repl (Chez Scheme). /help for commands and skills. Ctrl-D to exit.~%")
   (let loop ()
     (printf "sah> ")
@@ -15,11 +15,11 @@
         ((eof-object? line) (newline) 'bye)
         ((string=? (string-trim line) "") (loop))
         (else
-         (let ((result (process-input line)))
+         (let ((result (runtime-process-input rt line)))
            (cond
              ((eq? result 'handled) (loop))
              ((string? result)
               (guard (e (#t (printf "error: ~a~%" (err->string e))))
-                (run-agent session config result))
+                (run-agent rt session config result))
               (loop))
              (else (loop)))))))))

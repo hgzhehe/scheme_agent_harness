@@ -9,9 +9,9 @@ Chez Scheme.
 - 中文: [`../docs/CN/README.md`](../docs/CN/README.md)
 
 ```bash
-scheme --script build.scm          # build dist/sah.exe + dist/sah.boot
+scheme --script build.scm          # build the runnable dist/ bundle
 scheme --script sah.ss -- "hello"  # run from source
-scheme --script tests/run-tests.ss # offline tests (967 checks)
+scheme --script tests/run-tests.ss # offline tests
 scheme --script bench/bench-fp.ss  # data-structure measurements
 ```
 
@@ -29,5 +29,5 @@ boot directories, makefiles and install layouts the same way, so the boot search
 in `build.scm` follows that convention too.
 
 See the docs above for CLI, configuration, tools and the session format;
-`docs/DESIGN.md` covers the core mechanisms and the persistent data structures,
-and `docs/EXTENDING.md` covers extensions, skills and prompt templates.
+`../docs/CN/CORE-MECHANISMS.md` covers the current kernel design, and
+`../docs/CN/DESIGN-COMPOSITION.md` covers composition and extensions.

@@ -1,17 +1,22 @@
-;;; chat.ss -- provider selection + the mockable chat entry point.
-;;;
-;;; Only one provider exists so far (OpenAI-compatible: DeepSeek), so `chat`
-;;; delegates to it; the `case` is where more providers will be added.
+;;; chat.ss -- provider dispatch owned by a runtime.
 
-(define (chat config messages tools)
-  (case (assq-ref config 'provider)
-    ((deepseek openai openai-compatible) (openai-compatible-chat config messages tools))
-    (else (openai-compatible-chat config messages tools))))
+(define (configured-api config)
+  (let ((api (assq-ref config 'api)))
+    (cond ((symbol? api) api)
+          ((string? api) (string->symbol api))
+          (else 'openai-completions))))
 
-;; Indirection so tests can substitute a mock model without touching the network.
-(define *chat-impl* #f)
+(define (chat rt config messages tools)
+  (case (configured-api config)
+    ((openai-responses responses)
+     (openai-responses-chat rt config messages tools))
+    ((openai-completions chat-completions)
+     (openai-compatible-chat rt config messages tools))
+    (else
+     (openai-compatible-chat rt config messages tools))))
 
-(define (llm-chat config messages tools)
-  (if *chat-impl*
-      (*chat-impl* config messages tools)
-      (chat config messages tools)))
+(define (llm-chat rt config messages tools)
+  (let ((override (runtime-chat-override rt)))
+    (if override
+        (override rt config messages tools)
+        (chat rt config messages tools))))

@@ -10,10 +10,10 @@
 ;;; holds the open port and the append-only write path.
 ;;;
 ;;; Appends are O(1) I/O: the output port stays open, so appending is one `write`
-;;; rather than a whole-file rewrite. A session loaded from disk opens its port
-;;; lazily on the first append (one rewrite, then O(1)). That part is
-;;; deliberately stateful -- a session file *is* a log, and pretending otherwise
-;;; would only add copies.
+;;; rather than a whole-file rewrite. A session loaded from disk rewrites through
+;;; a complete sibling staging file on its first append, recoverably replaces the
+;;; old file, then reopens in append mode. The old file is never deleted before a
+;;; complete replacement exists.
 ;;;
 ;;; Version history:
 ;;;   1  entries numbered with random hex ids
@@ -22,7 +22,8 @@
 ;;; session is appended to.
 
 (define-record-type session
-  (fields id cwd file (mutable log) (mutable port) created model parent))
+  (fields id cwd file (mutable log) (mutable port)
+          created model parent (mutable scope)))
 
 (define (cwd-slug cwd)
   (list->string
@@ -38,13 +39,18 @@
 ;;----------------------------------------------------------------------------
 
 (define (open-session-port path)
-  ;; textual port, LF line endings (matches the on-disk SexprL form). Delete
-  ;; first: Chez refuses to open an existing file for output.
-  (when (file-exists? path) (delete-file path))
+  ;; textual port, LF line endings (matches the on-disk SexprL form).
   (open-file-output-port path
-                         (file-options)
+                         (file-options replace)
                          (buffer-mode line)
                          (make-transcoder (utf-8-codec) (eol-style lf) (error-handling-mode replace))))
+
+(define (open-session-append-port path)
+  (open-file-output-port path
+                         (file-options append no-fail no-truncate)
+                         (buffer-mode line)
+                         (make-transcoder (utf-8-codec) (eol-style lf)
+                                          (error-handling-mode replace))))
 
 (define (session-write! p entry)
   (write entry p)
@@ -60,6 +66,54 @@
                 ,(session-parent s))
       `(session 3 ,(session-id s) ,(session-cwd s) ,(session-created s) ,(session-model s))))
 
+;; Chez refuses rename-file when the destination exists on Windows. Stage a
+;; complete sibling file, move the old file aside, and restore it if installing
+;; the staged file fails. This is recoverable on every supported platform: at
+;; every failure point at least one complete copy remains.
+(define (replace-session-file! staged target)
+  (let* ((backup (string-append target ".bak-" (short-id)))
+         (had-target (file-exists? target)))
+    (guard
+      (e (#t
+          (when (and had-target (file-exists? backup) (not (file-exists? target)))
+            (guard (restore-error
+                    (#t
+                     (error 'session
+                            (format "could not install ~a; original remains at ~a: ~a"
+                                    target backup (err->string e)))))
+              (rename-file backup target)))
+          (raise e)))
+      (when had-target (rename-file target backup))
+      (rename-file staged target)
+      ;; A backup cleanup failure does not invalidate the committed target.
+      (when (file-exists? backup)
+        (guard (cleanup-error (#t #t)) (delete-file backup)))
+      #t)))
+
+(define (session-rewrite! s)
+  (let* ((path (session-file s))
+         (staged (string-append path ".tmp-" (short-id))))
+    (guard
+      (e (#t
+          (when (file-exists? staged)
+            (guard (cleanup-error (#t #t)) (delete-file staged)))
+          (raise e)))
+      (let ((p (open-session-port staged)))
+        (dynamic-wind
+          (lambda () #t)
+          (lambda ()
+            (session-write! p (session-header s))
+            (for-each (lambda (entry) (session-write! p entry))
+                      (log-entries (session-log s))))
+          (lambda ()
+            (guard (close-error (#t #t)) (close-port p)))))
+      (replace-session-file! staged path)
+      ;; The durable rewrite has committed. If reopening append-only fails, leave
+      ;; the port lazy; the next append can safely perform another rewrite.
+      (guard (append-error (#t (session-port-set! s #f)))
+        (session-port-set! s (open-session-append-port path)))
+      s)))
+
 ;; Write the newest entry (or rewrite the whole file once, for a session that
 ;; came from disk and has no port yet).
 (define (session-flush! s)
@@ -68,10 +122,7 @@
          (p (session-port s)))
     (if p
         (session-write! p e)
-        (let ((np (open-session-port (session-file s))))
-          (session-write! np (session-header s))
-          (for-each (lambda (x) (session-write! np x)) (log-entries lg))
-          (session-port-set! s np))))
+        (session-rewrite! s)))
   s)
 
 (define (session-close! s)
@@ -92,9 +143,23 @@
 ;; `session-push!` takes a function of the log rather than a kind and a field
 ;; list, so that the shape of each entry stays defined in session/log.ss.
 
+(define (session-set-log-and-flush! s next)
+  (let ((previous (session-log s)))
+    (session-log-set! s next)
+    (guard
+      (e (#t
+          ;; Keep memory aligned with the last known complete journal. Closing
+          ;; the append port forces a future write through the rewrite path.
+          (session-log-set! s previous)
+          (let ((p (session-port s)))
+            (when p
+              (guard (close-error (#t #t)) (close-port p))
+              (session-port-set! s #f)))
+          (raise e)))
+      (session-flush! s))))
+
 (define (session-push! s push)
-  (session-log-set! s (push (session-log s)))
-  (session-flush! s))
+  (session-set-log-and-flush! s (push (session-log s))))
 
 (define (session-add-message! s msg)
   (session-push! s (lambda (lg) (log-push-message lg msg))))
@@ -114,27 +179,61 @@
   (session-push! s (lambda (lg) (log-push-model-change lg provider model))))
 (define (session-add-thinking-level! s level)
   (session-push! s (lambda (lg) (log-push-thinking-level lg level))))
+(define (session-add-scope-form! s form)
+  (session-push! s (lambda (lg) (log-push-scope-form lg form))))
 
 ;; move the cursor without appending (the branch point of a /tree navigation)
-(define (session-branch! s id)
-  (session-log-set! s (log-set-leaf (session-log s) id))
-  s)
+(define (session-branch! rt s id)
+  (let* ((previous-log (session-log s))
+         (previous-scope (session-scope s))
+         (next-log (log-set-leaf previous-log id)))
+    (guard
+      (e (#t
+          (session-log-set! s previous-log)
+          (session-scope-set! s previous-scope)
+          (raise e)))
+      (session-log-set! s next-log)
+      (session-scope-set!
+       s (session-scope-from-log rt (session-id s) next-log))
+      s)))
 
 ;; Move the cursor AND append a summary in one step: the summary's parent has to
 ;; be the new cursor, and doing it as two mutations left the session at the new
 ;; branch point with no summary whenever the append failed.
-(define (session-branch-summary! s target-id from-id summary)
+(define (session-branch-summary! rt s target-id from-id summary)
   (let* ((lg (log-set-leaf (session-log s) target-id))
-         (lg (log-push-branch-summary lg from-id summary)))
-    (session-log-set! s lg)
-    (session-flush! s)))
+         (lg (log-push-branch-summary lg from-id summary))
+         (next-scope (session-scope-from-log rt (session-id s) lg)))
+    (session-set-log-and-flush! s lg)
+    (session-scope-set! s next-scope)
+    s))
 
-(define (session-new cwd model)
+(define (session-rebuild-scope! rt s)
+  (session-scope-set!
+   s (session-scope-from-log rt (session-id s) (session-log s)))
+  s)
+
+(define (session-eval-form! rt s form)
+  (if (not (scope-durable-form? form))
+      (scope-eval (session-scope s) form)
+      (guard
+        (e (#t
+            (session-rebuild-scope! rt s)
+            (raise e)))
+        (let ((value (scope-eval (session-scope s) form)))
+          (session-add-scope-form! s form)
+          value))))
+
+(define (session-new rt cwd model)
   (let* ((dir (session-dir cwd))
          (id (short-id))
          (file (path-join dir (string-append (number->string (now-ms)) "_" id ".ss"))))
     (ensure-dir! dir)
-    (let ((s (make-session id cwd file (log-empty) #f (now-ms) model #f)))
+    (let ((s (make-session id cwd file (log-empty) #f
+                           (now-ms) model #f
+                           (scope-layer
+                            (runtime-session-root-scope rt)
+                            'session id))))
       (session-port-set! s (open-session-port file))
       (session-write! (session-port s) (session-header s))
       s)))
@@ -147,11 +246,19 @@
   (call-with-input-file
     path
     (lambda (p)
-      (let loop ((acc '()))
-        (let ((d (guard (e (#t (eof-object))) (read p))))
+      (let loop ((acc '()) (index 0))
+        (let* ((offset (guard (e (#t #f)) (port-position p)))
+               (d (guard
+                    (e (#t
+                        (error 'session
+                               (format "cannot read ~a at datum ~a~a: ~a"
+                                       path index
+                                       (if offset (format " (byte ~a)" offset) "")
+                                       (err->string e)))))
+                    (read p))))
           (if (eof-object? d)
               (reverse acc)
-              (loop (cons d acc))))))))
+              (loop (cons d acc) (+ index 1))))))))
 
 ;; migration from older file shapes. Sessions written before tagged lists used
 ;; alists; sessions written before index numbering used hex ids.
@@ -214,23 +321,41 @@
             ((char=? (string-ref stem i) #\_) (substring stem (+ i 1) (string-length stem)))
             (else (loop (- i 1)))))))
 
-(define (session-load path)
+(define (session-scope-from-log rt label log)
+  (let ((scope
+         (scope-layer (runtime-session-root-scope rt) 'session label)))
+    (scope-replay!
+     scope
+     (filter
+      (lambda (form) form)
+      (map (lambda (entry)
+             (match entry
+               [(scope-form ,id ,parent ,ts ,form) form]
+               [,other #f]))
+           (log-path log #f))))
+    scope))
+
+(define (session-load rt path)
   (let* ((raw (map normalize-entry (read-entries path)))
          (first (if (pair? raw) (car raw) #f))
          (has-header? (and (pair? first) (eq? (car first) 'session)))
          (header (if has-header? first '()))
-         (entries (migrate-entries (if has-header? (cdr raw) raw))))
+         (entries (migrate-entries (if has-header? (cdr raw) raw)))
+         (log (log-from-entries entries)))
     (match header
       [(session ,version ,id ,cwd ,created ,model . ,rest)
-       (make-session id cwd path (log-from-entries entries) #f created model
-                     (if (pair? rest) (car rest) #f))]
+       (make-session id cwd path log #f created model
+                     (if (pair? rest) (car rest) #f)
+                     (session-scope-from-log rt id log))]
       [,other
        ;; no header (hand-edited or truncated file): recover what we can and let
        ;; the next append write a fresh one
        (make-session (id-from-filename path) (current-directory) path
-                     (log-from-entries entries) #f (now-ms) "" #f)])))
+                     log #f (now-ms) "" #f
+                     (session-scope-from-log
+                      rt (id-from-filename path) log))])))
 
-(define (session-latest cwd)
+(define (session-latest rt cwd)
   (let ((dir (session-dir cwd)))
     (if (not (file-exists? dir))
         #f
@@ -239,7 +364,7 @@
                (sorted (sort-strings files)))
           (if (null? sorted)
               #f
-              (session-load (path-join dir (car (reverse sorted)))))))))
+              (session-load rt (path-join dir (car (reverse sorted)))))))))
 
 ;;----------------------------------------------------------------------------
 ;; views
@@ -287,18 +412,20 @@
 
 ;; Write the path root->`id` into a new session file in this session's directory
 ;; and return the open session. The caller closes it.
-(define (session-extract session id)
+(define (session-extract rt session id)
   (let* ((path (log-path (session-log session) id))
          (_ (when (null? path) (error 'fork "no such entry")))
          (entries (renumber-entries path))
+         (log (log-from-entries entries))
          (dir (session-dir (session-cwd session)))
          (new-id (short-id))
          (file (path-join dir (string-append (number->string (now-ms)) "_" new-id ".ss"))))
     (ensure-dir! dir)
     (let ((s (make-session new-id (session-cwd session) file
-                           (log-from-entries entries) #f (now-ms)
+                           log #f (now-ms)
                            (session-model session)
-                           (if (session-file session) (session-file session) #f))))
+                           (if (session-file session) (session-file session) #f)
+                           (session-scope-from-log rt new-id log))))
       (session-port-set! s (open-session-port file))
       (session-write! (session-port s) (session-header s))
       (for-each (lambda (e) (session-write! (session-port s) e)) entries)

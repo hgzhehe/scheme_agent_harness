@@ -38,11 +38,13 @@ scheme --script build.scm
 ```
 dist/sah.exe     Chez 运行时的副本   （Linux/macOS 上是 dist/sah）
 dist/sah.boot    自包含 boot（Chez 基础 boot + 编译后的程序）
+dist/*.dll       Chez 发行版需要时携带的 Windows 运行时依赖
 ```
 
 运行时文件名在 Windows 上是 `sah.exe`，在 Linux/macOS 上是 `sah`；POSIX 上会
-自动 chmod 成可执行，所以 `./dist/sah` 能直接跑。这**两个文件必须放在一起**且
-文件名不能改：`sah.exe` 会在自己旁边找 `sah.boot`。
+自动 chmod 成可执行，所以 `./dist/sah` 能直接跑。`sah.exe` 与 `sah.boot`
+必须放在一起且文件名不能改；某些 Windows Chez 发行版还需要构建时复制到
+`dist/` 的运行时 DLL，也应与它们放在同一目录。
 
 ### boot 定位
 
@@ -57,7 +59,8 @@ dist/sah.boot    自包含 boot（Chez 基础 boot + 编译后的程序）
 （见 `src/util/platform.ss`），而不是散落判 OS，这也是 Chez 自身的约定。
 
 两个基础 boot 都找到时，产物是**自包含**的：整条链被拼进 `dist/sah.boot`，
-这对文件放到哪里都能跑。否则构建会提示 `NOT self-contained`，此时产物只能在
+整个 bundle 不再依赖目标机器上安装的 boot tree。否则构建会提示
+`NOT self-contained`，此时产物只能在
 装有那套 Chez 的机器上运行。无论哪种情况，构建最后都会对产物做一次冒烟测试
 （`<产物> --usage`）并报告结果。
 
@@ -81,15 +84,14 @@ Chez 装在别处，用 `SAH_RUNTIME_EXE=/path/to/scheme` 指定可执行文件�
 3. 生成 subordinate boot `build/sah.boot`，引用所选运行时。
 4. 拼接运行时 boot 链 + subordinate boot → `dist/sah.boot`。
 5. 复制运行时可执行文件 → `dist/sah.exe`（POSIX 上是 `dist/sah`）。
+6. Windows 上复制所选 Chez 运行时同目录的 DLL。
 
-生成的程序还会**嵌入源码文本**，并在启动时把它求值进 interaction environment。
-这就是为什么编译版里的 `eval` 工具能调到 sah 自己的绑定（`assq-ref`、
-`short-id`、工具注册表等），而不只是基础 Chez 库。
+生成的程序还会**嵌入源码文本**，并在启动时把它求值进 interaction environment，
+供之后加载的 plugin program 使用 sah 的 extension DSL。session `eval` 使用独立的
+Chez language root，不会继承这些 runtime 内部绑定。
 
-也因此，可执行文件**从 interaction environment 进入**，而不是从编译产物里的绑定
-进入。`load`（扩展、skills、prompts 都靠它读取）是求值进 interaction environment
-的，所以如果 `main` 走编译版绑定，它读到的会是**另一套**注册表，扩展的
-`register-hook!` / `register-tool!` 会静默失效。一个进程必须只有一套注册表。
+可执行文件从 interaction environment 进入，使 `load` 进来的 extension 与显式创建的
+runtime 处于同一个顶层世界；动态能力仍由 runtime record 持有，而不是由全局注册表持有。
 
 > 如果有一个正在运行的 `sah.exe` 占着文件（Windows 会锁住可执行文件），构建会
 > 提前中止。关掉它再重试。
@@ -98,14 +100,14 @@ Chez 装在别处，用 `SAH_RUNTIME_EXE=/path/to/scheme` 指定可执行文件�
 
 ## 3. 安装
 
-安装就是把 `sah.exe` 和 `sah.boot` 放进一个在 `PATH` 里的目录。
+安装就是把 `dist/` 中的全部产物放进一个在 `PATH` 里的目录。
 
 ### Windows（PowerShell）
 
 ```powershell
 $dest = "$env:USERPROFILE\bin"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Copy-Item dist\sah.exe, dist\sah.boot $dest -Force
+Copy-Item dist\* $dest -Force
 
 # 为当前用户加入 PATH（一次性）
 $p = [Environment]::GetEnvironmentVariable("Path", "User")

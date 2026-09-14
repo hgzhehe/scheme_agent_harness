@@ -36,7 +36,7 @@
 ;; /tree -- the session as a tree; the cursor is where new messages attach
 ;;----------------------------------------------------------------------------
 
-(define (tree-command session config)
+(define (tree-command rt session config)
   (let* ((lg (session-log session))
          (path (log-path-indices lg #f))
          (name (log-session-name lg)))
@@ -67,20 +67,20 @@
                    ((not (and n (exact? n) (>= n 0) (< n (log-count lg))))
                     (printf "no such entry: ~a~%" s) #f)
                    ((eqv? n (log-leaf lg)) (printf "already at #~a~%" n) #f)
-                   (else (move-cursor! session config n)))))))))))
+                   (else (move-cursor! rt session config n)))))))))))
 
 ;; Moving the cursor abandons a suffix of the old path. A `before-tree` hook may
 ;; veto the move (pi's session_before_tree); otherwise offer to keep the
 ;; abandoned suffix as a branch summary (agent/branch.ss).
-(define (move-cursor! session config target)
-  (let ((veto (veto-reason 'before-tree session target)))
+(define (move-cursor! rt session config target)
+  (let ((veto (runtime-veto-reason rt 'before-tree session target)))
     (if veto
         (begin (printf "cursor not moved: ~a~%" veto) #f)
         (let* ((lg (session-log session))
                (gone (entries->messages
                       (abandoned-entries (log-path lg (log-leaf lg)) (log-path lg target)))))
           (if (null? gone)
-              (begin (session-branch! session target)
+              (begin (session-branch! rt session target)
                      (printf "cursor moved to #~a; the next message starts a new branch here~%" target)
                      #t)
               (begin
@@ -90,8 +90,8 @@
                 (flush-output-port (current-output-port))
                 (let ((ans (get-line-or-eof (current-input-port))))
                   (if (and (string? ans) (string-ci=? (string-trim ans) "y"))
-                      (begin (branch-summarize! session config target) #t)
-                      (begin (session-branch! session target)
+                      (begin (branch-summarize! rt session config target) #t)
+                      (begin (session-branch! rt session target)
                              (printf "cursor moved to #~a (nothing summarised)~%" target)
                              #t)))))))))
 
@@ -112,11 +112,11 @@
 ;; /help -- commands, templates and skills
 ;;----------------------------------------------------------------------------
 
-(define (print-help)
+(define (print-help rt)
   (printf "commands:~%")
   (for-each (lambda (c) (match c [(command ,n ,d ,h) (printf "  /~a~a~a~%" n (make-string (max 1 (- 12 (string-length (symbol->string n)))) #\space) d)] [,o #t]))
-            (all-commands))
-  (when (pair? (all-prompts))
+            (runtime-all-commands rt))
+  (when (pair? (all-prompts rt))
     (printf "templates:~%")
     (for-each (lambda (p)
                 (printf "  /~a~a~a~a~%"
@@ -124,53 +124,68 @@
                         (make-string (max 1 (- 12 (string-length (prompt-name p)))) #\space)
                         (prompt-description p)
                         (let ((h (prompt-hint p))) (if (string=? h "") "" (string-append "  " h)))))
-              (all-prompts)))
-  (when (pair? (all-skills))
+              (all-prompts rt)))
+  (when (pair? (all-skills rt))
     (printf "skills (load with /skill:NAME):~%")
     (for-each (lambda (s) (printf "  ~a~a~a~%" (skill-name s)
                                 (make-string (max 1 (- 12 (string-length (skill-name s)))) #\space)
                                 (skill-description s)))
-              (all-skills))))
+              (all-skills rt))))
 
 ;;----------------------------------------------------------------------------
 ;; registration + loop
 ;;----------------------------------------------------------------------------
 
-(define (register-builtin-commands! session config)
-  (register-command! 'compact "Compact the context (optional instructions)."
-                     (lambda (args) (compact! session config 'manual (if (string=? args "") #f args)) #f))
-  (register-command! 'context "Show what the next request would carry."
-                     (lambda (args) (context-command session config) #f))
-  (register-command! 'tree "Show the session tree; move the cursor to branch here."
-                     (lambda (args) (tree-command session config) #f))
-  (register-command! 'label "Label an entry: /label <id> <text> (no text clears it)."
-                     (lambda (args) (label-command session args) #f))
-  (register-command! 'name "Name this session: /name <text>."
-                     (lambda (args)
-                       (if (string=? (string-trim args) "")
-                           (printf "usage: /name <text>~%")
-                           (begin (session-add-name! session (string-trim args))
-                                  (printf "session named ~a~%" (string-trim args))))
-                       #f))
-  (register-command! 'fork "Copy this session's current path into a new session file."
-                     (lambda (args) (fork-command session args) #f))
-  (register-command! 'help "List commands, templates and skills."
-                     (lambda (args) (print-help) #f))
-  (register-command! 'reload "Reload extensions, skills and prompts."
-                     (lambda (args) (reload-command session config) #f)))
+(define (register-builtin-commands! rt session config)
+  (let ((owner (list 'session (session-id session))))
+    (runtime-register-command!
+     rt owner 'compact "Compact the context (optional instructions)."
+     (lambda (args)
+       (compact! rt session config 'manual
+                 (if (string=? args "") #f args))
+       #f))
+    (runtime-register-command!
+     rt owner 'context "Show what the next request would carry."
+     (lambda (args) (context-command session config) #f))
+    (runtime-register-command!
+     rt owner 'tree "Show the session tree; move the cursor to branch here."
+     (lambda (args) (tree-command rt session config) #f))
+    (runtime-register-command!
+     rt owner 'label
+     "Label an entry: /label <id> <text> (no text clears it)."
+     (lambda (args) (label-command session args) #f))
+    (runtime-register-command!
+     rt owner 'name "Name this session: /name <text>."
+     (lambda (args)
+       (if (string=? (string-trim args) "")
+           (printf "usage: /name <text>~%")
+           (begin
+             (session-add-name! session (string-trim args))
+             (printf "session named ~a~%" (string-trim args))))
+       #f))
+    (runtime-register-command!
+     rt owner 'fork
+     "Copy this session's current path into a new session file."
+     (lambda (args) (fork-command rt session args) #f))
+    (runtime-register-command!
+     rt owner 'help "List commands, templates and skills."
+     (lambda (args) (print-help rt) #f))
+    (runtime-register-command!
+     rt owner 'reload "Reload extensions, skills and prompts."
+     (lambda (args) (reload-command rt session config) #f)))
+  rt)
 
 ;; A reload re-reads every extension file after putting the registries back to
 ;; their built-in state, so it also has to put the built-in commands back (they
 ;; are registered after extensions, and the restore removed them).
-(define (reload-command session config)
-  (reload-resources! config (current-directory))
-  (register-builtin-commands! session config)
-  (set! *shell-override* (assq-ref config 'shell))
+(define (reload-command rt session config)
+  (reload-resources! rt config (current-directory))
+  (register-builtin-commands! rt session config)
   (let ((n (lambda (l) (number->string (length l)))))
     (printf "reloaded ~a extension~a, ~a skill~a, ~a template~a~%"
-            (n (all-extensions)) (if (= 1 (length (all-extensions))) "" "s")
-            (n (all-skills)) (if (= 1 (length (all-skills))) "" "s")
-            (n (all-prompts)) (if (= 1 (length (all-prompts))) "" "s"))))
+            (n (all-extensions rt)) (if (= 1 (length (all-extensions rt))) "" "s")
+            (n (all-skills rt)) (if (= 1 (length (all-skills rt))) "" "s")
+            (n (all-prompts rt)) (if (= 1 (length (all-prompts rt))) "" "s"))))
 
 (define (label-command session args)
   (let* ((sp (string-index args #\space))
@@ -184,16 +199,16 @@
             (printf "~a entry #~a~%" (if (string=? text "") "cleared label on" "labelled") n))))))
 
 ;; /fork [entry-id] -- write the path root->entry into a session of its own
-(define (fork-command session args)
+(define (fork-command rt session args)
   (let* ((lg (session-log session))
          (txt (string-trim args))
          (n (if (string=? txt "") (log-leaf lg) (string->number txt))))
     (if (not (and n (exact? n) (>= n 0) (< n (log-count lg))))
         (printf "usage: /fork [entry-id]   (see /tree for ids)~%")
-        (let ((veto (veto-reason 'before-fork session n)))
+        (let ((veto (runtime-veto-reason rt 'before-fork session n)))
           (if veto
               (printf "fork cancelled: ~a~%" veto)
-              (let ((new (session-extract session n)))
+              (let ((new (session-extract rt session n)))
                 (session-close! new)
                 (printf "forked ~a entr~a into a new session~%  id: ~a~%  file: ~a~%  continue with: sah --session ~a~%"
                         (session-count new) (if (= (session-count new) 1) "y" "ies")

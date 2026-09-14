@@ -23,15 +23,16 @@ hello.scm prints 42.
 
 ## 特性
 
-- **Agent 循环** —— 构建上下文、调用模型、执行工具、重复。
+- **显式 agent machine** —— 控制状态、effect 和 continuation 都是 Scheme datum；
+  provider、工具和日志写入由 effect interpreter 执行。
 - **流式** —— 回应以 SSE 读取并边到边渲染（`message-delta` / `thinking-delta`）；
   `(stream . #f)` 回退成一次阻塞请求，一条什么都没给的流也会自动回退。
-- **单 provider** —— DeepSeek（OpenAI 兼容的 chat completions）。
+- **OpenAI 兼容协议** —— 支持 Chat Completions 与 Responses 两条 API 路径。
 - **八个工具** —— `read`、`write`、`edit`、`ls`、`grep`、`find`、`shell`、
   `eval`。其中哪些真正提供给模型是可配的（`tools` / `exclude-tools`，或
   `--tools` / `--exclude-tools` / `--no-tools`）。
-- **可扩展** —— 扩展就是注册 hook / 工具 / 命令的 Scheme 文件
-  （`~/.sah/extensions/*.ss`、`<项目>/.sah/extensions/*.ss`）。见
+- **可扩展** —— 普通 Scheme extension 支持 owner 清理；plugin program 还提供
+  import/export facade、两阶段 mount 和可重试 rollback。见
   [EXTENDING.md](EXTENDING.md)。
 - **可定制** —— skills（`SKILL.md`，渐进披露）与 prompt templates
   （`/名称`，支持 `$1`/`$@`），放在 `~/.sah/` 或项目里。
@@ -43,10 +44,10 @@ hello.scm prints 42.
 - **会话可互通** —— `--export-pi` / `--import-pi` 在 sah 的 SexprL 与 pi 的
   JSONL 之间互转；两边 entry 集合同构，所以往返无损（见 [DESIGN.md](DESIGN.md)）。
 - **Scheme 原生配置** —— `~/.sah/config.scm` 就是一个 alist。
-- **`eval`** —— 在运行中的进程里求值 Scheme；能用基础 Chez，也能调到 sah 自己的
-  定义。状态跨轮存活。
+- **`eval`** —— 在 session-local Chez scope 中求值；durable definition 写入
+  `scope-form`，按当前会话分支重放。
 - **独立可执行文件** —— `build.scm` 把一切编译成 `dist/sah.exe` + `dist/sah.boot`（POSIX 上是 `dist/sah`）。
-- **离线测试** —— 967 项，不需要联网。
+- **离线测试** —— 完整测试套件不需要联网。
 
 ## 环境要求
 
@@ -336,16 +337,15 @@ src/util/           对 sah 一无所知的底层原语：
                       json.ss    JSON <-> Scheme datum
                       misc.ss    alist、时间、id、错误、行输入
 src/core/           agent 自身的概念与基础设施：
-                      event.ss   事件总线
                       data.ss    规范的消息/entry 形状
-                      hooks.ss   具名扩展 hook 点
+                      scope.ss   runtime/plugin/session 词法作用域
+                      runtime.ss runtime、事件与 hook
+                      capability.ss  tool/command/input 所有权
+                      plugin.ss  op algebra 与事务挂载
                       transport.ss  curl 发 HTTP
                       config.ss  ~/.sah 路径、设置、system prompt
 src/extend/         定制面：
                       md.ss      frontmatter 解析
-                      commands.ss  /命令注册表
-                      input.ss   输入管线（命令 -> input hook -> 已注册 handler）；
-                                 这个文件不知道什么是 skill 或模板
                       skills.ss  SKILL.md 发现 + 渐进披露
                       prompts.ss /名称模板（$1、$@、${N:-默认}）
                       loader.ss  加载扩展、技能、模板
@@ -354,9 +354,9 @@ src/ai/             chat.ss + providers/openai-compatible.ss
 src/session/        log.ss（不可变 entry 树）+ manager.ss（SexprL 文件）
                     + discovery.ss（查找/选择）+ pi-format.ss（读写 pi 的
                     JSONL，供 --export-pi / --import-pi 使用）
-src/tools/          registry.ss + read.ss write.ss edit.ss ls.ss grep.ss
-                    find.ss shell.ss eval.ss
-src/agent/          agent.ss（循环）+ context.ss + compaction.ss
+src/tools/          read.ss write.ss edit.ss ls.ss grep.ss find.ss shell.ss eval.ss
+src/agent/          machine.ss（显式控制）+ agent.ss（effect interpreter）
+                    + context.ss + compaction.ss
                     + branch.ss（为被放弃的分支生成摘要）
 src/modes/          cli.ss + oneshot.ss（--export-pi/--import-pi/--fork）
                     + print.ss + repl.ss
@@ -369,19 +369,27 @@ bench/              数据结构与规模测量
 `src/` 按“一个文件被允许知道什么”分层：`util/` 对 sah 一无所知，`core/` 只知道 agent
 自身概念、不认识 mode 和工具，`extend/` 是定制文件能碰到的全部，其余按职责分层
 （ai → session → tools → agent → modes → main）。加载顺序即此顺序（`sah.ss`、
-`build.scm`）。工具实现加载时把自己注册进注册表，所以加一个工具 = 新增一个文件 +
-一行加载。
+`build.scm`）。工具文件只定义 datum，由 bootstrap 显式安装。
 
 [`DESIGN.md`](DESIGN.md) 讲核心机制、背后的数据结构，以及和 pi 的对比。
+
+更完整的架构文档：
+
+- [`CORE-MECHANISMS.md`](CORE-MECHANISMS.md) —— sah 的目标核心语义：datum、
+  显式 machine/kont、effect/frame、journal/cursor、scope/env，以及它们如何汇合
+- [`DEVELOPMENT.md`](DEVELOPMENT.md) —— 模块边界、数据规范、测试与演进纪律
+- [`GAP-IMPLEMENTATION.md`](GAP-IMPLEMENTATION.md) —— 当前实现与目标设计之间的 gap、
+  实施顺序和验收标准
 
 数据流：
 
 ```
-main → run-agent ──► 构建上下文（context.ss：system + 会话上下文）
+main → runtime/session → machine-transition
+                  ──► effect interpreter：构建上下文
                   ──► llm-chat（ai/chat.ss → providers/openai-compatible.ss
                                → core/transport.ss → curl）
                   ──► 落盘 assistant 消息（session/manager.ss）
-                  ──► 对每个 tool call：call-tool（tools/registry.ss）
+                  ──► 对每个 tool call：runtime-call-tool（core/capability.ss）
                   ──► 落盘 tool 结果，重复 / 停止
         每一步都作为事件发射；打印处理器负责渲染
 ```
@@ -390,7 +398,7 @@ main → run-agent ──► 构建上下文（context.ss：system + 会话上�
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss   # 967 项检查，离线（mock 模型）
+scheme --script tests/run-tests.ss   # 离线测试（mock 模型）
 scheme --script bench/bench-fp.ss    # 数据结构测量
 scheme --script sah.ss --repl        # 从源码运行
 ```
@@ -399,6 +407,6 @@ scheme --script sah.ss --repl        # 从源码运行
 
 ## 尚未实现
 
-中断运行中的请求、多 provider、会话树 *UI*（数据模型和 `/tree` 已有）、RPC/JSON
+中断与跨进程恢复、多 provider、会话树 *UI*（数据模型和 `/tree` 已有）、RPC/JSON
 模式、TUI、沙箱，以及 pi 的项目*信任*机制（sah 无条件加载项目扩展，见
 [EXTENDING.md](EXTENDING.md)）。见路线图。

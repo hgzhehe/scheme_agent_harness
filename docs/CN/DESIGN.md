@@ -4,21 +4,25 @@
 > （`docs/ext-ref/ARCHITECTURE.md`）的差异。文中数字来自
 > `sah/bench/bench-fp.ss`，可用 `scheme --script bench/bench-fp.ss` 复现——是实测，
 > 不是宣称。
+>
+> 本文以持久数据结构和会话格式为主。控制、作用、历史与作用域的当前统一设计见
+> [CORE-MECHANISMS.md](CORE-MECHANISMS.md)，剩余工作见
+> [GAP-IMPLEMENTATION.md](GAP-IMPLEMENTATION.md)。
 
 ## 什么算“核心”
 
-只有三个机制：
+当前核心有五个中心：
 
-1. **事件流是唯一事实源。** 每个可观察步骤（agent 开始、tool 开始/结束、
-   compaction 开始/结束、消息结束）都通过同一条总线发出（`core/event.ss`）。
-   print 模式、REPL、以及将来的 RPC/JSON 模式都只是消费者。
-2. **会话是带游标的不可变 entry 树。** 发给模型的上下文是每次请求时*推导*出来的，
-   从不落盘。因此 compaction 只是一条普通 entry，而不是破坏性改写。
-3. **工具是注册表，数据是位置化 tagged list。** 加一个工具 = 新增一个文件 + 一行
-   加载；所有跨边界的东西都用 `match` 解构。
-
-4. **扩展点** —— 具名 hook，以及由扩展文件注册的工具与命令（见
-   [EXTENDING.md](EXTENDING.md)）。
+1. **runtime 是唯一的动态状态所有者。** 工具、命令、hook、event subscriber、plugin
+   和资源都属于具体 runtime。
+2. **machine 显式描述控制。** provider、tool、compaction 和 journal 写入都是由
+   effect interpreter 执行的请求。
+3. **会话是带游标的不可变 entry 树。** 模型上下文和 session lexical scope 都从当前
+   路径推导。
+4. **plugin 是 op program。** dependency graph 先链接，完整 effect plan 先 prepare，
+   再统一 commit，失败则按 frame 逆序 rollback。
+5. **events 只观察，hooks 可改变流程。** 二者由 `core/runtime.ss` 集中拥有和规定失败
+   策略。
 
 ## 会话日志（`src/session/log.ss`）
 
@@ -239,15 +243,14 @@ pi entry 类型会保留成 `customType` 为 `"pi-<类型>"` 的 `custom` entry�
 
 这些来自一次全树审视（膨胀、数据形状、状态流转、正交性），现在是代码遵守的规则：
 
-1. **events 只观察，hooks 可改写**（`core/event.ss` 对 `core/hooks.ss`）。订阅者只被
-   通知，不能改变 agent 的行为；hook 在某个阶段被调用，可以改写取值或拦截动作。
-   `session-start` 故意两者都发：一个用来观察，一个用来能中止。
+1. **events 只观察，hooks 可改写。** 二者都由 `core/runtime.ss` 持有，但 subscriber
+   异常不改变流程，hook 则按 stage 的 fail-open/fail-closed 策略处理。
 2. **只有一处决定模型看到什么。** `core/data.ss` 的 `entry->context-messages` 是唯一
-   投影点；九种 entry 里四种产生消息、五种什么都不产生，所以元数据可以随时追加而不
+   投影点；十种 entry 里四种产生消息、六种什么都不产生，所以元数据可以随时追加而不
    扰动对话。
 3. **每种 entry 的形状只有一处定义。** `core/data.ss` 里的 slot 表就是定义，
-   `entry-field` 是唯一对列表取下标的地方，`tests/run-tests.ss` 对九种 kind 断言这张
-   表。（把表写下来当场就暴露了一个真陷阱：摘要对 compaction 是 slot 4，对
+   `entry-field` 是唯一对列表取下标的地方，契约测试覆盖全部 kind 的投影规则。
+   把表写下来当场就暴露了一个真陷阱：摘要对 compaction 是 slot 4，对
    branch-summary 是 slot 5。）
 4. **会话状态的变更只有一处入口。** 所有变更都走 `session-push!` 和唯一的
    `session-flush!`，所以"什么时候需要整文件重写"只有一个实现。多步变更各自成为函数
@@ -255,14 +258,11 @@ pi entry 类型会保留成 `customType` 为 `"pi-<类型>"` 的 `custom` entry�
    发生在任何状态移动**之前**。
 5. **命令是能力而不是模式。** 由 `main` 为所有模式注册，所以 `sah "/context"` 在
    print 模式下和 REPL 里一样可用。
-6. **输入管线是一串阶段**，每个阶段查自己的注册表：命令 → input hook → 已注册的
-   handler（这就是 `/skill:NAME` 和 `/template` 能参与进来，而 `extend/input.ss`
-   不需要知道它们分别是什么的原因）。
-
-关于体积的诚实话：这次改动消掉的是**重复的逻辑**（16 个只有 2 种实现的 accessor 变成
-5 个原语 + 一行别名；9 个同形 mutation 包装变成 1 个；两份摘要管线变成 1 份），但文件
-总行数**上升**了，从 3812 到 3928 行——因为上面这些规则被写在了它们被强制执行的地方。
-这 3928 行里 24% 是注释、10% 是空行，真正的代码是 2599 行。
+6. **输入管线是一串阶段。** command、input hook、skill 和 prompt handler 都在
+   `core/capability.ss` 的 runtime-owned pipeline 中组合。
+7. **cursor 同时决定消息和 Scheme 环境。** branch/resume 只重放当前 path 上的
+   `scope-form`，放弃分支上的定义不会泄漏。
+8. **控制与作用分开。** `agent/machine.ss` 决定下一步，`agent/agent.ss` 解释 effect。
 
 ### 把一个 turn 切成两半（split turn）
 

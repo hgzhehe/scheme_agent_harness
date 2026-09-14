@@ -15,7 +15,8 @@
              (loop (cdr p) (cdr t)))
             (else #f)))))
 
-(register-tool! 'find
+(define find-files-tool
+  (make-tool-datum 'find
   "Find files whose name matches a glob pattern (`*` any run, `?` one character). Returns paths."
   (schema '((pattern "string" "Glob to match file names against, e.g. *.ss")
             (path "string" "Directory to search (default: the working directory)" optional)
@@ -37,4 +38,4 @@
                  (if (> (length hits) limit)
                      (string-append (string-join (take-list limit hits) "\n")
                                     (format "\n... (~a more)" (- (length hits) limit)))
-                     (string-join hits "\n")))))))))
+                     (string-join hits "\n"))))))))))

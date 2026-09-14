@@ -9,8 +9,6 @@
 ;;; Override with the SAH_SHELL environment variable or a `shell` key in
 ;;; ~/.sah/config.scm, e.g. (shell . "pwsh") or (shell . "bash").
 
-(define *shell-override* #f)
-
 ;; map a shell executable name/path to (shell KIND EXEC)
 (define (shell-from-name s)
   (let ((b (string-downcase (basename s))))
@@ -104,10 +102,13 @@
         (list 'shell 'bash "/bin/sh"))))
 
 (define (detect-shell)
-  (or (and *shell-override* (shell-from-name *shell-override*))
+  (let ((configured
+         (and (current-runtime)
+              (assq-ref (runtime-config (current-runtime)) 'shell))))
+    (or (and configured (shell-from-name configured))
       (let ((e (getenv "SAH_SHELL")))
         (and e (not (string=? e "")) (shell-from-name e)))
-      (if windows? (detect-windows-shell) (detect-posix-shell))))
+      (if windows? (detect-windows-shell) (detect-posix-shell)))))
 
 ;;----------------------------------------------------------------------------
 ;; run
@@ -149,11 +150,12 @@
 ;; the `shell` tool
 ;;----------------------------------------------------------------------------
 
-(register-tool! 'shell
+(define shell-tool
+  (make-tool-datum 'shell
   "Run a command in the shell of the terminal sah was launched from (PowerShell, cmd, or bash) and return its combined stdout/stderr."
   (schema '((command "string" "Shell command to run")))
   (lambda (args)
     (let ((cmd (assq-ref args 'command)))
       (if (string? cmd)
           (run-shell cmd)
-          (error 'shell "missing command")))))
+          (error 'shell "missing command"))))))

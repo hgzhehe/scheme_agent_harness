@@ -40,8 +40,8 @@ cd sah
 scheme --script build.scm          # 生成 dist/sah.exe + dist/sah.boot
 ```
 
-然后把 `sah.exe` 和 `sah.boot` **两个文件一起**复制到一个在 `PATH` 里的目录
-（两者必须放在同一目录，且文件名不能改）。
+然后把 `dist/` 中的全部产物一起复制到一个在 `PATH` 里的目录
+（可执行文件、boot 和构建生成的 Windows 运行时 DLL 必须放在同一目录）。
 
 ## 3. 获取 API key
 
@@ -217,7 +217,7 @@ EOF
 | `write` | `path`、`content` | 写文件，自动建父目录 |
 | `edit` | `path`、`edits:[{oldText,newText}]` | 精确文本替换；每个 `oldText` 必须在原文件里唯一 |
 | `shell` | `command` | 在你终端所用的 shell 里执行命令（PowerShell / cmd / bash） |
-| `eval` | `code` | 在本进程里求值 Scheme |
+| `eval` | `code` | 在当前 session scope 中求值 Scheme |
 
 修改已有文件请用 `edit` 而不是 `write`：所有替换都针对原文本匹配，这也是能把多处
 改动合并在一次调用里的安全前提。
@@ -229,8 +229,9 @@ EOF
 
 ## 9. `eval`
 
-`eval` 在**和 agent 同一个进程里**运行 Scheme，所以定义可以跨轮存活，agent 也能
-自省自己的运行时。
+`eval` 在当前 session 的独立 Chez scope 中运行。`define`、`define-syntax` 和
+`set!` 会作为 `scope-form` 写入会话 journal，所以定义能跨轮、跨 resume 存活，并且
+会随着 `/tree` 的分支游标一起切换。
 
 ```
 sah> 算一下 fact 5
@@ -244,8 +245,8 @@ sah> 再算 fact 40
 815915283247897734345611269596115894272000000000
 ```
 
-`eval` 既能用基础 Chez 库，也能调到 sah 自己的定义（`assq-ref`、`short-id`、
-工具注册表等）。
+`eval` 能使用基础 Chez 库，但不会自动看到 sah 的 runtime 内部定义。这个隔离用于
+保证会话状态归属，不是安全沙箱。
 
 ## 10. 编译独立可执行文件
 

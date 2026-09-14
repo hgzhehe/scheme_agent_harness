@@ -16,8 +16,6 @@
 ;;; for a fallback. A template is a positional tagged list:
 ;;;   (prompt NAME DESCRIPTION BODY ARG-HINT)
 
-(define *prompts* '())
-
 (define (prompt-name p) (list-ref p 1))
 (define (prompt-description p) (list-ref p 2))
 (define (prompt-body p) (list-ref p 3))
@@ -50,14 +48,15 @@
                              (dir-entries dir))))
               dirs)))
 
-(define (load-prompts! cwd)
-  (set! *prompts* (dedupe-by prompt-name (discover-prompts (prompt-dirs cwd))))
-  *prompts*)
+(define (load-prompts! rt cwd)
+  (runtime-prompts-set!
+   rt (dedupe-by prompt-name (discover-prompts (prompt-dirs cwd))))
+  (runtime-prompts rt))
 
-(define (all-prompts) *prompts*)
+(define (all-prompts rt) (runtime-prompts rt))
 
-(define (find-prompt name)
-  (let loop ((l *prompts*))
+(define (find-prompt rt name)
+  (let loop ((l (runtime-prompts rt)))
     (cond ((null? l) #f)
           ((name= (prompt-name (car l)) name) (car l))
           (else (loop (cdr l))))))
@@ -121,16 +120,22 @@
     (else "")))
 
 ;; /name args... -> expanded prompt, or 'handled when there is no such template
-(define (expand-prompt-command name args)
-  (let ((p (find-prompt name)))
+(define (expand-prompt-command rt name args)
+  (let ((p (find-prompt rt name)))
     (if (not p)
         'handled
         (expand-template (prompt-body p) (split-args args)))))
 
 ;;----------------------------------------------------------------------------
-;; /name as an input handler (extend/input.ss, stage 3)
+;; /name as a runtime-owned input handler.
 ;;----------------------------------------------------------------------------
 
-(register-input-handler!
- (lambda (name args)
-   (and (find-prompt name) (expand-prompt-command name args))))
+(define (prompt-input-handler rt)
+  (lambda (name args)
+    (and (find-prompt rt name)
+         (expand-prompt-command rt name args))))
+
+(define (install-resource-input-handlers! rt)
+  (runtime-register-input-handler! rt 'core (skill-input-handler rt))
+  (runtime-register-input-handler! rt 'core (prompt-input-handler rt))
+  rt)

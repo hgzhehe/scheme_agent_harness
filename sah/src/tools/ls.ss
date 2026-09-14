@@ -1,6 +1,7 @@
 ;;; ls.ss -- the `ls` tool: list one directory.
 
-(register-tool! 'ls
+(define ls-tool
+  (make-tool-datum 'ls
   "List the entries of a directory, one per line, sorted (directories end with a slash)."
   (schema '((path "string" "Directory to list (default: the working directory)" optional)))
   (lambda (args)
@@ -17,4 +18,4 @@
                         (string-append e "/")
                         e))
                   entries)
-             "\n"))))))
+             "\n")))))))

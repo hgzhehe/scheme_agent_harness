@@ -23,6 +23,7 @@
 ;;;     (custom-message ID PARENT TS CUSTOM-TYPE CONTENT DISPLAY)
 ;;;     (model-change   ID PARENT TS PROVIDER MODEL)
 ;;;     (thinking-level ID PARENT TS LEVEL)
+;;;     (scope-form     ID PARENT TS FORM)
 ;;;
 ;;; Which of them reach the model is decided in exactly one place
 ;;; (`entry->context-messages` below): message, compaction, branch-summary and
@@ -72,6 +73,7 @@
 ;;   custom-message   CUSTOM-TYPE  CONTENT        DISPLAY   -
 ;;   model-change     PROVIDER     MODEL          -         -
 ;;   thinking-level   LEVEL        -              -         -
+;;   scope-form       FORM         -              -         -
 ;;
 ;; Note the one trap that table makes visible: a summary is slot 4 for a
 ;; compaction (right after the timestamp) but slot 5 for a branch-summary, so
@@ -113,7 +115,7 @@
     [(,other . ,rest) (entries->messages rest)]))
 
 ;; The one place that decides what the model sees. Metadata entries (label,
-;; session-info, custom, model-change, thinking-level) contribute nothing, so
+;; session-info, custom, model-change, thinking-level, scope-form) contribute nothing, so
 ;; they can be appended freely without disturbing the conversation.
 (define (entry->context-messages e)
   (match e

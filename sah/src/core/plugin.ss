@@ -1,381 +1,624 @@
-;;; plugin.ss -- a plugin is a program of ops, mounted into a layer of the
-;;; environment, with the frame chain as its undo log.
+;;; plugin.ss -- plugins are data programs interpreted by a runtime.
 ;;;
-;;; Shape borrowed from R6RS `library`: name, imports, exports, body -- imports
-;;; first, resolved before the body runs (Scheme cannot derive a body's free
-;;; variables without expanding it, which is exactly why `library` declares them).
-;;; The one deviation: the body is a PROGRAM OF OPS, not arbitrary effects,
-;;; because unload needs the inverse taken at install time.
+;;; Source:
+;;;   (plugin NAME (imports ...) (exports ...) OP-FORM ...)
 ;;;
-;;; Unload borrowed from Cordis: dispose is per-plugin and unwinds that plugin's
-;;; own effects in reverse.  What Cordis cannot do is inspect it -- its disposers
-;;; are opaque closures.  Here a frame carries the op, the SOURCE FORM that
-;;; produced it, and the pre-state, as data.
+;;; Runtime data:
+;;;   (op-handler OWNER KIND UNDO-KIND REQUIRES PREPARE APPLY ROLLBACK SHOW)
+;;;   (frame OWNER OP SOURCE PREPARED HANDLE UNDO-KIND STATUS)
+;;;   (mount NAME STATE SCOPE OPS FRAMES)
 ;;;
-;;; Phases borrowed from Chez's library manager (visit / invoke):
-;;;   link     build the layer, perform the DEFINITION ops (the interface) so
-;;;            dependents can see it.  Order-independent: the chain follows the
-;;;            import graph, not the load order.
-;;;   mount    perform the remaining ops, recording a frame for each.
-;;;   dispose  unwind frames in reverse, then drop the layer.
-;;;
-;;; A definition is undone by dropping the layer, not by unbinding: Chez has no
-;;; way to remove a binding (measured).  Hence `op-undo-kind`: 'layer or 'registry.
-;;;
-;;; The op set is itself a registry, so each op is registered by the layer that
-;;; owns the effect it touches (core: define/hook, tools: tool, extend: command).
-;;; That keeps the load order honest: nothing here reaches into a later layer.
-;;;
-;;; Nothing about rendering is a burden on an op's author: a line is DERIVED (the
-;;; kind minus its `op-` prefix, plus the identifier that every op carries at
-;;; position 1), and the detail comes from the source form, printed with Chez's
-;;; own `print-length` / `print-level` bound so nothing explodes.  An op MAY
-;;; supply a custom line, but none of the built-in ops does.
+;;; The import graph and lexical chain are distinct. Dependencies are resolved as
+;;; a graph, then each declared export surface is projected into a scope facade.
+;;; Mount is one transaction over every dependency activated by the request.
+
+(define (plugin-name plugin) (list-ref plugin 1))
+(define (plugin-imports plugin) (list-ref plugin 2))
+(define (plugin-declared-exports plugin) (list-ref plugin 3))
+(define (plugin-body plugin) (list-ref plugin 4))
+
+(define (plugin-entry-owner entry) (list-ref entry 1))
+(define (plugin-entry-plugin entry) (list-ref entry 2))
+
+(define (mount-name mount) (list-ref mount 1))
+(define (mount-state mount) (list-ref mount 2))
+(define (mount-scope mount) (list-ref mount 3))
+(define (mount-ops mount) (list-ref mount 4))
+(define (mount-frames mount) (list-ref mount 5))
+
+(define (frame-owner frame) (list-ref frame 1))
+(define (frame-op frame) (list-ref frame 2))
+(define (frame-source frame) (list-ref frame 3))
+(define (frame-prepared frame) (list-ref frame 4))
+(define (frame-handle frame) (list-ref frame 5))
+(define (frame-undo-kind frame) (list-ref frame 6))
+(define (frame-status frame) (list-ref frame 7))
+
+(define (runtime-plugin rt name)
+  (let ((entry
+         (find
+          (lambda (entry)
+            (eq? (plugin-name (plugin-entry-plugin entry)) name))
+          (runtime-plugins rt))))
+    (and entry (plugin-entry-plugin entry))))
+
+(define (runtime-mount rt name)
+  (let ((item (assq name (runtime-mounts rt))))
+    (and item (cdr item))))
+
+(define (runtime-set-mount! rt name mount)
+  (runtime-mounts-set!
+   rt (cons (cons name mount)
+            (filter (lambda (item) (not (eq? (car item) name)))
+                    (runtime-mounts rt))))
+  mount)
+
+(define (runtime-define-plugin! rt plugin)
+  (let ((name (plugin-name plugin)))
+    (when (runtime-plugin rt name)
+      (error 'plugin "duplicate plugin definition: ~a" name))
+    (runtime-plugins-set!
+     rt (cons (list 'plugin-entry (current-owner) plugin)
+              (runtime-plugins rt)))
+    (runtime-set-mount! rt name (list 'mount name 'defined #f '() '()))
+    name))
+
+(define (runtime-plugin-list rt)
+  (map (lambda (item)
+         (cons (car item) (mount-state (cdr item))))
+       (runtime-mounts rt)))
 
 ;;----------------------------------------------------------------------------
-;; the op-handler registry, keyed by op kind
-;;   (KIND . (UNDO-KIND REQUIRES PRE DO UNDO SHOW))
-;; REQUIRES/PRE/DO take (op env); UNDO takes (op env pre handle);
-;; SHOW is an OPTIONAL (lambda (op) -> string).
+;; op algebra
 ;;----------------------------------------------------------------------------
-(define *op-handlers* '())
 
-(define (op-register-handler! kind undo-kind requires pre do undo . maybe-show)
-  (set! *op-handlers*
-        (cons (cons kind (list undo-kind requires pre do undo
-                               (if (pair? maybe-show) (car maybe-show) #f)))
-              (filter (lambda (h) (not (eq? (car h) kind))) *op-handlers*)))
-  kind)
+(define (handler-owner handler) (list-ref handler 1))
+(define (handler-kind handler) (list-ref handler 2))
+(define (handler-undo-kind handler) (list-ref handler 3))
+(define (handler-requires handler) (list-ref handler 4))
+(define (handler-prepare handler) (list-ref handler 5))
+(define (handler-apply handler) (list-ref handler 6))
+(define (handler-rollback handler) (list-ref handler 7))
+
+(define (runtime-register-op-handler! rt owner kind undo-kind requires prepare apply rollback . show)
+  (when (find (lambda (handler) (eq? (handler-kind handler) kind))
+              (runtime-op-handlers rt))
+    (error 'plugin "duplicate op handler: ~a" kind))
+  (let ((handler
+         (list 'op-handler owner kind undo-kind requires prepare apply rollback
+               (if (pair? show) (car show) #f))))
+    (runtime-op-handlers-set!
+     rt (cons handler (runtime-op-handlers rt)))
+    kind))
+
+(define (runtime-op-handler rt op)
+  (let ((handler
+         (and (pair? op)
+              (find
+               (lambda (handler)
+                 (eq? (handler-kind handler) (car op)))
+               (runtime-op-handlers rt)))))
+    (if handler
+        handler
+        (error 'plugin "op is not in this runtime's algebra: ~s" op))))
 
 (define (op-kind op) (car op))
 
-;; Every registered op constructor, so the totality of the tables is checkable.
-(define (op-kinds) (list-sort symbol-< (map car *op-handlers*)))
-
-(define (op-handler-of op)
-  (let ((h (assq (op-kind op) *op-handlers*)))
-    (if h (cdr h) (error 'op "not in the op set: ~a" (op-kind op)))))
-(define (op-undo-kind op) (car (op-handler-of op)))
-(define (op-requires op env) ((list-ref (op-handler-of op) 1) op env))
-(define (op-pre op env) ((list-ref (op-handler-of op) 2) op env))
-(define (op-do op env) ((list-ref (op-handler-of op) 3) op env))
-(define (op-undo op env pre handle) ((list-ref (op-handler-of op) 4) op env pre handle))
-
-;;----------------------------------------------------------------------------
-;; rendering: derived, bounded, and never a blob
-;;----------------------------------------------------------------------------
-(define (short-string s n)
-  (if (> (string-length s) n) (string-append (substring s 0 n) "...") s))
-
-;; Chez's printer can already bound itself: `print-length` caps a level and
-;; `print-level` caps the depth, and it prints `...` rather than exploding.
-;; (Measured: they work via parameterize even though `parameter?` says no.)
-(define (bounded-show v len level)
-  (parameterize ((print-length len) (print-level level))
-    (short-string (format "~s" v) 120)))
-
-;; A value's readable form: small data prints itself under the bound; a procedure
-;; prints as Chez names it (`#<procedure f at file:line>`), which for a closure
-;; made by `eval` is bare -- that is what the frame's source form is for.
-(define (value-show v)
-  (cond ((string? v) (string-append "\"" (short-string v 24) "\""))
-        ((or (number? v) (boolean? v) (symbol? v) (char? v) (null? v)) (format "~s" v))
-        (else (bounded-show v 6 2))))
-
-(define (op-kind-text kind)
-  (let ((s (symbol->string kind)))
-    (if (string-prefix? "op-" s) (substring s 3 (string-length s)) s)))
-
-;; The line for an op, DERIVED: no author declaration.  The kind supplies the
-;; verb; position 1 supplies the identifier, which every op in this set has.
-(define (op-show op)
-  (let* ((h (op-handler-of op))
-         (custom (list-ref h 5)))
-    (or (and custom (custom op))
-        (let ((id (and (> (length op) 1) (cadr op))))
-          (string-append (op-kind-text (op-kind op))
-                         (if (symbol? id) (string-append " " (symbol->string id)) ""))))))
-
-;;----------------------------------------------------------------------------
-;; the two ops whose effects live in core.  Note: no SHOW argument -- the derived
-;; line is already right.
-;;----------------------------------------------------------------------------
-(op-register-handler!
- 'op-define 'layer
- (lambda (op env) #f)
- (lambda (op env) (match op [(op-define ,n ,v) (env-ref env n)]))
- (lambda (op env) (match op [(op-define ,n ,v) (env-define! env n v) 'layer]))
- (lambda (op env pre handle) #t))
-
-(op-register-handler!
- 'op-register-hook 'registry
- (lambda (op env) #f)
- (lambda (op env) #f)
- (lambda (op env) (match op [(op-register-hook ,name ,proc) (register-hook! name proc)]))
- (lambda (op env pre handle) (match op [(op-register-hook ,name ,proc) (unregister-hook! handle)])))
-
-;; The op constructors.  A plugin body is a list of these, so the body reads as a
-;; declaration and produces data -- which is what makes the frame chain possible.
-(define (op-define name value) (list 'op-define name value))
-(define (op-register-hook name proc) (list 'op-register-hook name proc))
-
-;;----------------------------------------------------------------------------
-;; frames: the undo log
-;;   (frame OP FORM PRE HANDLE KIND)
-;; FORM is the source form that produced OP.  It is what makes the log readable
-;; even when OP holds a closure that `eval` created and therefore cannot name.
-;;----------------------------------------------------------------------------
-(define (frame-op f) (cadr f))
-(define (frame-form f) (caddr f))
-(define (frame-pre f) (list-ref f 3))
-(define (frame-handle f) (list-ref f 4))
-(define (frame-kind f) (list-ref f 5))
-
-(define (frame-show f)
-  (let ((pre (frame-pre f)))
-    (string-append (op-show (frame-op f))
-                   (if (or (eq? pre #f) (eq? pre 'absent) (eq? pre 'none))
-                       ""
-                       (string-append "  [pre: " (value-show pre) "]")))))
-
-;; One frame, in full: the derived line, then the source form bounded by Chez's
-;; own printer.  This is the rich view, and it costs the op's author nothing.
-(define (frame-detail f)
-  (list (frame-show f)
-        (cons 'form (bounded-show (frame-form f) 8 3))
-        (cons 'pre (frame-pre f))
-        (cons 'handle (frame-handle f))
-        (cons 'undo (frame-kind f))))
-
-(define (install-ops! pairs env)
-  ;; PAIRS: ((FORM . OP) ...) in program order -> frames, NEWEST FIRST
-  (let loop ((ps pairs) (frames '()))
-    (if (null? ps)
-        frames
-        (let* ((form (car (car ps)))
-               (op (cdr (car ps)))
-               (pre (op-pre op env))                    ; read BEFORE the change
-               (handle (op-do op env))
-               (frame (list 'frame op form pre handle (op-undo-kind op))))
-          (loop (cdr ps) (cons frame frames))))))
-
-(define (layer-pairs pairs)
-  (filter (lambda (pr) (eq? (op-undo-kind (cdr pr)) 'layer)) pairs))
-(define (effect-pairs pairs)
-  (filter (lambda (pr) (not (eq? (op-undo-kind (cdr pr)) 'layer))) pairs))
-
-(define (unwind-frames! frames env)
-  ;; frames are newest-first already, so this is reverse order
-  (for-each (lambda (f)
-              (unless (eq? (frame-kind f) 'layer)
-                (op-undo (frame-op f) env (frame-pre f) (frame-handle f))))
-            frames)
+(define (runtime-remove-op-handler-owner! rt owner)
+  (runtime-op-handlers-set!
+   rt (filter
+       (lambda (handler)
+         (not (equal? (handler-owner handler) owner)))
+       (runtime-op-handlers rt)))
   #t)
 
+(define (runtime-clear-dynamic-op-handlers! rt)
+  (runtime-op-handlers-set!
+   rt (filter
+       (lambda (handler)
+         (equal? (handler-owner handler) 'core))
+       (runtime-op-handlers rt)))
+  rt)
+
+(define (op-show rt op)
+  (let* ((handler (runtime-op-handler rt op))
+         (custom (list-ref handler 8))
+         (kind-text
+          (let ((text (symbol->string (op-kind op))))
+            (if (string-prefix? "op-" text)
+                (substring text 3 (string-length text))
+                text))))
+    (or (and custom (custom op))
+        (string-append
+         kind-text
+         (if (and (> (length op) 1) (symbol? (cadr op)))
+             (string-append " " (symbol->string (cadr op)))
+             "")))))
+
+(define (prepare-op rt owner scope source op)
+  (let* ((handler (runtime-op-handler rt op))
+         (requires ((handler-requires handler) op rt scope owner))
+         (missing
+          (cond ((not requires) '())
+                ((symbol? requires)
+                 (if (scope-has? scope requires) '() (list requires)))
+                ((list? requires)
+                 (filter (lambda (name) (not (scope-has? scope name)))
+                         requires))
+                (else
+                 (error 'plugin "bad requirements for ~s: ~s" op requires)))))
+    (when (pair? missing)
+      (error 'plugin "~a is missing required bindings for ~s: ~s"
+             owner op missing))
+    (let ((prepared ((handler-prepare handler) op rt scope owner)))
+      (list 'prepared owner op source prepared
+            (handler-undo-kind handler)))))
+
+(define (apply-prepared! rt scope prepared)
+  (let* ((owner (list-ref prepared 1))
+         (op (list-ref prepared 2))
+         (source (list-ref prepared 3))
+         (pre (list-ref prepared 4))
+         (undo-kind (list-ref prepared 5))
+         (handler (runtime-op-handler rt op))
+         (handle ((handler-apply handler) op rt scope owner pre)))
+    (list 'frame owner op source pre handle undo-kind 'applied)))
+
+(define (rollback-frame! rt scope frame)
+  (let* ((op (frame-op frame))
+         (handler (runtime-op-handler rt op)))
+    ((handler-rollback handler)
+     op rt scope (frame-owner frame)
+     (frame-prepared frame) (frame-handle frame))
+    #t))
+
+(define (frame-show rt frame)
+  (op-show rt (frame-op frame)))
+
 ;;----------------------------------------------------------------------------
-;; the plugin registry and mount records
+;; core ops
 ;;----------------------------------------------------------------------------
-;; (plugin NAME IMPORTS EXPORTS BODY-FORMS)
-(define (plugin-name p) (cadr p))
-(define (plugin-declared-imports p) (caddr p))
-(define (plugin-declared-exports p) (cadddr p))
-(define (plugin-body p) (list-ref p 4))
 
-;; (mount NAME STATE ENV PAIRS FRAMES)   STATE: defined | linking | linked | mounted
-(define (mount-state m) (caddr m))
-(define (mount-env m) (cadddr m))
-(define (mount-pairs m) (list-ref m 4))
-(define (mount-frames m) (list-ref m 5))
+(define (op-define name value) (list 'op-define name value))
+(define (op-register-hook stage proc) (list 'op-register-hook stage proc))
+(define (op-register-tool name description parameters handler)
+  (list 'op-register-tool name description parameters handler))
+(define (op-register-command name description handler)
+  (list 'op-register-command name description handler))
 
-(define *plugins* '())          ; alist name -> plugin
-(define *mounts* '())           ; alist name -> mount
+(define (install-core-op-handlers! rt)
+  (runtime-register-op-handler!
+   rt 'core 'op-define 'scope
+   (lambda (op rt scope owner) #f)
+   (lambda (op rt scope owner)
+     (match op
+       [(op-define ,name ,value)
+        (if (scope-local? scope name) (scope-value scope name) 'absent)]))
+   (lambda (op rt scope owner pre)
+     (match op
+       [(op-define ,name ,value) (scope-define! scope name value) 'scope]))
+   (lambda (op rt scope owner pre handle) #t))
 
-(define (plugin-of name) (let ((p (assq name *plugins*))) (and p (cdr p))))
-(define (mount-of name) (let ((p (assq name *mounts*))) (and p (cdr p))))
+  (runtime-register-op-handler!
+   rt 'core 'op-register-hook 'registry
+   (lambda (op rt scope owner) #f)
+   (lambda (op rt scope owner) #f)
+   (lambda (op rt scope owner pre)
+     (match op
+       [(op-register-hook ,stage ,proc)
+        (runtime-register-hook! rt owner stage proc)]))
+   (lambda (op rt scope owner pre handle)
+     (runtime-unregister-hook! rt handle)))
 
-(define (set-mount! name m)
-  (set! *mounts* (cons (cons name m) (remq (assq name *mounts*) *mounts*)))
-  m)
+  (runtime-register-op-handler!
+   rt 'core 'op-register-tool 'registry
+   (lambda (op rt scope owner) #f)
+   (lambda (op rt scope owner)
+     (match op
+       [(op-register-tool ,name ,description ,parameters ,handler)
+        (runtime-find-tool-cell rt name)]))
+   (lambda (op rt scope owner pre)
+     (match op
+       [(op-register-tool ,name ,description ,parameters ,handler)
+        (runtime-register-tool! rt owner name description parameters handler)]))
+   (lambda (op rt scope owner pre handle)
+     (match op
+       [(op-register-tool ,name ,description ,parameters ,handler)
+        (runtime-unregister-owned-tool! rt owner name)])))
 
-(define (plugin-define! p)
-  (let ((name (plugin-name p)))
-    (set! *plugins* (cons (cons name p) (remq (assq name *plugins*) *plugins*)))
-    (set-mount! name (list 'mount name 'defined #f '() '()))
-    name))
+  (runtime-register-op-handler!
+   rt 'core 'op-register-command 'registry
+   (lambda (op rt scope owner) #f)
+   (lambda (op rt scope owner)
+     (match op
+       [(op-register-command ,name ,description ,handler)
+        (runtime-find-command-cell rt name)]))
+   (lambda (op rt scope owner pre)
+     (match op
+       [(op-register-command ,name ,description ,handler)
+        (runtime-register-command! rt owner name description handler)]))
+   (lambda (op rt scope owner pre handle)
+     (match op
+       [(op-register-command ,name ,description ,handler)
+        (runtime-unregister-owned-command! rt owner name)])))
+  rt)
 
-(define (plugin-list)
-  (map (lambda (kv) (cons (car kv) (mount-state (cdr kv)))) *mounts*))
+;;----------------------------------------------------------------------------
+;; graph resolution and lexical projection
+;;----------------------------------------------------------------------------
 
-(define (plugin-requirements name)
-  (let ((p (plugin-of name))) (and p (plugin-declared-imports p))))
-
-;; The declared exports the layer actually defines -- so `library`: what is
-;; exported is checkable, not asserted.
-(define (plugin-exports name)
-  (let ((m (mount-of name)) (p (plugin-of name)))
-    (if (and m (mount-env m) p)
-        (filter (lambda (n) (memq n (env-defined (mount-env m))))
-                (plugin-declared-exports p))
+(define (runtime-plugin-exports rt name)
+  (let ((plugin (runtime-plugin rt name))
+        (mount (runtime-mount rt name)))
+    (if (and plugin mount (mount-scope mount))
+        (filter (lambda (export)
+                  (scope-local? (mount-scope mount) export))
+                (plugin-declared-exports plugin))
         '())))
 
-;; The undo log, readable: one derived line per step, and nothing else.
-(define (plugin-frames name)
-  (let ((m (mount-of name))) (and m (map frame-show (mount-frames m)))))
+(define (plugin-conflicts rt imports)
+  (let loop ((imports imports) (seen '()) (conflicts '()))
+    (if (null? imports)
+        (dedupe conflicts)
+        (let ((exports (runtime-plugin-exports rt (car imports))))
+          (loop (cdr imports)
+                (append exports seen)
+                (append
+                 (filter (lambda (name) (memq name seen)) exports)
+                 conflicts))))))
 
-;; The same log in full, when something wants to act on it rather than read it.
-(define (plugin-frame-data name)
-  (let ((m (mount-of name))) (and m (map frame-detail (mount-frames m)))))
+(define (plugin-import-scope rt imports)
+  (fold-left
+   (lambda (parent import)
+     (let ((scope (mount-scope (runtime-mount rt import))))
+       (scope-import
+        parent import
+        (map (lambda (name) (cons name (scope-value scope name)))
+             (runtime-plugin-exports rt import)))))
+   (runtime-root-scope rt)
+   imports))
 
-;; The plugin's own layer, for inspection (and for a body that reads an import).
-(define (plugin-env name)
-  (let ((m (mount-of name))) (and m (mount-env m))))
-
-;; Names exported by more than one imported plugin.  Chez silently takes the
-;; first; that is a trap for a language-model user, so it is an error here.
-(define (plugin-import-conflicts imports)
-  (let loop ((is imports) (seen '()) (dupes '()))
-    (if (null? is)
-        (list-sort symbol-< (dedupe-by (lambda (x) x) dupes))
-        (let* ((m (mount-of (car is)))
-               (ex (if (and m (mount-env m)) (env-defined (mount-env m)) '())))
-          (loop (cdr is) (append ex seen)
-                (append (filter (lambda (n) (memq n seen)) ex) dupes))))))
-
-(define (plugin-link-check! name)
-  ;; Missing imports are checked before anything is built: no point linking what
-  ;; does not exist.
-  (let* ((p (plugin-of name))
-         (imps (plugin-declared-imports p)))
-    (for-each (lambda (imp)
-                (unless (plugin-of imp)
-                  (error 'plugin "~a imports ~a, which is not defined" name imp)))
-              imps)
-    #t))
-
-;; Conflicts are checked AFTER the imports are linked, because only then do their
-;; layers exist and `env-defined` can say what they export.
-(define (plugin-check-conflicts! name)
-  (let ((conflicts (plugin-import-conflicts (plugin-declared-imports (plugin-of name)))))
-    (when (pair? conflicts)
-      (error 'plugin
-             (format "~a imports plugins that export the same name:~a -- narrow one of them before attaching"
-                     name
-                     (string-join (map (lambda (s) (string-append " " (symbol->string s)))
-                                       conflicts) ""))))
-    #t))
-
-;;----------------------------------------------------------------------------
-;; link: build the layer (the visit phase)
-;;----------------------------------------------------------------------------
-(define (link! name)
-  (let ((m (mount-of name)))
+(define (runtime-link-plugin! rt name)
+  (let ((mount (runtime-mount rt name))
+        (plugin (runtime-plugin rt name)))
     (cond
-      ((not (plugin-of name)) (error 'plugin "not defined: ~a" name))
-      ((member (mount-state m) '(linked mounted)) (mount-env m))
-      ((eq? (mount-state m) 'linking) (error 'plugin "import cycle through ~a" name))
+      ((not plugin) (error 'plugin "not defined: ~a" name))
+      ((memq (mount-state mount) '(linked mounted)) mount)
+      ((eq? (mount-state mount) 'linking)
+       (error 'plugin "import cycle through ~a" name))
+      ((memq (mount-state mount) '(committing disposing transaction-failed dispose-failed))
+       (error 'plugin "~a is in incomplete state ~a" name (mount-state mount)))
       (else
-       (set-mount! name (list 'mount name 'linking #f '() '()))
-       (plugin-link-check! name)
-       (let* ((p (plugin-of name))
-              ;; imports become layers in declaration order, over the root
-              (parent (fold-left (lambda (acc imp) (link! imp)) (env-root)
-                                 (plugin-declared-imports p))))
-         (plugin-check-conflicts! name)
-         (let* ((env (env-layer parent 'plugin name))
-                ;; the body is DATA, evaluated in the plugin's own layer -- so an
-                ;; imported name resolves lexically and no macro-introduced
-                ;; variable is needed (syntax-rules is hygienic: a macro's `env`
-                ;; would not be the `env` the body writes).  Pairing each op with
-                ;; the form that produced it is what keeps the log readable later.
-                (pairs (map (lambda (form) (cons form (env-eval env form)))
-                            (plugin-body p)))
-                ;; definitions ARE this layer's interface, so they happen now
-                (defs (layer-pairs pairs))
-                (layer-frames (install-ops! defs env)))
-           ;; what it declared as exported must be what it defined
-           (let ((missing (filter (lambda (n) (not (memq n (env-defined env))))
-                                  (plugin-declared-exports p))))
-             (when (pair? missing)
-               (error 'plugin "~a declares exports it does not define: ~a" name missing)))
-           ;; definitions are ops too, so they belong in the history
-           (for-each (lambda (pr)
-                       (emit `(ev plugin-op ,name ,(op-kind (cdr pr)) ,(op-show (cdr pr)))))
-                     defs)
-           (set-mount! name (list 'mount name 'linked env pairs layer-frames))
-           env))))))
+       (let ((before mount))
+         (guard (e (#t (runtime-set-mount! rt name before) (raise e)))
+           (runtime-set-mount! rt name
+                               (list 'mount name 'linking #f '() '()))
+           (for-each
+            (lambda (import)
+              (unless (runtime-plugin rt import)
+                (error 'plugin "~a imports missing plugin ~a" name import))
+              (runtime-link-plugin! rt import))
+            (plugin-imports plugin))
+           (let ((conflicts (plugin-conflicts rt (plugin-imports plugin))))
+             (when (pair? conflicts)
+               (error 'plugin "~a imports duplicate exports: ~s"
+                      name conflicts)))
+           (let ((scope
+                  (scope-layer
+                   (plugin-import-scope rt (plugin-imports plugin))
+                   'plugin name))
+                 (pairs '())
+                 (frames '()))
+             ;; Definition ops are applied while reading the body so later forms
+             ;; can refer to earlier local bindings. They affect only this new
+             ;; scope, so dropping it is complete rollback.
+             (for-each
+              (lambda (source)
+                (let* ((op (scope-eval scope source))
+                       (handler (runtime-op-handler rt op))
+                       (pair (cons source op)))
+                  (set! pairs (cons pair pairs))
+                  (when (eq? (handler-undo-kind handler) 'scope)
+                    (let* ((prepared (prepare-op rt name scope source op))
+                           (frame (apply-prepared! rt scope prepared)))
+                      (set! frames (cons frame frames))))))
+              (plugin-body plugin))
+             (let ((missing
+                    (filter
+                     (lambda (export) (not (scope-local? scope export)))
+                     (plugin-declared-exports plugin))))
+               (when (pair? missing)
+                 (error 'plugin "~a declares undefined exports: ~s"
+                        name missing)))
+             (let ((linked
+                    (list 'mount name 'linked scope
+                          (reverse pairs) frames)))
+               (runtime-set-mount! rt name linked)
+               linked))))))))
 
 ;;----------------------------------------------------------------------------
-;; mount / dispose
+;; transaction
 ;;----------------------------------------------------------------------------
+
+(define (effect-op-pairs rt mount)
+  (filter
+   (lambda (pair)
+     (not (eq? (handler-undo-kind
+                (runtime-op-handler rt (cdr pair)))
+               'scope)))
+   (mount-ops mount)))
+
+(define (activation-order rt root)
+  (let ((seen '()) (order '()))
+    (define (visit name)
+      (unless (memq name seen)
+        (set! seen (cons name seen))
+        (let ((plugin (runtime-plugin rt name)))
+          (unless plugin (error 'plugin "not defined: ~a" name))
+          (for-each visit (plugin-imports plugin))
+          (unless (eq? (mount-state (runtime-mount rt name)) 'mounted)
+            (set! order (cons name order))))))
+    (visit root)
+    (reverse order)))
+
+(define (rollback-applied! rt applied)
+  ;; APPLIED is newest-first. Stop at the first rollback failure: the failed
+  ;; frame and every older frame remain a valid retry stack.
+  (let loop ((remaining applied))
+    (if (null? remaining)
+        (values '() #f)
+        (let* ((item (car remaining))
+               (name (car item))
+               (scope (cadr item))
+               (frame (caddr item)))
+          (guard (e (#t (values remaining e)))
+            (rollback-frame! rt scope frame)
+            (loop (cdr remaining)))))))
+
+(define (preserve-transaction-failure! rt mounts-at-failure remaining)
+  (let ((names (dedupe (map car remaining))))
+    (for-each
+     (lambda (name)
+       (let* ((old (let ((item (assq name mounts-at-failure)))
+                     (and item (cdr item))))
+              (frames
+               (map caddr
+                    (filter (lambda (item) (eq? (car item) name))
+                            remaining)))
+              (layer-frames
+               (filter (lambda (frame)
+                         (eq? (frame-undo-kind frame) 'scope))
+                       (mount-frames old))))
+         (runtime-set-mount!
+          rt name
+          (list 'mount name 'transaction-failed
+                (mount-scope old) (mount-ops old)
+                (append frames layer-frames)))))
+     names)))
+
+(define (runtime-mount-plugin! rt name)
+  (let ((snapshot (runtime-mounts rt))
+        (applied '()))
+    (guard
+      (mount-error
+       (#t
+        (let ((failed-mounts (runtime-mounts rt)))
+          (let-values (((remaining rollback-error)
+                        (rollback-applied! rt applied)))
+            (runtime-mounts-set! rt snapshot)
+            (when rollback-error
+              (preserve-transaction-failure!
+               rt failed-mounts remaining)
+              (runtime-emit!
+               rt `(ev plugin-rollback-failed ,name
+                       ,(err->string mount-error)
+                       ,(err->string rollback-error))))
+            (if rollback-error
+                (error 'plugin
+                       "mount ~a failed (~a); rollback also failed (~a)"
+                       name (err->string mount-error)
+                       (err->string rollback-error))
+                (raise mount-error))))))
+      (runtime-link-plugin! rt name)
+      (let* ((order (activation-order rt name))
+             ;; A plan item is (PLUGIN SCOPE SOURCE+OP PREPARED). Building the
+             ;; complete plan must not perform an external effect.
+             (plan
+              (apply
+               append
+               (map
+                (lambda (plugin-name)
+                  (let* ((mount (runtime-mount rt plugin-name))
+                         (scope (mount-scope mount)))
+                    (map
+                     (lambda (pair)
+                       (list
+                        plugin-name scope pair
+                        (prepare-op
+                         rt plugin-name scope
+                         (car pair) (cdr pair))))
+                     (effect-op-pairs rt mount))))
+                order))))
+        ;; Commit starts only after every op in the dependency subgraph has
+        ;; resolved its requirements and prepared its rollback state.
+        (for-each
+         (lambda (plugin-name)
+           (let ((mount (runtime-mount rt plugin-name)))
+             (runtime-set-mount!
+              rt plugin-name
+              (list 'mount plugin-name 'committing
+                    (mount-scope mount)
+                    (mount-ops mount)
+                    (mount-frames mount)))))
+         order)
+        (for-each
+         (lambda (item)
+           (let* ((plugin-name (list-ref item 0))
+                  (scope (list-ref item 1))
+                  (prepared (list-ref item 3))
+                  (frame (apply-prepared! rt scope prepared)))
+             (set! applied
+                   (cons (list plugin-name scope frame) applied))))
+         plan)
+        (for-each
+         (lambda (plugin-name)
+           (let* ((mount (runtime-mount rt plugin-name))
+                  (effect-frames
+                   (map caddr
+                        (filter
+                         (lambda (item)
+                           (eq? (car item) plugin-name))
+                         applied))))
+             (runtime-set-mount!
+              rt plugin-name
+              (list 'mount plugin-name 'mounted
+                    (mount-scope mount)
+                    (mount-ops mount)
+                    (append effect-frames
+                            (mount-frames mount))))))
+         order)
+        ;; Observers only see events after the whole transaction commits.
+        (for-each
+         (lambda (plugin-name)
+           (let ((mount (runtime-mount rt plugin-name)))
+             (for-each
+              (lambda (pair)
+                (runtime-emit!
+                 rt `(ev plugin-op ,plugin-name
+                         ,(op-kind (cdr pair))
+                         ,(op-show rt (cdr pair)))))
+              (effect-op-pairs rt mount))
+             (runtime-emit!
+              rt `(ev plugin-mount ,plugin-name))))
+         order)
+        (runtime-mount rt name)))))
+
+(define (dispose-frame-stack! rt name scope frames)
+  (let loop ((remaining frames))
+    (cond
+      ((null? remaining) (values '() #f))
+      ((eq? (frame-undo-kind (car remaining)) 'scope)
+       (loop (cdr remaining)))
+      (else
+       (guard (e (#t (values remaining e)))
+         (rollback-frame! rt scope (car remaining))
+         (runtime-emit!
+          rt `(ev plugin-undo ,name
+                  ,(op-kind (frame-op (car remaining)))
+                  ,(frame-show rt (car remaining))))
+         (loop (cdr remaining)))))))
+
+(define (runtime-dispose-plugin! rt name)
+  (for-each
+   (lambda (item)
+     (let* ((dependent (car item))
+            (plugin (runtime-plugin rt dependent)))
+       (when (and plugin (memq name (plugin-imports plugin)))
+         (runtime-dispose-plugin! rt dependent))))
+   (runtime-mounts rt))
+  (let ((mount (runtime-mount rt name)))
+    (when (and mount
+               (memq (mount-state mount)
+                     '(mounted transaction-failed dispose-failed)))
+      (let ((scope (mount-scope mount))
+            (ops (mount-ops mount))
+            (frames (mount-frames mount)))
+        (runtime-set-mount!
+         rt name (list 'mount name 'disposing scope ops frames))
+        (let-values (((remaining failure)
+                      (dispose-frame-stack! rt name scope frames)))
+          (if failure
+              (begin
+                (runtime-set-mount!
+                 rt name
+                 (list 'mount name 'dispose-failed scope ops remaining))
+                (runtime-emit!
+                 rt `(ev plugin-dispose-failed ,name
+                         ,(frame-show rt (car remaining))
+                         ,(err->string failure)))
+                (raise failure))
+              (begin
+                (runtime-set-mount!
+                 rt name (list 'mount name 'defined #f '() '()))
+                (runtime-emit! rt `(ev plugin-dispose ,name))))))))
+  #t)
+
+(define (runtime-mount-all-plugins! rt)
+  (for-each
+   (lambda (item)
+     (when (eq? (mount-state (cdr item)) 'defined)
+       (runtime-mount-plugin! rt (car item))))
+   (reverse (runtime-mounts rt)))
+  rt)
+
+(define (runtime-dispose-all-plugins! rt)
+  (for-each
+   (lambda (item)
+     (when (memq (mount-state (cdr item))
+                 '(mounted transaction-failed dispose-failed))
+       (runtime-dispose-plugin! rt (car item))))
+   (reverse (runtime-mounts rt)))
+  (runtime-plugins-set! rt '())
+  (runtime-mounts-set! rt '())
+  rt)
+
+(define (runtime-remove-plugin-owner! rt owner)
+  (let ((names
+         (map
+          (lambda (entry)
+            (plugin-name (plugin-entry-plugin entry)))
+          (filter
+           (lambda (entry)
+             (equal? (plugin-entry-owner entry) owner))
+           (runtime-plugins rt)))))
+    (for-each
+     (lambda (name)
+       (let ((mount (runtime-mount rt name)))
+         (when (and mount
+                    (memq (mount-state mount)
+                          '(mounted transaction-failed dispose-failed)))
+           (runtime-dispose-plugin! rt name))))
+     names)
+    (runtime-plugins-set!
+     rt (filter
+         (lambda (entry)
+           (not (equal? (plugin-entry-owner entry) owner)))
+         (runtime-plugins rt)))
+    (runtime-mounts-set!
+     rt (filter
+         (lambda (item) (not (memq (car item) names)))
+         (runtime-mounts rt))))
+  #t)
+
+;; Extension-boundary API.
+(define (op-register-handler! kind undo-kind requires prepare apply rollback . show)
+  (apply runtime-register-op-handler!
+         (require-runtime) (current-owner)
+         kind undo-kind requires prepare apply rollback show))
+(define (plugin-define! plugin)
+  (runtime-define-plugin! (require-runtime) plugin))
 (define (plugin-mount! name)
-  (let ((env (link! name)))
-    (let ((m (mount-of name)))
-      (if (eq? (mount-state m) 'mounted)
-          m
-          (begin
-            ;; importing a plugin activates it, as `import` invokes a library in
-            ;; Chez: the definitions were needed, so its effects happen too
-            (for-each plugin-mount! (plugin-declared-imports (plugin-of name)))
-            (let* ((effects (effect-pairs (mount-pairs m)))
-                   (eframes (install-ops! effects env))
-                   ;; newest first: the effects just installed, then the
-                   ;; definitions the link phase installed
-                   (frames (append eframes (mount-frames m))))
-              (for-each (lambda (pr)
-                          (emit `(ev plugin-op ,name ,(op-kind (cdr pr)) ,(op-show (cdr pr)))))
-                        effects)
-              (set-mount! name (list 'mount name 'mounted env (mount-pairs m) frames))
-              (emit `(ev plugin-mount ,name))))))))
-
+  (runtime-mount-plugin! (require-runtime) name))
 (define (plugin-dispose! name)
-  ;; dependents first: their layer held this plugin's definitions
-  (let ((deps (filter (lambda (n)
-                        (let ((p (plugin-of n)))
-                          (and p (memq name (plugin-declared-imports p)))))
-                      (map car *mounts*))))
-    (for-each plugin-dispose! deps))
-  (let ((m (mount-of name)))
-    (when (and m (eq? (mount-state m) 'mounted))
-      (for-each (lambda (f)
-                  (emit `(ev plugin-undo ,name ,(op-kind (frame-op f)) ,(frame-show f))))
-                (filter (lambda (f) (not (eq? (frame-kind f) 'layer))) (mount-frames m)))
-      (unwind-frames! (mount-frames m) (mount-env m))
-      (emit `(ev plugin-dispose ,name)))
-    (when m
-      ;; dropping the layer is what undoes the definitions
-      (set-mount! name (list 'mount name 'defined #f '() '()))))
-  #t)
-
-;; Mount every plugin that is defined but not mounted.  Called by the loader
-;; after reading extension files, so a file that declares plugins makes them live.
+  (runtime-dispose-plugin! (require-runtime) name))
 (define (plugin-mount-all!)
-  (for-each (lambda (kv)
-              (when (eq? (mount-state (cdr kv)) 'defined)
-                (guard (e (#t (printf "[sah] plugin ~a failed to mount: ~a~%"
-                                      (car kv) (err->string e))))
-                  (plugin-mount! (car kv)))))
-            (reverse *mounts*))
-  #t)
-
-;; Dispose every mounted plugin, then forget the definitions: a reload re-reads
-;; the files, so a plugin that was deleted must disappear.
+  (runtime-mount-all-plugins! (require-runtime)))
 (define (plugin-dispose-all!)
-  (for-each (lambda (kv)
-              (when (eq? (mount-state (cdr kv)) 'mounted)
-                (guard (e (#t #t)) (plugin-dispose! (car kv)))))
-            (reverse *mounts*))
-  (set! *plugins* '())
-  (set! *mounts* '())
-  #t)
+  (runtime-dispose-all-plugins! (require-runtime)))
+(define (plugin-list) (runtime-plugin-list (require-runtime)))
+(define (plugin-env name)
+  (let ((mount (runtime-mount (require-runtime) name)))
+    (and mount (mount-scope mount))))
+(define (plugin-exports name)
+  (runtime-plugin-exports (require-runtime) name))
+(define (plugin-frames name)
+  (let ((mount (runtime-mount (require-runtime) name))
+        (rt (require-runtime)))
+    (and mount (map (lambda (frame) (frame-show rt frame))
+                    (mount-frames mount)))))
 
-;;----------------------------------------------------------------------------
-;; the source form.  The body is DATA: a list of op forms the plugin's own layer
-;; evaluates.  Imports therefore resolve lexically, the way a `library` body sees
-;; its imports, and the whole plugin stays a datum -- inspectable, loggable.
-;; The one thing a body cannot reach is a binding local to the file containing it;
-;; define it in the body (op-define) and later forms can use it.
-;;----------------------------------------------------------------------------
 (define-syntax plugin
   (syntax-rules (imports exports)
-    [(_ name (imports imp ...) (exports exp ...) body ...)
-     (plugin-define! (list 'plugin 'name '(imp ...) '(exp ...) '(body ...)))]))
+    [(_ name (imports import ...) (exports export ...) body ...)
+     (plugin-define!
+      (list 'plugin 'name '(import ...) '(export ...) '(body ...)))]))

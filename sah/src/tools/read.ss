@@ -7,7 +7,8 @@
         (take-list (- (length ls) 1) ls)
         ls)))
 
-(register-tool! 'read
+(define read-tool
+  (make-tool-datum 'read
   "Read a file from disk and return its contents, or a line range of them (use offset/limit for large files)."
   (schema '((path "string" "Path to the file")
             (offset "integer" "First line to return, 1-based (default 1)" optional)
@@ -36,4 +37,4 @@
                   (if (< end n)
                       (format "\n... (~a more line~a; ask for a higher offset)"
                               (- n end) (if (= (- n end) 1) "" "s"))
-                      ""))))))))))
+                      "")))))))))))

@@ -90,7 +90,8 @@
                                (list-ref r 3)
                                (substring t (cadr r) (string-length t))))))))
 
-(register-tool! 'edit
+(define edit-tool
+  (make-tool-datum 'edit
   "Edit a file with exact-text replacements. Each edits[].oldText must match exactly once in the original file. Prefer this over write: it changes only what is needed. All edits are matched against the original file, not incrementally, and must not overlap."
   (schema
    `((path "string" "Path to the file to edit (relative or absolute)")
@@ -124,4 +125,4 @@
             (format "edited ~a: ~a replacement~a, ~a -> ~a chars\n\n~a"
                     path (length ranges) (if (= (length ranges) 1) "" "s")
                     (string-length text) (string-length updated)
-                    hunks)))))))
+                    hunks))))))))

@@ -25,16 +25,17 @@ hello.scm prints 42.
 
 ## Features
 
-- **Agent loop** — build context, call the model, run requested tools, repeat.
+- **Explicit agent machine** — control states, effects, and continuations are
+  Scheme data; an effect interpreter performs provider, tool, and journal work.
 - **Streaming** — the reply is read as SSE and rendered as it arrives
   (`message-delta` / `thinking-delta`); `(stream . #f)` falls back to one
   blocking request, and so does a stream that yields nothing.
-- **One provider** — DeepSeek (OpenAI-compatible chat completions).
+- **OpenAI-compatible protocols** — both Chat Completions and Responses paths.
 - **Eight tools** — `read`, `write`, `edit`, `ls`, `grep`, `find`, `shell`,
   `eval`. Which of them are offered is configurable (`tools` /
   `exclude-tools`, or `--tools` / `--exclude-tools` / `--no-tools`).
-- **Extensible** — extensions are Scheme files that register hooks, tools and
-  commands (`~/.sah/extensions/*.ss`, `<project>/.sah/extensions/*.ss`). See
+- **Extensible** — ordinary Scheme extensions have owner cleanup; plugin
+  programs add import/export facades, two-phase mount, and retryable rollback. See
   [EXTENDING.md](EXTENDING.md).
 - **Customizable** — skills (`SKILL.md`, progressive disclosure) and prompt
   templates (`/name` with `$1`/`$@`) from `~/.sah/` or the project.
@@ -47,11 +48,11 @@ hello.scm prints 42.
   sah's SexprL and pi's JSONL; the entry sets are isomorphic, so a round trip
   is lossless (see [DESIGN.md](DESIGN.md)).
 - **Scheme-native config** — `~/.sah/config.scm` is an alist datum.
-- **`eval`** — evaluates Scheme in the running process; reaches base Chez and
-  sah's own definitions. State persists across turns.
+- **`eval`** — evaluates in a session-local Chez scope; durable definitions are
+  journaled as `scope-form` entries and replayed along the current branch.
 - **Standalone executable** — `build.scm` compiles everything into
   `dist/sah.exe` + `dist/sah.boot` (`dist/sah` on POSIX).
-- **Offline tests** — 967 checks, no network required.
+- **Offline contract tests** — no network required.
 
 ## Requirements
 
@@ -355,17 +356,15 @@ src/util/           primitives that know nothing about sah:
                       json.ss    JSON <-> Scheme datum
                       misc.ss    alists, time, ids, errors, line input
 src/core/           the agent's own concepts and infrastructure:
-                      event.ss   the event bus
                       data.ss    canonical message/entry shapes
-                      hooks.ss   named extension hook points
+                      scope.ss   runtime/plugin/session lexical scopes
+                      runtime.ss runtime, events, and hooks
+                      capability.ss owned tools, commands, and input handlers
+                      plugin.ss  op algebra and transactional mounts
                       transport.ss  HTTP via curl
                       config.ss  ~/.sah paths, settings, system prompt
 src/extend/         the customization surface:
                       md.ss      frontmatter parsing
-                      commands.ss  the /command registry
-                      input.ss   the input pipeline (commands -> input hook ->
-                                 registered handlers); nothing here knows what
-                                 a skill or a template is
                       skills.ss  SKILL.md discovery + progressive disclosure
                       prompts.ss /name templates ($1, $@, ${N:-default})
                       loader.ss  loads extensions, skills, prompts
@@ -374,9 +373,9 @@ src/ai/             chat.ss + providers/openai-compatible.ss
 src/session/        log.ss (immutable entry tree) + manager.ss (SexprL files)
                     + discovery.ss (find/pick) + pi-format.ss (pi JSONL
                     read/write, for --export-pi / --import-pi)
-src/tools/          registry.ss + read.ss write.ss edit.ss ls.ss grep.ss
-                    find.ss shell.ss eval.ss
-src/agent/          agent.ss (loop) + context.ss + compaction.ss
+src/tools/          read.ss write.ss edit.ss ls.ss grep.ss find.ss shell.ss eval.ss
+src/agent/          machine.ss (explicit control) + agent.ss (effect interpreter)
+                    + context.ss + compaction.ss
                     + branch.ss (summarise an abandoned branch)
 src/modes/          cli.ss + oneshot.ss (--export-pi/--import-pi/--fork)
                     + repl.ss
@@ -390,8 +389,8 @@ bench/              data-structure and scaling measurements
 sah, `core/` knows the agent's concepts and nothing about modes or tools,
 `extend/` is everything reachable from a customization file, and the rest is
 layered by role (ai → session → tools → agent → modes → main). Files are loaded
-in that order (`sah.ss`, `build.scm`). Tool implementations register themselves
-into the registry when loaded, so adding a tool is a new file plus one load line.
+in that order (`sah.ss`, `build.scm`). Tool files define data; bootstrap installs
+the built-ins explicitly into a runtime.
 
 [`DESIGN.md`](DESIGN.md) explains the core mechanisms, the data structures
 behind them, and how they compare with pi's.
@@ -399,11 +398,12 @@ behind them, and how they compare with pi's.
 Data flow:
 
 ```
-main → run-agent ──► build context (context.ss: system + session context)
+main → runtime/session → machine-transition
+                  ──► effect interpreter: build context
                   ──► llm-chat (ai/chat.ss → providers/openai-compatible.ss
                                → core/transport.ss → curl)
                   ──► persist assistant message (session/manager.ss)
-                  ──► for each tool call: call-tool (tools/registry.ss)
+                  ──► for each tool call: runtime-call-tool (core/capability.ss)
                   ──► persist tool result, repeat / stop
         every step is emitted as an event; the print handler renders it
 ```
@@ -412,7 +412,7 @@ main → run-agent ──► build context (context.ss: system + session context
 
 ```bash
 cd sah
-scheme --script tests/run-tests.ss   # 967 checks, offline (mock model)
+scheme --script tests/run-tests.ss   # offline contract tests (mock model)
 scheme --script bench/bench-fp.ss    # data-structure measurements
 scheme --script sah.ss --repl        # run from source
 ```
@@ -422,7 +422,7 @@ standalone executable, and [`PLAN.md`](PLAN.md) for the roadmap.
 
 ## Not here yet
 
-Interrupting a running request, multiple providers, a session-tree *UI* (the
+Interrupting and resuming a running request, multiple providers, a session-tree *UI* (the
 model and `/tree` exist), RPC/JSON modes, TUI, sandboxing, and pi's project
 *trust* model (sah loads project extensions unconditionally — see
 [EXTENDING.md](EXTENDING.md)). See the roadmap.

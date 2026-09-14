@@ -1,171 +1,225 @@
-;;; agent.ss -- the agent loop.
-;;;
-;;; loop:
-;;;   (auto-)compact if the context is near the window
-;;;   call the model (compacting once and retrying on context overflow)
-;;;   persist the assistant reply
-;;;   if it requested tools, run them, persist results, repeat
-;;;   else stop
-;;;
-;;; Messages and events are positional tagged lists (see core/data.ss), so every
-;;; branch below is a `match`. Everything observable is emitted through `emit`
-;;; (core/event.ss), so print/repl/rpc/json modes are all just event consumers.
+;;; agent.ss -- effect interpreter and driver for agent/machine.ss.
 
-;;----------------------------------------------------------------------------
-;; context-overflow recovery
-;;----------------------------------------------------------------------------
+(define (context-overflow? error)
+  (let ((message (string-downcase (err->string error))))
+    (or (string-contains? "context length" message)
+        (string-contains? "maximum context" message)
+        (string-contains? "context_length" message)
+        (string-contains? "too many tokens" message)
+        (string-contains? "reduce the length" message))))
 
-(define (context-overflow? e)
-  (let ((m (string-downcase (err->string e))))
-    (or (string-contains? "context length" m)
-        (string-contains? "maximum context" m)
-        (string-contains? "context_length" m)
-        (string-contains? "too many tokens" m)
-        (string-contains? "reduce the length" m))))
+(define (before-agent-start rt text session config)
+  (let loop ((hooks (runtime-hooks-for rt 'before-agent-start))
+             (text text)
+             (injected #f))
+    (if (null? hooks)
+        (cons text injected)
+        (call-with-values
+         (lambda ()
+           (runtime-invoke-hook
+            rt 'before-agent-start
+            (lambda () ((car hooks) text session config))))
+         (lambda (status result)
+           (cond
+             ((and (eq? status 'ok)
+                   (pair? result)
+                   (eq? (car result) 'prompt))
+              (loop (cdr hooks) (cdr result) injected))
+             ((and (eq? status 'ok)
+                   (pair? result)
+                   (eq? (car result) 'inject))
+              (loop
+               (cdr hooks) text
+               (if injected
+                   (string-append injected "\n" (cdr result))
+                   (cdr result))))
+             (else (loop (cdr hooks) text injected))))))))
 
-;; On provider "context too long" errors: compact once, rebuild, retry.
-(define (chat-with-recovery session config tools)
-  (guard (e (#t
-             (if (context-overflow? e)
-                 (begin
-                   (printf "[sah] context overflow; compacting and retrying~%")
-                   (compact! session config 'overflow #f)
-                   (llm-chat config (build-request-messages session config) tools))
-                 (raise e))))
-    (llm-chat config (build-request-messages session config) tools)))
+(define (tool-call-decision rt name args)
+  (let loop ((hooks (runtime-hooks-for rt 'tool-call))
+             (args args))
+    (if (null? hooks)
+        (values #f args)
+        (call-with-values
+         (lambda ()
+           (runtime-invoke-hook
+            rt 'tool-call
+            (lambda () ((car hooks) name args))))
+         (lambda (status result)
+           (cond
+             ((eq? status 'failed) (values result args))
+             ((and (pair? result) (eq? (car result) 'block))
+              (values (cdr result) args))
+             ((and (pair? result) (eq? (car result) 'args))
+              (loop (cdr hooks) (cdr result)))
+             (else (loop (cdr hooks) args))))))))
 
-;;----------------------------------------------------------------------------
-;; tool execution, with the tool-call / tool-result hook points
-;;----------------------------------------------------------------------------
-;; Hooks decide whether a call runs and may rewrite its arguments.
-;; -> (values BLOCK-REASON-or-#f FINAL-ARGS)
-(define (run-tool-call-hooks name args)
-  (let loop ((hs (hooks-for 'tool-call)) (a args))
-    (if (null? hs)
-        (values #f a)
-        (let ((r (guard (e (#t (report-hook-error 'tool-call e) #f)) ((car hs) name a))))
-          (cond
-            ((and (pair? r) (eq? (car r) 'block)) (values (cdr r) a))
-            ((and (pair? r) (eq? (car r) 'args)) (loop (cdr hs) (cdr r)))
-            (else (loop (cdr hs) a)))))))
+(define (tool-result-transform rt name args output error?)
+  (let loop ((hooks (runtime-hooks-for rt 'tool-result))
+             (output output)
+             (error? error?))
+    (if (null? hooks)
+        (values output error?)
+        (call-with-values
+         (lambda ()
+           (runtime-invoke-hook
+            rt 'tool-result
+            (lambda ()
+              ((car hooks) name args output error?))))
+         (lambda (status result)
+           (if (and (eq? status 'ok)
+                    (pair? result)
+                    (= (length result) 2))
+               (loop (cdr hooks) (car result) (cadr result))
+               (loop (cdr hooks) output error?)))))))
 
-(define (run-tool-result-hooks name args out is-error)
-  (let loop ((hs (hooks-for 'tool-result)) (o out) (e is-error))
-    (if (null? hs)
-        (values o e)
-        (let ((r (guard (er (#t (report-hook-error 'tool-result er) #f)) ((car hs) name args o e))))
-          (if (and (pair? r) (= 2 (length r)))
-              (loop (cdr hs) (car r) (cadr r))
-              (loop (cdr hs) o e))))))
-
-(define (run-tool session call)
+(define (perform-tool-effect rt session call)
   (match call
     [(call ,id ,name ,args)
-     (emit `(ev tool-start ,id ,name ,args))
-     (let-values (((blocked args2) (run-tool-call-hooks name args)))
+     (runtime-emit! rt `(ev tool-start ,id ,name ,args))
+     (let-values (((blocked final-args)
+                   (tool-call-decision rt name args)))
        (if blocked
-           (let ((reason (if (string? blocked) blocked (format "blocked by extension: ~s" blocked))))
-             (session-add-message! session `(msg tool ,id ,name ,reason #t))
-             (emit `(ev tool-end ,id ,name #t ,reason)))
-           (let* ((out/is-err (call-with-values (lambda () (call-tool name args2)) list))
-                  (out (car out/is-err))
-                  (is-error (cadr out/is-err)))
-             (let-values (((out2 is-error2) (run-tool-result-hooks name args2 out is-error)))
-               (session-add-message! session `(msg tool ,id ,name ,out2 ,(and is-error2 #t)))
-               (emit `(ev tool-end ,id ,name ,is-error2 ,out2))))))]
-    [,other (error 'run-tool (format "bad tool call: ~s" other))]))
+           (let ((reason
+                  (if (string? blocked)
+                      blocked
+                      (format "blocked by extension: ~s" blocked))))
+             (session-add-message!
+              session `(msg tool ,id ,name ,reason #t))
+             (runtime-emit!
+              rt `(ev tool-end ,id ,name #t ,reason)))
+           (let-values (((output error?)
+                         (runtime-call-tool
+                          rt session name final-args)))
+             (let-values (((final-output final-error?)
+                           (tool-result-transform
+                            rt name final-args output error?)))
+               (session-add-message!
+                session
+                `(msg tool ,id ,name ,final-output
+                      ,(and final-error? #t)))
+               (runtime-emit!
+                rt `(ev tool-end ,id ,name
+                        ,final-error? ,final-output))))))]
+    [,other (error 'agent "bad tool call: ~s" other)])
+  '(effect-result ok #t))
 
-;; The per-prompt stage: hooks may rewrite the text the model is about to see,
-;; or inject an extra message ahead of it.
-;; -> (values FINAL-TEXT INJECTED-or-#f)
-(define (run-before-agent-start-hooks text session config)
-  (let loop ((hs (hooks-for 'before-agent-start)) (t text) (injected #f))
-    (if (null? hs)
-        (values t injected)
-        (let ((r (guard (e (#t (report-hook-error 'before-agent-start e) #f))
-                   ((car hs) t session config))))
-          (cond ((and (pair? r) (eq? (car r) 'prompt)) (loop (cdr hs) (cdr r) injected))
-                ((and (pair? r) (eq? (car r) 'inject))
-                 (loop (cdr hs) t (if injected
-                                      (string-append injected "\n" (cdr r))
-                                      (cdr r))))
-                (else (loop (cdr hs) t injected)))))))
+(define (perform-agent-effect rt session config effect)
+  (guard
+    (error
+     (#t
+      (if (and (pair? effect)
+               (eq? (cadr effect) 'provider)
+               (context-overflow? error))
+          `(effect-result error context-overflow ,(err->string error))
+          `(effect-result error runtime ,(err->string error)))))
+    (match effect
+      [(effect begin ,prompt)
+       (let* ((prepared (before-agent-start rt prompt session config))
+              (text (car prepared))
+              (injected (cdr prepared)))
+         (when injected
+           (session-add-message! session `(msg user ,injected)))
+         (session-add-message! session `(msg user ,text))
+         (runtime-emit! rt '(ev agent-start))
+         '(effect-result ok #t))]
 
-(define (run-agent session config prompt)
-  (let-values (((prompt injected) (run-before-agent-start-hooks prompt session config)))
-    (when injected (session-add-message! session `(msg user ,injected)))
-    (session-add-message! session `(msg user ,prompt)))
-  (emit '(ev agent-start))
-  (let loop ((steps 0))
-    (when (>= steps (assq-ref config 'max-steps))
-      (error 'agent (format "max steps (~a) exceeded" (assq-ref config 'max-steps))))
-    (emit `(ev turn-start ,steps))
-    (maybe-auto-compact! session config)
-    (emit '(ev message-start))
-    (let ((reply (run-hooks 'after-reply
-                            (chat-with-recovery session config (active-tools config))
-                            (lambda (proc r)
-                              (let ((new (guard (e (#t (report-hook-error 'after-reply e) #f))
-                                           (proc r config))))
-                                (if (pair? new) new #f))))))
-      (session-add-message! session reply)
-      (emit `(ev message-end ,reply))
-      (emit `(ev turn-end ,steps))
-      (match reply
-        [(msg assistant ,content ,calls ,stop ,usage)
-         (if (null? calls)
-             (begin
-               (emit '(ev agent-end))
-               (emit '(ev agent-settled))
-               reply)
-             (begin
-               (for-each (lambda (c) (run-tool session c)) calls)
-               (loop (+ steps 1))))]
-        [,other (error 'agent (format "unexpected reply: ~s" other))]))))
+      [(effect auto-compact ,step)
+       (runtime-emit! rt `(ev turn-start ,step))
+       (maybe-auto-compact! rt session config)
+       (runtime-emit! rt '(ev message-start))
+       '(effect-result ok #t)]
 
-;;----------------------------------------------------------------------------
-;; A default event handler that prints to stdout (print / repl modes).
-;;----------------------------------------------------------------------------
+      [(effect provider ,step)
+       (let* ((reply
+               (llm-chat
+                rt config
+                (build-request-messages rt session config)
+                (runtime-active-tools rt config)))
+              (reply
+               (runtime-run-transform
+                rt 'after-reply reply
+                (lambda (proc current)
+                  (let ((result (proc current config)))
+                    (and (pair? result) result))))))
+         `(effect-result ok ,reply))]
 
-;; Set while deltas are being printed, so `message-end` does not print the same
-;; text a second time.
-(define *streamed-text?* #f)
+      [(effect force-compact)
+       (printf "[sah] context overflow; compacting and retrying~%")
+       (compact! rt session config 'overflow #f)
+       '(effect-result ok #t)]
 
-(define (print-event-handler event)
-  (match event
-    [(ev session-start ,session) #t]
-    [(ev turn-start ,step) #t]
-    [(ev message-start) (set! *streamed-text?* #f) #t]
-    [(ev message-delta ,text)
-     (set! *streamed-text?* #t)
-     (display text)
-     (flush-output-port (current-output-port))]
-    ;; reasoning is not part of the stored message (see docs/EN/DESIGN.md), so a
-    ;; terminal consumer only needs to know it is happening
-    [(ev thinking-delta ,text) #t]
-    [(ev tool-start ,id ,name ,args)
-     (printf "  -> ~a ~s~%" name args)]
-    [(ev tool-end ,id ,name ,is-error ,out)
-     (printf "  ~a ~a (~a chars)~%\n"
-             (if is-error "!!" "<-") name (string-length out))]
-    [(ev compaction-start)
-     (printf "  [compacting context...]~%")]
-    [(ev compaction-end ,tokens)
-     (printf "  [compacted: ~a tokens before]~%" tokens)]
-    [(ev auto-retry-start ,reason)
-     (printf "  [retrying after ~a]~%" reason)]
-    [(ev auto-retry-end) #t]
-    [(ev branch-summary ,summary)
-     (printf "  [summarised the abandoned branch: ~a chars]~%" (string-length summary))]
-    [(ev message-end ,msg)
-     (let ((txt (assistant-text msg)))
-       (if *streamed-text?*
-           (newline)                      ; close the line the deltas started
-           (when (> (string-length txt) 0)
-             (display txt)
-             (newline)))
-       (when (match msg
-               [(msg assistant ,c ,cs ,stop ,u) (eq? stop 'length)]
-               [,other #f])
-         (printf "  [reply truncated: the model hit its output limit]~%")))]
-    [,other #t]))
+      [(effect commit-reply ,step ,reply)
+       (session-add-message! session reply)
+       (runtime-emit! rt `(ev message-end ,reply))
+       (runtime-emit! rt `(ev turn-end ,step))
+       '(effect-result ok #t)]
+
+      [(effect execute-tool ,call)
+       (perform-tool-effect rt session call)]
+
+      [(effect finish)
+       (runtime-emit! rt '(ev agent-end))
+       (runtime-emit! rt '(ev agent-settled))
+       '(effect-result ok #t)]
+
+      [,other
+       `(effect-result error runtime
+                       ,(format "unknown agent effect: ~s" other))])))
+
+(define (drive-agent-machine rt machine)
+  (let loop ((machine machine))
+    (match (machine-transition machine)
+      [(await ,effect ,continuation)
+       (let ((result
+              (perform-agent-effect
+               rt
+               (agent-machine-session machine)
+               (agent-machine-config machine)
+               effect)))
+         (loop (machine-resume continuation result)))]
+      [(done ,reply) reply]
+      [(failed ,reason)
+       (runtime-emit! rt `(ev agent-failed ,reason))
+       (runtime-emit! rt '(ev agent-end))
+       (runtime-emit! rt '(ev agent-settled))
+       (error 'agent reason)]
+      [(machine . ,rest) (loop `(machine ,@rest))]
+      [,other (error 'agent "bad transition: ~s" other)])))
+
+(define (run-agent rt session config prompt)
+  (parameterize ((current-runtime rt)
+                 (current-session session)
+                 (current-owner 'agent))
+    (drive-agent-machine rt (agent-machine session config prompt))))
+
+(define (make-print-event-handler)
+  (let ((streamed-text? #f))
+    (lambda (event)
+      (match event
+        [(ev message-start) (set! streamed-text? #f)]
+        [(ev message-delta ,text)
+         (set! streamed-text? #t)
+         (display text)
+         (flush-output-port (current-output-port))]
+        [(ev tool-start ,id ,name ,args)
+         (printf "  -> ~a ~s~%" name args)]
+        [(ev tool-end ,id ,name ,is-error ,out)
+         (printf "  ~a ~a (~a chars)~%\n"
+                 (if is-error "!!" "<-")
+                 name (string-length out))]
+        [(ev compaction-start)
+         (printf "  [compacting context...]~%")]
+        [(ev compaction-end ,tokens)
+         (printf "  [compacted: ~a tokens before]~%" tokens)]
+        [(ev branch-summary ,summary)
+         (printf "  [summarised abandoned branch: ~a chars]~%"
+                 (string-length summary))]
+        [(ev message-end ,message)
+         (let ((text (assistant-text message)))
+           (if streamed-text?
+               (newline)
+               (when (> (string-length text) 0)
+                 (display text)
+                 (newline))))]
+        [,other #t]))))

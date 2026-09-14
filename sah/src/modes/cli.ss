@@ -24,7 +24,7 @@
   (printf "  --no-tools          offer no tools at all~%")
   (printf "  -H, --usage         show this help~%~%")
   (printf "Config: ~~/.sah/config.scm  (alist datum)~%")
-  (printf "Env:    DEEPSEEK_API_KEY or SAH_API_KEY~%"))
+  (printf "Env:    SAH_API_KEY (or DEEPSEEK_API_KEY for provider=deepseek)~%"))
 
 ;; -> (list opts prompt-string)
 (define (parse-args args)
@@ -92,7 +92,7 @@
 ;; session selection (--session / -r / -C)
 ;;----------------------------------------------------------------------------
 
-(define (pick-session cwd)
+(define (pick-session rt cwd)
   (let ((items (session-list-for-cwd cwd)))
     (if (null? items)
         (begin (printf "no saved sessions for this directory~%") #f)
@@ -118,21 +118,21 @@
                     (else
                      (let ((n (string->number s)))
                        (if (and n (exact? n) (>= n 1) (<= n (length items)))
-                           (session-load (assq-ref (list-ref items (- n 1)) 'file))
+                           (session-load rt (assq-ref (list-ref items (- n 1)) 'file))
                            (begin (printf "invalid selection: ~a~%" s) #f))))))))))))
 
-(define (resolve-session opts cwd)
+(define (resolve-session rt opts cwd)
   (cond
     ((assq-ref opts 'session)
      (let ((p (session-lookup (assq-ref opts 'session))))
        (if p
-           (session-load p)
+           (session-load rt p)
            (begin (printf "error: session not found: ~a~%" (assq-ref opts 'session))
                   (exit 1)))))
     ((assq-ref opts 'resume)
-     (or (pick-session cwd)
+     (or (pick-session rt cwd)
          (begin (printf "no session selected~%") (exit 0))))
-    ((assq-ref opts 'continue) (session-latest cwd))
+    ((assq-ref opts 'continue) (session-latest rt cwd))
     (else #f)))
 
 (define (print-resume-hint session)

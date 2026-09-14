@@ -192,7 +192,7 @@
                        (force (user-at-or-before toks (- n 1)))
                        (else #f))))
     (if (and first-kept (< first-kept 1))
-        #f
+        (values #f #f)
         (values first-kept
                 ;; split only when the cut really lands inside a turn
                 (and turn-start (> first-kept turn-start) turn-start)))))
@@ -243,7 +243,7 @@
 ;; summarization + compaction
 ;;----------------------------------------------------------------------------
 
-(define (summarize config conversation-text previous-summary custom-instructions)
+(define (summarize rt config conversation-text previous-summary custom-instructions)
   (let* ((base (if previous-summary
                    (string-append "Previous summary:\n" previous-summary
                                   "\n\n" UPDATE-SUMMARIZATION-INSTRUCTIONS
@@ -257,7 +257,8 @@
     ;; explicitly not streamed: nothing consumes deltas here, and the default
     ;; handler prints them, which would splice a summary into the terminal
     ;; mid-turn
-    (assistant-text (llm-chat (alist-merge config '((stream . #f))) msgs '()))))
+    (assistant-text
+     (llm-chat rt (alist-merge config '((stream . #f))) msgs '()))))
 
 (define (last-compaction-details es)
   (let ((c (last-compaction-of es)))
@@ -289,44 +290,53 @@
 ;; the turn being left behind -- because one structured history summary is poor
 ;; material for "what has happened so far in the turn we are in". pi does the
 ;; same, then merges.
-(define (summarize-entries config entries previous-details instructions split-at)
+(define (summarize-entries rt config entries previous-details instructions split-at)
   (let* ((ops (collect-file-ops (entries->messages entries) (assq-ref previous-details 'details)))
          (prev (assq-ref previous-details 'summary))
          (prev (and (string? prev) prev))
          (body
           (if (not split-at)
-              (summarize config (serialize-conversation (entries->messages entries))
+              (summarize rt config (serialize-conversation (entries->messages entries))
                          prev instructions)
               (let* ((history (take-list split-at entries))
                      (turn (drop-list split-at entries))
-                     (h (summarize config (serialize-conversation (entries->messages history))
+                     (h (summarize rt config (serialize-conversation (entries->messages history))
                                    prev instructions))
-                     (t (summarize config (serialize-conversation (entries->messages turn))
+                     (t (summarize rt config (serialize-conversation (entries->messages turn))
                                    #f TURN-PREFIX-INSTRUCTIONS)))
                 (string-append h "\n\n---\n\n## The turn being continued\n" t)))))
     (values (string-append body (render-file-lists ops)) ops)))
 ;; Hooks may cancel a compaction or attach instructions to the summary (pi's
 ;; `session_before_compact`). -> (values CANCEL-REASON INSTRUCTIONS)
-(define (run-before-compact-hooks reason instructions)
-  (let loop ((hs (hooks-for 'before-compact)) (instr instructions))
+(define (run-before-compact-hooks rt reason instructions)
+  (let loop ((hs (runtime-hooks-for rt 'before-compact)) (instr instructions))
     (if (null? hs)
         (values #f instr)
-        (let ((r (guard (e (#t (report-hook-error 'before-compact e) #f))
-                   ((car hs) reason instr))))
-          (cond
-            ((and (pair? r) (eq? (car r) 'cancel))
-             (values (let ((w (cdr r))) (if (string? w) w (format "~s" w))) instr))
-            ((and (pair? r) (eq? (car r) 'instructions)) (loop (cdr hs) (cdr r)))
-            (else (loop (cdr hs) instr)))))))
+        (call-with-values
+          (lambda ()
+            (runtime-invoke-hook
+             rt 'before-compact
+             (lambda () ((car hs) reason instr))))
+          (lambda (status result)
+            (cond
+              ((eq? status 'failed) (values result instr))
+              ((and (pair? result) (eq? (car result) 'cancel))
+               (values (let ((w (cdr result)))
+                         (if (string? w) w (format "~s" w)))
+                       instr))
+              ((and (pair? result) (eq? (car result) 'instructions))
+               (loop (cdr hs) (cdr result)))
+              (else (loop (cdr hs) instr))))))))
 
 ;; compact the session in place; returns #t if a compaction entry was added
-(define (compact! session config reason custom-instructions)
-  (let-values (((cancel instr) (run-before-compact-hooks reason custom-instructions)))
+(define (compact! rt session config reason custom-instructions)
+  (let-values (((cancel instr)
+                (run-before-compact-hooks rt reason custom-instructions)))
     (if cancel
         (begin (printf "[sah] compaction cancelled: ~a~%" cancel) #f)
-        (compact-now! session config reason instr))))
+        (compact-now! rt session config reason instr))))
 
-(define (compact-now! session config reason custom-instructions)
+(define (compact-now! rt session config reason custom-instructions)
   (let* ((settings (compaction-settings config))
          (keep (assq-ref settings 'keep-recent-tokens))
          (toks (log-path-measured (session-log session) #f)))
@@ -342,11 +352,13 @@
                     reason-name (length to-summarize)
                     (if (= (length to-summarize) 1) "y" "ies") first-kept
                     (if split-at (format " (splitting the turn that starts at #~a)" split-at) ""))
-            (emit (list 'ev 'compaction-start))
+            (runtime-emit! rt (list 'ev 'compaction-start))
             (let-values (((summary+ ops)
-                          (summarize-entries config to-summarize prev custom-instructions split-at)))
+                          (summarize-entries
+                           rt config to-summarize prev
+                           custom-instructions split-at)))
               (session-add-compaction! session summary+ first-kept tokens-before ops)
-              (emit (list 'ev 'compaction-end tokens-before))
+              (runtime-emit! rt (list 'ev 'compaction-end tokens-before))
               (printf "[sah] compacted: ~a tokens before, summary ~a chars~%"
                       tokens-before (string-length summary+))
               #t))))))
@@ -355,11 +367,11 @@
 ;; auto-compaction hook used by the agent loop
 ;;----------------------------------------------------------------------------
 
-(define (maybe-auto-compact! session config)
+(define (maybe-auto-compact! rt session config)
   (let* ((settings (compaction-settings config))
          (enabled (assq-ref settings 'enabled))
          (window (assq-ref settings 'context-window))
          (reserve (assq-ref settings 'reserve-tokens))
          (tokens (context-tokens session config)))
     (when (and enabled (> tokens (- window reserve)))
-      (compact! session config 'threshold #f))))
+      (compact! rt session config 'threshold #f))))

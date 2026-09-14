@@ -41,8 +41,9 @@ cd sah
 scheme --script build.scm          # produces dist/sah.exe + dist/sah.boot
 ```
 
-Then copy **both** `sah.exe` and `sah.boot` into a directory on `PATH` (they must
-stay together and keep their names).
+Then copy every artifact from `dist/` into a directory on `PATH`. The executable
+and boot must stay together and keep their names; Windows runtime DLLs, when
+present, belong beside them.
 
 ## 3. Get an API key
 
@@ -219,7 +220,7 @@ to find them via `-C`. `SAH_HOME` changes the root.
 | `write` | `path`, `content` | write a file, creating parent dirs |
 | `edit` | `path`, `edits:[{oldText,newText}]` | exact-text replacements; each `oldText` must match exactly once |
 | `shell` | `command` | run a command in your terminal's shell (PowerShell, cmd, or bash) |
-| `eval` | `code` | evaluate Scheme in this process |
+| `eval` | `code` | evaluate Scheme in the current session scope |
 
 Use `edit` rather than `write` to change an existing file: all edits are matched
 against the original text, which is also what makes batching several changes into
@@ -232,8 +233,9 @@ behave like a real shell. Empty output is reported as `(no output)`.
 
 ## 9. `eval`
 
-`eval` runs Scheme **in the same process as the agent**, so definitions persist
-across turns and the agent can inspect its own runtime.
+`eval` runs Scheme in an independent Chez scope owned by the current session.
+`define`, `define-syntax`, and `set!` are journaled as `scope-form` entries, so
+definitions survive turns and resume while following the `/tree` branch cursor.
 
 ```
 sah> Compute fact 5
@@ -247,8 +249,8 @@ sah> Now fact 40
 815915283247897734345611269596115894272000000000
 ```
 
-`eval` reaches both the base Chez library and sah's own definitions
-(`assq-ref`, `short-id`, the tool registry, …).
+`eval` reaches the base Chez library but does not automatically see sah's
+runtime internals. This is state isolation, not a security sandbox.
 
 ## 10. Build a standalone executable
 

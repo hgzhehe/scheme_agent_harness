@@ -78,6 +78,8 @@
   (log-push l 'model-change (list provider model)))
 (define (log-push-thinking-level l level)
   (log-push l 'thinking-level (list level)))
+(define (log-push-scope-form l form)
+  (log-push l 'scope-form (list form)))
 
 ;; Rebuild a log from file order. The cursor is the last entry (metadata
 ;; included), which is where the file was left. LINEAR? is recomputed from the

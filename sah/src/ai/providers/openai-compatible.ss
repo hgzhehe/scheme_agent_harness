@@ -196,17 +196,18 @@
 ;; The payload is the last thing that can be rewritten before the wire: pi
 ;; exposes this as `before_provider_request`. Both transports build it here, so a
 ;; hook sees the same shape and `stream` is set consistently.
-(define (build-request config messages tools stream?)
+(define (build-request rt config messages tools stream?)
   (let* ((url (string-append (assq-ref config 'base-url) "/chat/completions"))
-         (auth (string-append "Bearer " (assq-ref config 'api-key)))
-         (payload (run-hooks 'before-provider-request
-                             (alist-merge (build-chat-request (assq-ref config 'model)
-                                                              messages tools)
-                                          (list (cons 'stream stream?)))
-                             (lambda (proc p)
-                               (let ((r (guard (e (#t (report-hook-error 'before-provider-request e) #f))
-                                          (proc p config))))
-                                 (if (pair? r) r #f))))))
+         (auth (string-append "Bearer " (resolve-api-key config)))
+         (payload
+          (runtime-run-transform
+           rt 'before-provider-request
+           (alist-merge (build-chat-request (assq-ref config 'model)
+                                             messages tools)
+                        (list (cons 'stream stream?)))
+           (lambda (proc payload)
+             (let ((result (proc payload config)))
+               (and (pair? result) result))))))
     (values url `(("Authorization" . ,auth)) (write-json-string payload))))
 
 (define (decode-response resp)
@@ -222,16 +223,16 @@
                               (assq-ref choice 'finish_reason)
                               (assq-ref json 'usage)))))))
 
-(define (chat-blocking config messages tools)
-  (let-values (((url headers body) (build-request config messages tools #f)))
+(define (chat-blocking rt config messages tools)
+  (let-values (((url headers body) (build-request rt config messages tools #f)))
     (decode-response (http-post-json url headers body))))
 
 ;; Emit the deltas as they arrive, then return the assembled message. Returns #f
 ;; only when the stream produced no frames at all, so the caller can fall back to
 ;; one blocking request; if it fails *after* deltas have been emitted it raises
 ;; instead, because a retry would print the text a second time.
-(define (chat-stream config messages tools)
-  (let-values (((url headers body) (build-request config messages tools #t)))
+(define (chat-stream rt config messages tools)
+  (let-values (((url headers body) (build-request rt config messages tools #t)))
     (let ((acc (acc-new)) (frames 0) (note ""))
       (guard (e (#t (if (= frames 0) #f (raise e))))
         (set! note
@@ -245,8 +246,10 @@
                           (set! frames (+ frames 1))
                           (let-values (((next text think) (acc-step acc (read-json-string frame))))
                             (set! acc next)
-                            (unless (string=? text "") (emit `(ev message-delta ,text)))
-                            (unless (string=? think "") (emit `(ev thinking-delta ,think))))))))))
+                            (unless (string=? text "")
+                              (runtime-emit! rt `(ev message-delta ,text)))
+                            (unless (string=? think "")
+                              (runtime-emit! rt `(ev thinking-delta ,think))))))))))
         (if (> frames 0)
             (acc->message acc)
             (begin
@@ -262,8 +265,8 @@
 (define (streaming? config)
   (not (and (assq 'stream config) (not (assq-ref config 'stream)))))
 
-(define (openai-compatible-chat config messages tools)
+(define (openai-compatible-chat rt config messages tools)
   (if (streaming? config)
-      (or (chat-stream config messages tools)
-          (chat-blocking config messages tools))
-      (chat-blocking config messages tools)))
+      (or (chat-stream rt config messages tools)
+          (chat-blocking rt config messages tools))
+      (chat-blocking rt config messages tools)))

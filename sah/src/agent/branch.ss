@@ -36,7 +36,7 @@
 
 ;; Summarise the branch we are about to leave and park the summary at `target-id`.
 ;; Returns the summary string, or #f when there was nothing to summarise.
-(define (branch-summarize! session config target-id)
+(define (branch-summarize! rt session config target-id)
   (let* ((lg (session-log session))
          (old-leaf (log-leaf lg))
          (target (if (not target-id) -1 target-id))
@@ -47,7 +47,7 @@
         (begin
           (printf "[sah] summarising the abandoned branch (~a entries)~%" (length gone))
           (let-values (((summary+ ops)
-                        (summarize-entries config gone '() BRANCH-SUMMARY-INSTRUCTIONS #f)))
-            (session-branch-summary! session (if (< target 0) #f target) old-leaf summary+)
-            (emit `(ev branch-summary ,summary+))
+                        (summarize-entries rt config gone '() BRANCH-SUMMARY-INSTRUCTIONS #f)))
+            (session-branch-summary! rt session (if (< target 0) #f target) old-leaf summary+)
+            (runtime-emit! rt `(ev branch-summary ,summary+))
             summary+)))))

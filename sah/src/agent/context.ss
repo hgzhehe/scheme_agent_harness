@@ -5,11 +5,11 @@
 ;;; which may non-destructively rewrite the message list (prune, reorder, inject)
 ;;; exactly like pi's `context` event. Nothing they do touches the session.
 
-(define (build-request-messages session config)
+(define (build-request-messages rt session config)
   (let ((messages (cons `(msg system ,(assq-ref config 'system))
                         (session-context-messages session))))
-    (run-hooks 'before-request messages
-               (lambda (proc msgs)
-                 (let ((r (guard (e (#t (report-hook-error 'before-request e) #f))
-                            (proc msgs config))))
-                   (if (and (list? r) (pair? r)) r #f))))))
+    (runtime-run-transform
+     rt 'before-request messages
+     (lambda (proc current)
+       (let ((result (proc current config)))
+         (and (list? result) (pair? result) result))))))

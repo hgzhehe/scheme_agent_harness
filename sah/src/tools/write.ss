@@ -1,6 +1,7 @@
 ;;; write.ss -- the `write` tool.
 
-(register-tool! 'write
+(define write-tool
+  (make-tool-datum 'write
   "Write content to a file, overwriting it if it exists. Creates parent directories."
   (schema '((path "string" "Path to the file")
             (content "string" "Full content to write")))
@@ -14,4 +15,4 @@
         (when (and (string? dir) (not (string=? dir "")) (not (string=? dir ".")))
           (ensure-dir! dir))
         (string->file path content)
-        (format "wrote ~a characters to ~a" (string-length content) path)))))
+        (format "wrote ~a characters to ~a" (string-length content) path))))))
