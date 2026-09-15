@@ -1,11 +1,7 @@
-;;; repl.ss -- interactive (line-based) mode.
-;;;
-;;; A full TUI (pi's modes/interactive) can replace this later: the agent loop,
-;;; the event bus, the session log, the extension hooks and the commands are all
-;;; independent of it. The built-in commands (extend/builtin-commands.ss) are
-;;; registered by main, so this file is only the loop.
+;;; repl.ss -- portable line-mode interaction.
 
-(define (repl rt session config)
+(define (repl host)
+  (let ((rt (session-host-rt host)))
   (printf "sah repl (Chez Scheme). /help for commands and skills. Ctrl-D to exit.~%")
   (let loop ()
     (printf "sah> ")
@@ -20,6 +16,6 @@
              ((eq? result 'handled) (loop))
              ((string? result)
               (guard (e (#t (printf "error: ~a~%" (err->string e))))
-                (run-agent rt session config result))
+                (session-host-run-agent! host result))
               (loop))
-             (else (loop)))))))))
+             (else (loop))))))))))

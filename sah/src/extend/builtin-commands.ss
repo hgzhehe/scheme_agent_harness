@@ -30,6 +30,10 @@
     [(message ,id ,parent ,ts ,msg) (message-preview msg)]
     [(compaction ,id ,parent ,ts ,summary ,fk ,tb ,details)
      (string-append "[summary of everything before #" (number->string fk) "] " (clip summary 40))]
+    [(custom ,id ,parent ,ts sah-cursor ,data)
+     (format "[cursor moved from #~a to #~a]"
+             (assq-ref data 'from)
+             (assq-ref data 'target))]
     [,other (format "~a" (entry-kind e))]))
 
 ;;----------------------------------------------------------------------------
@@ -136,56 +140,312 @@
 ;; registration + loop
 ;;----------------------------------------------------------------------------
 
-(define (register-builtin-commands! rt session config)
-  (let ((owner (list 'session (session-id session))))
+(define (register-builtin-commands! rt host)
+  (let* ((session (session-host-session host))
+         (owner (session-capability-owner session)))
     (runtime-register-command!
      rt owner 'compact "Compact the context (optional instructions)."
      (lambda (args)
-       (compact! rt session config 'manual
+       (compact! rt
+                 (session-host-session host)
+                 (session-host-config host)
+                 'manual
                  (if (string=? args "") #f args))
        #f))
     (runtime-register-command!
      rt owner 'context "Show what the next request would carry."
-     (lambda (args) (context-command session config) #f))
+     (lambda (args)
+       (context-command
+        (session-host-session host)
+        (session-host-config host))
+       #f))
     (runtime-register-command!
      rt owner 'tree "Show the session tree; move the cursor to branch here."
-     (lambda (args) (tree-command rt session config) #f))
+     (lambda (args)
+       (tree-command
+        rt
+        (session-host-session host)
+        (session-host-config host))
+       #f))
     (runtime-register-command!
      rt owner 'label
      "Label an entry: /label <id> <text> (no text clears it)."
-     (lambda (args) (label-command session args) #f))
+     (lambda (args)
+       (label-command (session-host-session host) args)
+       #f))
     (runtime-register-command!
      rt owner 'name "Name this session: /name <text>."
      (lambda (args)
        (if (string=? (string-trim args) "")
            (printf "usage: /name <text>~%")
            (begin
-             (session-add-name! session (string-trim args))
+             (session-add-name!
+              (session-host-session host)
+              (string-trim args))
              (printf "session named ~a~%" (string-trim args))))
        #f))
     (runtime-register-command!
      rt owner 'fork
-     "Copy this session's current path into a new session file."
-     (lambda (args) (fork-command rt session args) #f))
+     "Fork at an entry and continue in the new session."
+     (lambda (args) (fork-command host args) #f))
+    (runtime-register-command!
+     rt owner 'clone
+     "Clone the active path and continue in the new session."
+     (lambda (args)
+       (session-host-clone! host)
+       (printf "cloned into session ~a~%"
+               (session-id (session-host-session host)))
+       #f))
+    (runtime-register-command!
+     rt owner 'new "Start a new session."
+     (lambda (args)
+       (session-host-new! host)
+       (printf "new session ~a~%"
+               (session-id (session-host-session host)))
+       #f))
+    (runtime-register-command!
+     rt owner 'resume
+     "Switch session: /resume [id-or-path]."
+     (lambda (args)
+       (resume-command host args)
+       #f))
+    (runtime-register-command!
+     rt owner 'session
+     "Show the active session status."
+     (lambda (args)
+       (session-info-command host)
+       #f))
+    (runtime-register-command!
+     rt owner 'model
+     "Show or set the active model: /model [id] [provider]."
+     (lambda (args)
+       (model-command host args)
+       #f))
+    (runtime-register-command!
+     rt owner 'thinking
+     "Show or set reasoning effort: /thinking [level]."
+     (lambda (args)
+       (thinking-command host args)
+       #f))
+    (runtime-register-command!
+     rt owner 'repair
+     "Rewrite a recovered session as a complete journal."
+     (lambda (args)
+       (let ((current (session-host-session host)))
+         (if (eq? (session-health current) 'healthy)
+             (printf "session journal is healthy~%")
+             (let ((backup (session-repair! current)))
+               (printf "session journal repaired~%")
+               (printf "original saved at ~a~%" backup))))
+       #f))
+    (runtime-register-command!
+     rt owner 'export
+     "Export the active path: /export [html|markdown|json|plain] [file]."
+     (lambda (args)
+       (export-command rt (session-host-session host) args)
+       #f))
+    (runtime-register-command!
+     rt owner 'plugins "List plugin definitions and mount states."
+     (lambda (args)
+       (plugins-command rt)
+       #f))
+    (runtime-register-command!
+     rt owner 'plugin
+     "Manage a plugin: /plugin mount|dispose|restart|inspect <name>."
+     (lambda (args)
+       (plugin-command rt args)
+       #f))
     (runtime-register-command!
      rt owner 'help "List commands, templates and skills."
      (lambda (args) (print-help rt) #f))
     (runtime-register-command!
      rt owner 'reload "Reload extensions, skills and prompts."
-     (lambda (args) (reload-command rt session config) #f)))
+     (lambda (args) (reload-command rt host) #f)))
   rt)
 
 ;; A reload re-reads every extension file after putting the registries back to
 ;; their built-in state, so it also has to put the built-in commands back (they
 ;; are registered after extensions, and the restore removed them).
-(define (reload-command rt session config)
-  (reload-resources! rt config (current-directory))
-  (register-builtin-commands! rt session config)
+(define (reload-command rt host)
+  (let ((config (session-host-config host)))
+    (reload-resources! rt config (session-host-cwd host))
+    (register-builtin-commands! rt host))
   (let ((n (lambda (l) (number->string (length l)))))
     (printf "reloaded ~a extension~a, ~a skill~a, ~a template~a~%"
             (n (all-extensions rt)) (if (= 1 (length (all-extensions rt))) "" "s")
             (n (all-skills rt)) (if (= 1 (length (all-skills rt))) "" "s")
             (n (all-prompts rt)) (if (= 1 (length (all-prompts rt))) "" "s"))))
+
+(define (session-info-command host)
+  (let ((session (session-host-session host))
+        (config (session-host-config host)))
+  (printf "id:       ~a~%" (session-id session))
+  (printf "name:     ~a~%"
+          (or (log-session-name (session-log session)) "(unnamed)"))
+  (printf "file:     ~a~%" (or (session-file session) "(memory)"))
+  (printf "cwd:      ~a~%" (session-cwd session))
+  (printf "model:    ~a~%" (assq-ref config 'model))
+  (printf "provider: ~a~%" (assq-ref config 'provider))
+  (printf "thinking: ~a~%"
+          (or (assq-ref config 'reasoning-effort) 'off))
+  (printf "entries:  ~a~%" (session-count session))
+  (printf "path:     ~a~%"
+          (length (log-path (session-log session) #f)))
+  (printf "tokens:   ~a~%"
+          (log-tokens (session-log session)))
+  (printf "journal:  ~a~%"
+          (session-health-description session))))
+
+(define (model-command host args)
+  (let ((parts
+         (filter
+          (lambda (part) (not (string=? part "")))
+          (string-split (string-trim args) " "))))
+    (if (null? parts)
+        (printf "~a (~a)~%"
+                (assq-ref (session-host-config host) 'model)
+                (assq-ref (session-host-config host) 'provider))
+        (let ((model (car parts))
+              (provider
+               (and (pair? (cdr parts))
+                    (string->symbol (cadr parts)))))
+          (if provider
+              (session-host-set-model!
+               host model provider)
+              (session-host-set-model! host model))
+          (printf "model set to ~a (~a)~%"
+                  model
+                  (assq-ref
+                   (session-host-config host)
+                   'provider))))))
+
+(define (thinking-command host args)
+  (let ((text (string-trim args)))
+    (if (string=? text "")
+        (printf "~a~%"
+                (or (assq-ref
+                     (session-host-config host)
+                     'reasoning-effort)
+                    'off))
+        (let ((level
+               (session-host-set-thinking!
+                host text)))
+          (printf "thinking set to ~a~%" level)))))
+
+(define (resume-command host args)
+  (let* ((text (string-trim args))
+         (path
+          (if (string=? text "")
+              (pick-session-path (session-host-cwd host))
+              (session-lookup text))))
+    (cond
+      ((not path)
+       (printf "session not found or not selected~%")
+       #f)
+      (else
+       (session-host-resume! host path)
+       (printf "resumed session ~a~%"
+               (session-id (session-host-session host)))
+       #t))))
+
+(define (parse-export-args args)
+  (let* ((parts
+          (filter
+           (lambda (part) (not (string=? part "")))
+           (string-split (string-trim args) " ")))
+         (format
+          (if (null? parts)
+              'html
+              (let ((candidate
+                     (string->symbol
+                      (string-downcase (car parts)))))
+                (if (memq candidate
+                          '(html markdown md json jsonl plain ansi))
+                    candidate
+                    'html))))
+         (path
+          (cond
+            ((null? parts) #f)
+            ((memq (string->symbol
+                    (string-downcase (car parts)))
+                   '(html markdown md json jsonl plain ansi))
+             (and (pair? (cdr parts))
+                  (string-join (cdr parts) " ")))
+            (else (string-join parts " ")))))
+    (values format path)))
+
+(define (export-command rt session args)
+  (let-values (((format path) (parse-export-args args)))
+    (let ((output (session-export! rt session format path)))
+      (printf "exported ~a~%" output)
+      output)))
+
+(define (plugins-command rt)
+  (let ((items
+         (list-sort
+          (lambda (a b)
+            (string<?
+             (symbol->string (car a))
+             (symbol->string (car b))))
+          (runtime-plugin-list rt))))
+    (if (null? items)
+        (printf "no plugin programs defined~%")
+        (for-each
+         (lambda (item)
+           (printf "  ~a~a~a~%"
+                   (car item)
+                   (make-string
+                    (max 1
+                         (- 20
+                            (string-length
+                             (symbol->string (car item)))))
+                    #\space)
+                   (cdr item)))
+         items))))
+
+(define (plugin-command rt args)
+  (let ((parts
+         (filter
+          (lambda (part) (not (string=? part "")))
+          (string-split (string-trim args) " "))))
+    (if (< (length parts) 2)
+        (printf
+         "usage: /plugin mount|dispose|restart|inspect <name>~%")
+        (let ((action (string->symbol
+                       (string-downcase (car parts))))
+              (name (string->symbol (cadr parts))))
+          (case action
+            ((mount)
+             (runtime-mount-plugin! rt name)
+             (printf "mounted ~a~%" name))
+            ((dispose stop)
+             (runtime-dispose-plugin! rt name)
+             (printf "disposed ~a~%" name))
+            ((restart reload)
+             (runtime-restart-plugin! rt name)
+             (printf "restarted ~a~%" name))
+            ((inspect show)
+             (let ((plugin (runtime-plugin rt name))
+                   (mount (runtime-mount rt name)))
+               (if (not plugin)
+                   (printf "plugin not found: ~a~%" name)
+                   (begin
+                     (printf "name:     ~a~%" name)
+                     (printf "state:    ~a~%"
+                             (mount-state mount))
+                     (printf "imports:  ~s~%"
+                             (plugin-imports plugin))
+                     (printf "exports:  ~s~%"
+                             (plugin-declared-exports plugin))
+                     (printf "effects:~%")
+                     (for-each
+                      (lambda (frame)
+                        (printf "  ~a~%"
+                                (frame-show rt frame)))
+                      (mount-frames mount))))))
+            (else
+             (printf
+              "usage: /plugin mount|dispose|restart|inspect <name>~%")))))))
 
 (define (label-command session args)
   (let* ((sp (string-index args #\space))
@@ -199,8 +459,10 @@
             (printf "~a entry #~a~%" (if (string=? text "") "cleared label on" "labelled") n))))))
 
 ;; /fork [entry-id] -- write the path root->entry into a session of its own
-(define (fork-command rt session args)
-  (let* ((lg (session-log session))
+(define (fork-command host args)
+  (let* ((session (session-host-session host))
+         (rt (session-host-rt host))
+         (lg (session-log session))
          (txt (string-trim args))
          (n (if (string=? txt "") (log-leaf lg) (string->number txt))))
     (if (not (and n (exact? n) (>= n 0) (< n (log-count lg))))
@@ -208,8 +470,12 @@
         (let ((veto (runtime-veto-reason rt 'before-fork session n)))
           (if veto
               (printf "fork cancelled: ~a~%" veto)
-              (let ((new (session-extract rt session n)))
-                (session-close! new)
-                (printf "forked ~a entr~a into a new session~%  id: ~a~%  file: ~a~%  continue with: sah --session ~a~%"
-                        (session-count new) (if (= (session-count new) 1) "y" "ies")
-                        (session-id new) (session-file new) (session-id new))))))))
+              (begin
+                (session-host-fork! host n)
+                (let ((new (session-host-session host)))
+                  (printf
+                   "forked ~a entr~a; continuing as session ~a~%  file: ~a~%"
+                   (session-count new)
+                   (if (= (session-count new) 1) "y" "ies")
+                   (session-id new)
+                   (session-file new)))))))))

@@ -101,7 +101,10 @@
                (runtime-emit!
                 rt `(ev tool-end ,id ,name
                         ,final-error? ,final-output))))))]
-    [,other (error 'agent "bad tool call: ~s" other)])
+    [,other
+     (error
+      'agent
+      (format "bad tool call: ~s" other))])
   '(effect-result ok #t))
 
 (define (perform-agent-effect rt session config effect)
@@ -185,41 +188,13 @@
        (runtime-emit! rt '(ev agent-settled))
        (error 'agent reason)]
       [(machine . ,rest) (loop `(machine ,@rest))]
-      [,other (error 'agent "bad transition: ~s" other)])))
+      [,other
+       (error
+        'agent
+        (format "bad transition: ~s" other))])))
 
 (define (run-agent rt session config prompt)
   (parameterize ((current-runtime rt)
                  (current-session session)
                  (current-owner 'agent))
     (drive-agent-machine rt (agent-machine session config prompt))))
-
-(define (make-print-event-handler)
-  (let ((streamed-text? #f))
-    (lambda (event)
-      (match event
-        [(ev message-start) (set! streamed-text? #f)]
-        [(ev message-delta ,text)
-         (set! streamed-text? #t)
-         (display text)
-         (flush-output-port (current-output-port))]
-        [(ev tool-start ,id ,name ,args)
-         (printf "  -> ~a ~s~%" name args)]
-        [(ev tool-end ,id ,name ,is-error ,out)
-         (printf "  ~a ~a (~a chars)~%\n"
-                 (if is-error "!!" "<-")
-                 name (string-length out))]
-        [(ev compaction-start)
-         (printf "  [compacting context...]~%")]
-        [(ev compaction-end ,tokens)
-         (printf "  [compacted: ~a tokens before]~%" tokens)]
-        [(ev branch-summary ,summary)
-         (printf "  [summarised abandoned branch: ~a chars]~%"
-                 (string-length summary))]
-        [(ev message-end ,message)
-         (let ((text (assistant-text message)))
-           (if streamed-text?
-               (newline)
-               (when (> (string-length text) 0)
-                 (display text)
-                 (newline))))]
-        [,other #t]))))

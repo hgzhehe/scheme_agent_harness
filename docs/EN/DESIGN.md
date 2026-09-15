@@ -169,22 +169,23 @@ Honest reading of that table:
 |---|---|---|
 | session entries | JSONL, array in memory | SexprL, persistent vector with a cached token measure |
 | entry ids | random 8-hex, `Map` lookup | log index, no lookup at all |
-| branch | `id`/`parent` + leaf pointer, `/tree` UI | same model; cursor move is the whole implementation, `/tree` is a REPL command |
+| branch | `id`/`parent` + leaf pointer, `/tree` UI | same model; TUI selector and commands share the cursor API |
 | context | `buildContextEntries` → `buildSessionContext` | `log-path` → `log-context-messages` |
 | compaction | scan backwards accumulating tokens | binary search over the cached measure (with a materialise fallback after branching) |
 | fork | copy into a new file | O(1) cursor move (same file) |
 | snapshots | not modelled | free, because the log is immutable |
-| extension hooks | first-class (`pi.on`, `registerTool`, …) | same shape, ~130 lines; extensions are Scheme files |
+| extension mechanism | first-class (`pi.on`, `registerTool`, …) | owner registries plus plugin op/frame transactions |
 | streaming | SSE, delta-only `message_update` | SSE, `message-delta` / `thinking-delta`; the assembled message equals the blocking one |
 | tools | 8 built-in, default 4; `--tools`/`--exclude-tools` | 8 built-in, all on; same allow/exclude lists (`--no-tools` too) |
 | skills / prompt templates | `SKILL.md` + `/name`, progressive disclosure | same (extend/skills.ss, extend/prompts.ss) |
 | project trust | gates project resources | **not implemented** (documented gap) |
-| TUI | full component system | line-based REPL |
+| TUI | full component system | first fullscreen engine: editor, selector, viewport, widgets |
+| RPC/JSON | asynchronous JSONL and incremental events | synchronous JSONL RPC and canonical JSON events |
 
 The two places where sah is deliberately ahead are the session data structure
 (immutable, measured, index-addressed) and the honest accounting of what that
-buys. The place where it is deliberately behind is the trust model (sah loads
-project extensions unconditionally) and everything downstream of having a TUI.
+buys. It is deliberately behind in project trust, asynchronous cancellation, a
+complete TUI component API, and a mature package ecosystem.
 
 ## What this unlocks next
 
@@ -197,19 +198,17 @@ entry type. What is left:
 
 And the missing core mechanism, in order of value:
 
-1. **More hook points, if they earn it** — the registry is 60 lines, so adding
-   `turn-start` / `turn-end` or a `user-bash` stage is cheap once something
-   needs them. There is no point growing the list speculatively: pi's ~30 events
-   are all reached from the TUI and RPC modes that sah does not have.
-2. **Streaming** — done. `message-delta` / `thinking-delta` are emitted from an
-   SSE reader in the provider (`core/transport.ss` gained a line-at-a-time
-   variant of the curl call) and the assembled message is identical to the
-   blocking one; the print handler renders deltas and skips the text at
-   `message-end`. What is still missing downstream is a **JSON mode** that
-   consumes the same stream with pi's delta-only `message_update` contract.
-3. **Cancellation** — the one stop reason sah's taxonomy has no producer for.
-   A running request cannot be interrupted, which is why tool calls have no
-   cancel signal either.
+1. **Durable machine checkpoints** — explicit continuations are not yet written
+   to the journal for cross-process recovery.
+2. **Cancellation and writer leases** — provider/tool execution remains
+   synchronous, and a session has no formal single-writer protocol.
+3. **Atomic reload and trust** — one plugin mount is transactional, but a whole
+   resource reload and project-resource loading still need a candidate runtime
+   and a trust gate.
+
+Streaming, JSON mode, synchronous JSONL RPC, and the first TUI engine are now
+complete. They are the frontend baseline for cancellation, asynchronous
+steering, and a richer component lifecycle.
 
 ## Measured against pi's actual implementation
 

@@ -75,7 +75,9 @@
   (let ((pair (assq key config)))
     (if pair
         (set-cdr! pair (assq-ref next key))
-        (error 'reload "config has no mutable ~a slot" key))))
+        (error
+         'reload
+         (format "config has no mutable ~a slot" key)))))
 
 (define (reload-resources! rt config cwd)
   (runtime-dispose-all-plugins! rt)

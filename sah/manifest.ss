@@ -25,6 +25,9 @@
     "core/capability.ss"
     "core/config.ss"
     "core/plugin.ss"
+    "core/render.ss"
+    "tui/component.ss"
+    "tui/editor.ss"
     "extend/md.ss"
     "extend/skills.ss"
     "extend/prompts.ss"
@@ -37,6 +40,7 @@
     "session/manager.ss"
     "session/discovery.ss"
     "session/pi-format.ss"
+    "session/host.ss"
     "tools/read.ss"
     "tools/write.ss"
     "tools/edit.ss"
@@ -53,10 +57,13 @@
 
 ;; the CLI entry points; tests and benchmarks exercise the kernel only
 (define sah-entry-source-files
-  '("modes/cli.ss"
+  '("tui/terminal.ss"
+    "modes/cli.ss"
     "modes/print.ss"
     "modes/oneshot.ss"
     "modes/repl.ss"
+    "modes/rpc.ss"
+    "modes/tui.ss"
     "main.ss"))
 
 (define sah-source-files

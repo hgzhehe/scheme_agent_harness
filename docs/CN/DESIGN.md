@@ -150,21 +150,22 @@ finger tree 用一次 O(log n) 下降完成 `split-by-measure`。我们把 `pref
 |---|---|---|
 | 会话条目 | JSONL，内存里是数组 | SexprL，带缓存 token measure 的持久向量 |
 | entry id | 随机 8 位 hex，`Map` 查找 | 日志下标，完全不需要查找 |
-| 分叉 | `id`/`parent` + leaf 指针，有 `/tree` UI | 同一模型；移动游标就是全部实现，`/tree` 是 REPL 命令 |
+| 分叉 | `id`/`parent` + leaf 指针，有 `/tree` UI | 同一模型；TUI selector 与命令共用 cursor API |
 | 上下文 | `buildContextEntries` → `buildSessionContext` | `log-path` → `log-context-messages` |
 | compaction | 反向扫描累加 token | 对缓存 measure 做二分查找（分叉后有物化回退） |
 | fork | 复制到新文件 | O(1) 移动游标（同一个文件） |
 | 快照 | 未建模 | 免费，因为日志不可变 |
-| 扩展 hook | 一等公民（`pi.on`、`registerTool`…） | 同一形状，约 130 行；扩展就是 Scheme 文件 |
+| 扩展机制 | 一等公民（`pi.on`、`registerTool`…） | owner registry + plugin op/frame transaction |
 | 流式 | SSE，delta-only 的 `message_update` | SSE，`message-delta` / `thinking-delta`；拼出的消息与阻塞调用一致 |
 | 工具 | 内置 8 个，默认开 4 个；`--tools`/`--exclude-tools` | 内置 8 个，全开；同样的允许/排除列表（另有 `--no-tools`） |
 | skills / prompt 模板 | `SKILL.md` + `/名称`，渐进披露 | 同左（extend/skills.ss、extend/prompts.ss） |
 | 项目信任 | 门控项目资源 | **未实现**（已记录在案） |
-| TUI | 完整组件系统 | 行式 REPL |
+| TUI | 完整组件系统 | 第一版全屏 engine：editor、selector、viewport、widget |
+| RPC/JSON | 异步 JSONL 与增量事件 | 同步 JSONL RPC 与 canonical JSON event |
 
 sah 有意领先的地方是会话数据结构（不可变、带 measure、下标寻址）以及对“这带来了
-什么”的诚实核算。有意落后的地方是信任模型（sah 无条件加载项目扩展），以及所有
-依赖 TUI 的下游能力。
+什么”的诚实核算。有意落后的地方是信任模型、异步取消、完整 TUI component API 和
+成熟的 package 生态。
 
 ## 这为下一步解锁了什么
 
@@ -176,15 +177,14 @@ sah 有意领先的地方是会话数据结构（不可变、带 measure、下�
 
 而缺失的核心机制，按价值排序：
 
-1. **更多 hook 点（当它们能自证价值时）** —— 注册表只有 60 行，所以一旦真有需求，
-   加 `turn-start` / `turn-end` 或 `user-bash` 阶段很便宜。凭空把列表撑大没有意义：
-   pi 的约 30 种事件全都由 sah 还不具备的 TUI 与 RPC 模式触发。
-2. **流式** —— 已完成。`message-delta` / `thinking-delta` 由 provider 侧一个 SSE
-   读取器发出（`core/transport.ss` 多了一个逐行的 curl 变体），拼出来的消息与阻塞
-   调用完全一致；print 处理器边收边渲染，并在 `message-end` 时跳过整段文本。
-   下游仍缺的是**JSON 模式**：用 pi 的 delta-only `message_update` 契约消费同一条流。
-3. **取消** —— sah 的 stop reason 分类学里唯一没有生产者的那个。
-   运行中的请求无法中断，所以工具调用也没有取消信号。
+1. **Durable machine checkpoint**：显式 kont 还没有跨进程写入 journal。
+2. **取消与 writer lease**：运行中的 provider/tool 仍是同步的，同一 session 也没有
+   正式的单 writer 协议。
+3. **原子 reload 与 trust**：plugin 单次 mount 已有事务，但整批 resource reload 和
+   project resource 加载仍缺 candidate-runtime 与信任门控。
+
+流式、JSON mode、同步 JSONL RPC 和第一版 TUI 已经完成；它们现在是继续实现取消、
+异步 steering 和高级 component 生命周期的前端基线。
 
 ## 与 pi 真实实现的实测对照
 

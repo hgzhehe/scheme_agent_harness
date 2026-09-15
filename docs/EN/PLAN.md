@@ -8,18 +8,23 @@
 > notes for pi v0.84.3).
 > Baseline environment: Chez Scheme 10.5 (`scheme --script`), Windows / POSIX.
 >
-> **Divergences from this plan.** The implementation went a different way in five
+> **Divergences from this plan.** The implementation went a different way in
+> several
 > places. The plan text is left as written and the differences are recorded here
 > rather than edited into it:
 >
 > - the context file is `SYSTEM.md`; `AGENTS.scm` (§8.7 and eight other mentions)
 >   was never built, and neither was eval'd context injection
-> - `modes/` is `cli` / `print` / `oneshot` / `repl` — there is no rpc mode
+> - `modes/` now includes a fullscreen TUI, line REPL, print/JSON output and a
+>   JSONL RPC frontend over one shared session host
 > - `models.scm` was not built; the model id and base URL live in `config.scm`
 > - the provider streams (SSE, `message-delta` / `thinking-delta`); the v0 spec
 >   says non-streaming
 > - the tools are `read` / `write` / `edit` / `ls` / `grep` / `find` / `shell` /
 >   `eval`, not the `read` / `write` / `echo` / `bash` of §8
+> - plugin programs use explicit op/frame transactions and can contribute
+>   renderers and TUI widgets
+> - `config.scm` is read as an alist datum rather than evaluated as a program
 
 ---
 

@@ -35,8 +35,15 @@ hello.scm prints 42.
   `eval`. Which of them are offered is configurable (`tools` /
   `exclude-tools`, or `--tools` / `--exclude-tools` / `--no-tools`).
 - **Extensible** — ordinary Scheme extensions have owner cleanup; plugin
-  programs add import/export facades, two-phase mount, and retryable rollback. See
+  programs add import/export facades, two-phase mount, retryable rollback,
+  dynamic restart, renderers, and widgets. See
   [EXTENDING.md](EXTENDING.md).
+- **Complete session lifecycle** — one `session-host` owns new, resume, switch,
+  fork, clone, and model/thinking restoration for every frontend.
+- **Multiple frontends** — a fullscreen TUI by default, plus a portable line
+  REPL, one-shot print, structured JSON events, and JSONL RPC.
+- **Multiple render formats** — plain, ANSI, Markdown, HTML, and JSON share one
+  canonical projection; complete sessions can be exported directly.
 - **Customizable** — skills (`SKILL.md`, progressive disclosure) and prompt
   templates (`/name` with `$1`/`$@`) from `~/.sah/` or the project.
 - **Pattern-matched core** — messages, events, entries and tools are positional
@@ -44,12 +51,15 @@ hello.scm prints 42.
   ([`src/vendor/match.ss`](../../sah/src/vendor/match.ss)).
 - **Scheme-native sessions** — `SexprL`: one Scheme datum per line, readable
   with `read`, a tree of entries with a cursor (`/tree` branches in place).
+  A truncated tail recovers read-only, and `/repair` preserves a byte-for-byte
+  backup before reopening writes.
 - **Interoperable sessions** — `--export-pi` / `--import-pi` convert between
   sah's SexprL and pi's JSONL; the entry sets are isomorphic, so a round trip
   is lossless (see [DESIGN.md](DESIGN.md)).
 - **Scheme-native config** — `~/.sah/config.scm` is an alist datum.
-- **`eval`** — evaluates in a session-local Chez scope; durable definitions are
-  journaled as `scope-form` entries and replayed along the current branch.
+- **`eval`** — evaluates in a session-local Chez scope; durable definitions and
+  environment forms such as `include`/`import` are journaled as `scope-form`
+  entries and replayed along the current branch.
 - **Standalone executable** — `build.scm` compiles everything into
   `dist/sah.exe` + `dist/sah.boot` (`dist/sah` on POSIX).
 - **Offline contract tests** — no network required.
@@ -78,8 +88,10 @@ Run from source (all commands are run inside the `sah/` directory):
 ```bash
 cd sah
 scheme --script sah.ss -- "list the files in src"
+scheme --script sah.ss --tui
 scheme --script sah.ss --repl
 scheme --script sah.ss --continue -- "and now refactor it"
+scheme --script sah.ss --rpc
 ```
 
 Or build and run the standalone executable (see [INSTALL.md](INSTALL.md)):
@@ -98,10 +110,18 @@ sah [options] [--] [prompt | @file ...]
 
 | Option | Description |
 |--------|-------------|
-| `--repl` | interactive REPL mode |
+| `--tui` | fullscreen UI; also the default on an interactive terminal with no prompt |
+| `--repl` | portable line-mode UI |
+| `-p`, `--print` | one-shot mode |
+| `--mode <mode>` | `tui`, `repl`, `print`, `json`, or `rpc` |
+| `--format <format>` | `plain`, `ansi`, `markdown`, `html`, or `json` |
+| `--json` | JSON event output |
+| `--rpc` | JSONL RPC mode |
 | `-C`, `--continue` | continue the most recent session for this directory |
 | `-r`, `--resume` | pick from saved sessions for this directory |
 | `--session <path\|id>` | use a specific session file, or a full/partial session id |
+| `--no-session` | use a non-persistent in-memory session |
+| `-n`, `--name <name>` | name the session at startup |
 | `--export-pi <file>` | write the session as pi's JSONL (`-` for stdout) |
 | `--import-pi <file>` | import a pi JSONL session as a new sah session |
 | `--fork` | copy this session's current path into a new session |
@@ -291,12 +311,13 @@ sharing every entry above the branch point — nothing is copied or destroyed.
 Resume with `-C` / `--continue` (most recent for this directory), `-r` /
 `--resume` (pick from a list), or `--session <id|path>` (a full or partial
 session id, or a `.ss` file path). On exiting the REPL, sah prints
-`To resume this session: sah --session <id>`. With no prompt, `sah`, `sah -r`
-and `sah --session <id>` all enter the REPL.
+`To resume this session: sah --session <id>`. With no prompt on an interactive
+terminal, `sah` enters the TUI; use `--repl` to force line mode.
 
-Inside the REPL: `/compact [instructions]`, `/context` (what the next request
-would carry), `/tree` (list entries, move the cursor, branch here), `/label`,
-`/name`, `/fork` (a copy of this path as a new session) and `/help`. Commands are a capability, not a mode: they work in print mode too
+Interactive modes provide `/compact`, `/context`, `/tree`, `/label`, `/name`,
+`/fork`, `/clone`, `/new`, `/resume`, `/session`, `/repair`, `/export`,
+`/model`, `/thinking`, `/plugins`, `/plugin`, `/reload`, and `/help`.
+Commands are a capability, not a mode: they work in print mode too
 (`sah "/context"`).
 
 ## Data conventions
@@ -361,6 +382,7 @@ src/core/           the agent's own concepts and infrastructure:
                       runtime.ss runtime, events, and hooks
                       capability.ss owned tools, commands, and input handlers
                       plugin.ss  op algebra and transactional mounts
+                      render.ss  canonical projection, renderers, widgets, export
                       transport.ss  HTTP via curl
                       config.ss  ~/.sah paths, settings, system prompt
 src/extend/         the customization surface:
@@ -370,15 +392,17 @@ src/extend/         the customization surface:
                       loader.ss  loads extensions, skills, prompts
                       builtin-commands.ss  the commands sah ships with (incl. /fork)
 src/ai/             chat.ss + providers/openai-compatible.ss
-src/session/        log.ss (immutable entry tree) + manager.ss (SexprL files)
+src/session/        log.ss (immutable entry tree) + manager.ss (SexprL recovery/repair)
+                    + host.ss (active-session lifecycle)
                     + discovery.ss (find/pick) + pi-format.ss (pi JSONL
                     read/write, for --export-pi / --import-pi)
 src/tools/          read.ss write.ss edit.ss ls.ss grep.ss find.ss shell.ss eval.ss
 src/agent/          machine.ss (explicit control) + agent.ss (effect interpreter)
                     + context.ss + compaction.ss
                     + branch.ss (summarise an abandoned branch)
+src/tui/            terminal.ss + editor.ss + component.ss
 src/modes/          cli.ss + oneshot.ss (--export-pi/--import-pi/--fork)
-                    + repl.ss
+                    + print.ss + repl.ss + tui.ss + rpc.ss
 src/main.ss         entry point
 examples/           extension / skill / prompt-template examples
 tests/run-tests.ss  offline test suite
@@ -398,14 +422,14 @@ behind them, and how they compare with pi's.
 Data flow:
 
 ```
-main → runtime/session → machine-transition
+main → session-host → runtime/session → machine-transition
                   ──► effect interpreter: build context
                   ──► llm-chat (ai/chat.ss → providers/openai-compatible.ss
                                → core/transport.ss → curl)
                   ──► persist assistant message (session/manager.ss)
                   ──► for each tool call: runtime-call-tool (core/capability.ss)
                   ──► persist tool result, repeat / stop
-        every step is emitted as an event; the print handler renders it
+        every step is emitted as an event; TUI/print/JSON/RPC share renderers
 ```
 
 ## Development
@@ -420,9 +444,9 @@ scheme --script sah.ss --repl        # run from source
 See [INSTALL.md](INSTALL.md) for building, installing and uninstalling the
 standalone executable, and [`PLAN.md`](PLAN.md) for the roadmap.
 
-## Not here yet
+## Still evolving
 
-Interrupting and resuming a running request, multiple providers, a session-tree *UI* (the
-model and `/tree` exist), RPC/JSON modes, TUI, sandboxing, and pi's project
-*trust* model (sah loads project extensions unconditionally — see
-[EXTENDING.md](EXTENDING.md)). See the roadmap.
+The remaining hard gaps are cancellation and cross-process machine checkpoints,
+structured tool results and policy, atomic candidate-runtime reload, separating
+provider continuation state, project trust/sandboxing, and a fuller asynchronous
+RPC and advanced TUI component API. See the roadmap.

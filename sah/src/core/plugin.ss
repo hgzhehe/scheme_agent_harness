@@ -56,7 +56,8 @@
 (define (runtime-define-plugin! rt plugin)
   (let ((name (plugin-name plugin)))
     (when (runtime-plugin rt name)
-      (error 'plugin "duplicate plugin definition: ~a" name))
+      (error 'plugin
+             (format "duplicate plugin definition: ~a" name)))
     (runtime-plugins-set!
      rt (cons (list 'plugin-entry (current-owner) plugin)
               (runtime-plugins rt)))
@@ -83,7 +84,8 @@
 (define (runtime-register-op-handler! rt owner kind undo-kind requires prepare apply rollback . show)
   (when (find (lambda (handler) (eq? (handler-kind handler) kind))
               (runtime-op-handlers rt))
-    (error 'plugin "duplicate op handler: ~a" kind))
+    (error 'plugin
+           (format "duplicate op handler: ~a" kind)))
   (let ((handler
          (list 'op-handler owner kind undo-kind requires prepare apply rollback
                (if (pair? show) (car show) #f))))
@@ -100,7 +102,9 @@
                (runtime-op-handlers rt)))))
     (if handler
         handler
-        (error 'plugin "op is not in this runtime's algebra: ~s" op))))
+        (error
+         'plugin
+         (format "op is not in this runtime's algebra: ~s" op)))))
 
 (define (op-kind op) (car op))
 
@@ -146,10 +150,17 @@
                  (filter (lambda (name) (not (scope-has? scope name)))
                          requires))
                 (else
-                 (error 'plugin "bad requirements for ~s: ~s" op requires)))))
+                 (error
+                  'plugin
+                  (format
+                   "bad requirements for ~s: ~s"
+                   op requires))))))
     (when (pair? missing)
-      (error 'plugin "~a is missing required bindings for ~s: ~s"
-             owner op missing))
+      (error
+       'plugin
+       (format
+        "~a is missing required bindings for ~s: ~s"
+        owner op missing)))
     (let ((prepared ((handler-prepare handler) op rt scope owner)))
       (list 'prepared owner op source prepared
             (handler-undo-kind handler)))))
@@ -185,6 +196,10 @@
   (list 'op-register-tool name description parameters handler))
 (define (op-register-command name description handler)
   (list 'op-register-command name description handler))
+(define (op-register-renderer target key renderer)
+  (list 'op-register-renderer target key renderer))
+(define (op-register-widget placement key renderer)
+  (op-register-renderer 'widget (cons placement key) renderer))
 
 (define (install-core-op-handlers! rt)
   (runtime-register-op-handler!
@@ -241,6 +256,27 @@
      (match op
        [(op-register-command ,name ,description ,handler)
         (runtime-unregister-owned-command! rt owner name)])))
+
+  (runtime-register-op-handler!
+   rt 'core 'op-register-renderer 'registry
+   (lambda (op rt scope owner) #f)
+   (lambda (op rt scope owner) #f)
+   (lambda (op rt scope owner pre)
+     (match op
+       [(op-register-renderer ,target ,key ,renderer)
+        (runtime-register-renderer!
+         rt owner target key renderer)]))
+   (lambda (op rt scope owner pre handle)
+     (match op
+       [(op-register-renderer ,target ,key ,renderer)
+        (runtime-renderers-set!
+         rt
+         (registry-remove-first
+          (runtime-renderers rt)
+           (lambda (item)
+             (and (equal? (renderer-owner item) owner)
+                  (eq? (renderer-target item) target)
+                 (equal? (renderer-key item) key)))))])))
   rt)
 
 ;;----------------------------------------------------------------------------
@@ -282,12 +318,17 @@
   (let ((mount (runtime-mount rt name))
         (plugin (runtime-plugin rt name)))
     (cond
-      ((not plugin) (error 'plugin "not defined: ~a" name))
+      ((not plugin)
+       (error 'plugin (format "not defined: ~a" name)))
       ((memq (mount-state mount) '(linked mounted)) mount)
       ((eq? (mount-state mount) 'linking)
-       (error 'plugin "import cycle through ~a" name))
+       (error 'plugin (format "import cycle through ~a" name)))
       ((memq (mount-state mount) '(committing disposing transaction-failed dispose-failed))
-       (error 'plugin "~a is in incomplete state ~a" name (mount-state mount)))
+       (error
+        'plugin
+        (format
+         "~a is in incomplete state ~a"
+         name (mount-state mount))))
       (else
        (let ((before mount))
          (guard (e (#t (runtime-set-mount! rt name before) (raise e)))
@@ -296,13 +337,20 @@
            (for-each
             (lambda (import)
               (unless (runtime-plugin rt import)
-                (error 'plugin "~a imports missing plugin ~a" name import))
+                (error
+                 'plugin
+                 (format
+                  "~a imports missing plugin ~a"
+                  name import)))
               (runtime-link-plugin! rt import))
             (plugin-imports plugin))
            (let ((conflicts (plugin-conflicts rt (plugin-imports plugin))))
              (when (pair? conflicts)
-               (error 'plugin "~a imports duplicate exports: ~s"
-                      name conflicts)))
+               (error
+                'plugin
+                (format
+                 "~a imports duplicate exports: ~s"
+                 name conflicts))))
            (let ((scope
                   (scope-layer
                    (plugin-import-scope rt (plugin-imports plugin))
@@ -328,8 +376,11 @@
                      (lambda (export) (not (scope-local? scope export)))
                      (plugin-declared-exports plugin))))
                (when (pair? missing)
-                 (error 'plugin "~a declares undefined exports: ~s"
-                        name missing)))
+                 (error
+                  'plugin
+                  (format
+                   "~a declares undefined exports: ~s"
+                   name missing))))
              (let ((linked
                     (list 'mount name 'linked scope
                           (reverse pairs) frames)))
@@ -354,7 +405,8 @@
       (unless (memq name seen)
         (set! seen (cons name seen))
         (let ((plugin (runtime-plugin rt name)))
-          (unless plugin (error 'plugin "not defined: ~a" name))
+          (unless plugin
+            (error 'plugin (format "not defined: ~a" name)))
           (for-each visit (plugin-imports plugin))
           (unless (eq? (mount-state (runtime-mount rt name)) 'mounted)
             (set! order (cons name order))))))
@@ -543,6 +595,51 @@
                 (runtime-emit! rt `(ev plugin-dispose ,name))))))))
   #t)
 
+(define (runtime-active-plugin? rt name)
+  (let ((mount (runtime-mount rt name)))
+    (and mount
+         (memq (mount-state mount)
+               '(mounted transaction-failed dispose-failed))
+         #t)))
+
+(define (runtime-plugin-dependent-closure rt name)
+  (let ((seen '()))
+    (define (visit current)
+      (unless (memq current seen)
+        (set! seen (append seen (list current)))
+        (for-each
+         (lambda (entry)
+           (let* ((candidate
+                   (plugin-name
+                    (plugin-entry-plugin entry)))
+                  (plugin
+                   (plugin-entry-plugin entry)))
+             (when (and (runtime-active-plugin?
+                         rt candidate)
+                        (memq current
+                              (plugin-imports plugin)))
+               (visit candidate))))
+         (reverse (runtime-plugins rt)))))
+    (visit name)
+    seen))
+
+(define (runtime-restart-plugin! rt name)
+  (unless (runtime-plugin rt name)
+    (error 'plugin (format "not defined: ~a" name)))
+  (let ((active
+         (filter
+          (lambda (candidate)
+            (runtime-active-plugin? rt candidate))
+          (runtime-plugin-dependent-closure rt name))))
+    (runtime-dispose-plugin! rt name)
+    (for-each
+     (lambda (candidate)
+       (runtime-mount-plugin! rt candidate))
+     (if (null? active) (list name) active))
+    (runtime-emit!
+     rt `(ev plugin-restart ,name ,active))
+    (runtime-mount rt name)))
+
 (define (runtime-mount-all-plugins! rt)
   (for-each
    (lambda (item)
@@ -601,6 +698,8 @@
   (runtime-mount-plugin! (require-runtime) name))
 (define (plugin-dispose! name)
   (runtime-dispose-plugin! (require-runtime) name))
+(define (plugin-restart! name)
+  (runtime-restart-plugin! (require-runtime) name))
 (define (plugin-mount-all!)
   (runtime-mount-all-plugins! (require-runtime)))
 (define (plugin-dispose-all!)

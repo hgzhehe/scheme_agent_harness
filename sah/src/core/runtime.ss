@@ -20,6 +20,7 @@
           (mutable skills)
           (mutable prompts)
           (mutable extensions)
+          (mutable renderers)
           (mutable chat-override)))
 
 (define (runtime-new config)
@@ -27,7 +28,7 @@
                 (make-runtime-root-scope)
                 (make-session-root-scope)
                 '() '() '() '() '() 0
-                '() '() '() '() '() '() #f))
+                '() '() '() '() '() '() '() #f))
 
 (define current-runtime (make-parameter #f))
 (define current-session (make-parameter #f))
@@ -84,6 +85,8 @@
 ;; (STAGE KIND FAILURE-POLICY)
 (define hook-specs
   '((session-start effect fail-open)
+    (session-before-switch veto fail-closed)
+    (session-shutdown effect fail-open)
     (before-agent-start transform fail-open)
     (input transform fail-open)
     (before-request transform fail-open)

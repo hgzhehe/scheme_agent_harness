@@ -342,6 +342,7 @@
               (runtime-input-handlers rt)))
   (runtime-remove-hook-owner! rt owner)
   (runtime-remove-op-handler-owner! rt owner)
+  (runtime-remove-renderer-owner! rt owner)
   #t)
 
 (define (runtime-clear-dynamic-capabilities! rt)
@@ -358,4 +359,5 @@
    rt (filter (lambda (handler) (equal? (list-ref handler 1) 'core))
               (runtime-input-handlers rt)))
   (runtime-clear-dynamic-op-handlers! rt)
+  (runtime-clear-dynamic-renderers! rt)
   rt)

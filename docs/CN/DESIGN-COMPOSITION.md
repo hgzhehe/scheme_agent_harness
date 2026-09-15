@@ -135,6 +135,31 @@ extension loader 会在所有文件加载后调用 mount-all。
 
 注册 slash command。
 
+### `op-register-renderer`
+
+```scheme
+(op-register-renderer target key
+  (lambda (value format width)
+    ...))
+```
+
+`target` 是 `message`、`entry`、`event` 或 `widget`。renderer 返回逻辑行列表；返回
+`#f` 时继续使用内置 renderer。异常会记录并回退，不会中断 agent。
+
+同一 `target/key` 的后注册定义遮蔽旧定义。dispose 当前 plugin 后，旧 renderer
+重新可见。
+
+### `op-register-widget`
+
+```scheme
+(op-register-widget 'footer 'build-status
+  (lambda (context format width)
+    (list "build: clean")))
+```
+
+这是 widget target 的便捷形式。placement 当前支持 `header`、`above-editor`、
+`below-editor` 和 `footer`。widget 与其他 registry op 一样进入 transaction frame。
+
 ## 6. 自定义 op
 
 ```scheme
@@ -178,6 +203,7 @@ extension loader 会在所有文件加载后调用 mount-all。
 (plugin-mount! 'project-facts)
 (plugin-list)
 (plugin-frames 'project-facts)
+(plugin-restart! 'project-facts)
 (plugin-dispose! 'project-facts)
 ```
 
@@ -199,6 +225,9 @@ dispose-failed
 
 mount 期间的 `plugin-op` 和 `plugin-mount` event 会缓冲到整个事务提交之后。观察者不会
 看到最终回滚掉的半成品安装。
+
+restart 会先 dispose 目标以及当前 active dependents，再恢复原 active closure。这样
+dependency 更新不会留下仍标记为 mounted、却引用旧 scope/frame 的 dependent。
 
 ## 8. Hook 约定
 
@@ -241,7 +270,19 @@ guard/veto hook 的异常按 fail-closed 处理；普通 transform/effect hook �
 8. 重新注册当前 session commands。
 
 一个 extension 文件 load 失败时，该文件已经注册的工具、hook、command、input handler、
-op handler 和 plugin definition 都会被删除，其他文件继续加载。
+op handler、renderer、widget 和 plugin definition 都会被删除，其他文件继续加载。
+
+运行时也可以用：
+
+```text
+/plugins
+/plugin inspect NAME
+/plugin mount NAME
+/plugin dispose NAME
+/plugin restart NAME
+```
+
+这些命令是调试和运维入口，不改变 plugin transaction 的底层语义。
 
 ## 10. Session eval 与 plugin scope
 

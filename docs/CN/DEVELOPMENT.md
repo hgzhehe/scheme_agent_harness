@@ -32,16 +32,20 @@ sah 的目标是保持一个能被完整理解的小内核。新增代码应优�
 | `src/core/runtime.ss` | runtime record、events、hooks |
 | `src/core/capability.ss` | tools、commands、input handlers、owner cleanup |
 | `src/core/plugin.ss` | plugin graph、op algebra、mount/dispose transaction |
+| `src/core/render.ss` | canonical projection、renderer、widget、导出格式 |
 | `src/core/config.ss` | config 和 system prompt |
 | `src/core/transport.ss` | curl transport |
 | `src/extend/` | extension、skill、prompt 和 builtin commands |
 | `src/ai/` | provider codec 与 dispatch |
-| `src/session/` | log、persistence、discovery、pi format |
+| `src/session/manager.ss` | SexprL persistence、恢复、repair、会话元数据 |
+| `src/session/host.ss` | active session 生命周期和所有 mode 共用的控制入口 |
+| `src/session/` 其余文件 | log、discovery、pi format |
 | `src/tools/` | 内置工具 datum |
 | `src/agent/machine.ss` | 纯控制状态转换 |
 | `src/agent/agent.ss` | effect interpreter 与 driver |
 | `src/agent/` 其余文件 | context、compaction、branch |
-| `src/modes/` | CLI、REPL、print、one-shot |
+| `src/tui/` | terminal adapter、editor、selector/component |
+| `src/modes/` | CLI、TUI、REPL、print、JSONL RPC、one-shot |
 | `src/main.ss` | bootstrap 与生命周期 |
 
 `manifest.ss` 是 source、tests、bench 和 build 共用的唯一源码列表。新增文件时先确定它
@@ -66,7 +70,8 @@ runtime 初始化统一写在 bootstrap：
 (install-resource-input-handlers! rt)
 ```
 
-随后 finalize config、加载动态资源、创建 session。
+随后 finalize config、加载动态资源、创建 session 和 `session-host`。mode 不得直接关闭、
+替换或重放 session；这些操作全部通过 host。
 
 ## 4. Runtime API 约定
 
@@ -78,6 +83,9 @@ runtime 初始化统一写在 bootstrap：
 (session-load rt path)
 (runtime-call-tool rt session name args)
 (runtime-mount-plugin! rt name)
+(runtime-restart-plugin! rt name)
+(session-host-switch! host next reason)
+(session-host-run-agent! host prompt)
 ```
 
 扩展边界可以使用：
@@ -224,7 +232,41 @@ scope。
 
 它们会同步重建 lexical scope。
 
-## 9. 修改 agent 控制
+从文件恢复时有两种不同失败：
+
+- 最后一行是不完整 datum：恢复完整前缀，session 标记为 recovered/read-only；
+- 中间行或完整行语法损坏：拒绝加载，不能当成正常 EOF。
+
+read-only recovered session 必须先调用 `session-repair!`。repair 先保存原文件字节备份，
+再重写完整 journal，成功后才恢复可写。不要在读取路径中静默修复用户文件。
+
+## 9. Renderer、Widget 与前端
+
+新增格式或显示行为时，优先扩展 `core/render.ss`，不要在 mode 中复制 message/event
+分支。注册入口：
+
+```scheme
+(register-message-renderer! 'assistant renderer)
+(register-entry-renderer! 'message renderer)
+(register-event-renderer! 'tool-start renderer)
+(register-widget! 'footer 'build-status widget)
+```
+
+renderer 接收 canonical datum、format 和 width 等上下文，返回字符串或行。它必须：
+
+- 不修改 session、runtime 或 config；
+- 输出宽度受调用方约束；
+- 对不认识的 datum 返回 `#f`，让内置 renderer 接管；
+- 允许失败回退，不能依赖异常控制核心流程。
+
+plugin 中使用 `op-register-renderer` / `op-register-widget`，让注册动作进入 frame 和
+rollback。普通 extension 可直接调用注册 API，由 extension owner 清理。
+
+TUI 组件只处理局部交互状态。提交 prompt、执行 slash command、切换 session、修改
+model/thinking 都调用 `session-host`。RPC 也遵循相同规则，stdout 只写 JSONL；调试输出
+写 stderr。
+
+## 10. 修改 agent 控制
 
 控制决策写在 `agent/machine.ss`，effect 写在 `agent/agent.ss`。
 
@@ -241,7 +283,7 @@ scope。
 不要在 `machine-transition` 或 `machine-resume` 中执行 IO。也不要在 interpreter 中
 复制控制分支，控制选择应回到 machine。
 
-## 10. Provider 开发
+## 11. Provider 开发
 
 provider adapter 负责：
 
@@ -262,7 +304,7 @@ provider adapter 不负责：
 网络错误应保留足够诊断。context overflow 必须能被 `context-overflow?` 归类，让 machine
 决定一次 compact-and-retry。
 
-## 11. Extension loader 与 reload
+## 12. Extension loader 与 reload
 
 每个 extension 文件的 owner 是其绝对路径。加载失败时必须删除该 owner 的：
 
@@ -271,7 +313,8 @@ provider adapter 不负责：
 - hook；
 - input handler；
 - op handler；
-- plugin definition 和 mount。
+- plugin definition 和 mount；
+- renderer 和 widget。
 
 reload 顺序：
 
@@ -287,7 +330,7 @@ dispose plugins
 
 本机 provider、代理、密钥和调试配置不得写入 tracked 源码或示例配置。
 
-## 12. 测试策略
+## 13. 测试策略
 
 运行：
 
@@ -305,18 +348,25 @@ scheme --script tests/run-tests.ss
 - hook failure policy；
 - session scope replay 和 branch；
 - durable eval 原子性；
+- session 尾部恢复、只读保护与 repair 备份；
+- session host start/stop/switch 和 model/thinking 恢复；
 - machine effect/kont 与失败生命周期；
 - context overflow retry；
 - plugin export facade；
 - prepare-before-commit；
 - commit rollback；
 - rollback failure residual state；
+- renderer/widget owner cleanup、失败回退和 dependency restart；
+- plain/Markdown/HTML/JSON projection；
+- editor、selector、小终端 layout、Windows 控制台就绪保护和主屏 scrollback；
+- provider reasoning delta 到 TUI 临时显示区的事件链；
 - extension load cleanup；
 - source manifest。
 
-测试数量不是目标。每个测试都应对应一个跨模块不变量或已经发生过的故障。
+当前离线套件有 89 个契约测试。测试数量不是目标；每个测试都应对应一个跨模块不变量
+或已经发生过的故障。
 
-## 13. 构建
+## 14. 构建
 
 ```powershell
 $env:SAH_RUNTIME_EXE='C:\path\to\scheme.exe'
@@ -340,7 +390,7 @@ dist/sah.exe --usage
 构建脚本会把源码定义装入 interaction environment，供 plugin program 使用。session
 `eval` 使用独立的 Chez root，不依赖该环境。
 
-## 14. 提交前检查
+## 15. 提交前检查
 
 ```bash
 scheme --script tests/run-tests.ss

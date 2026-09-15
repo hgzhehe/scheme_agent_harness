@@ -24,11 +24,11 @@
   (list 'await effect continuation))
 
 (define (machine-transition machine)
-  (let ((session (agent-machine-session machine))
-        (config (agent-machine-config machine))
-        (step (agent-machine-step-number machine))
-        (payload (agent-machine-payload machine)))
-    (case (agent-machine-phase machine)
+  (match machine
+    [(done ,reply) machine]
+    [(failed ,reason) machine]
+    [(machine ,phase ,session ,config ,step ,payload)
+     (case phase
       ((begin)
        (machine-await
         `(effect begin ,payload)
@@ -67,7 +67,9 @@
         `(kont finished ,payload)))
       ((done) `(done ,payload))
       (else `(failed ,(format "unknown machine phase: ~s"
-                              (agent-machine-phase machine)))))))
+                              phase))))]
+    [,other
+     `(failed ,(format "invalid machine state: ~s" other))]))
 
 (define (machine-resume continuation result)
   (match continuation

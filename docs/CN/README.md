@@ -32,20 +32,28 @@ hello.scm prints 42.
   `eval`。其中哪些真正提供给模型是可配的（`tools` / `exclude-tools`，或
   `--tools` / `--exclude-tools` / `--no-tools`）。
 - **可扩展** —— 普通 Scheme extension 支持 owner 清理；plugin program 还提供
-  import/export facade、两阶段 mount 和可重试 rollback。见
+  import/export facade、两阶段 mount、可重试 rollback、动态 restart，以及
+  renderer/widget 注册。见
   [EXTENDING.md](EXTENDING.md)。
+- **完整会话生命周期** —— `session-host` 统一 new、resume、switch、fork、clone、
+  model/thinking 状态恢复；所有前端共享同一套生命周期。
+- **多前端** —— 默认全屏 TUI，另有便携行式 REPL、one-shot print、结构化 JSON 和
+  JSONL RPC。
+- **多格式渲染** —— plain、ANSI、Markdown、HTML、JSON 都从同一 canonical datum
+  projection 生成；HTML/Markdown/JSON 可直接导出完整会话。
 - **可定制** —— skills（`SKILL.md`，渐进披露）与 prompt templates
   （`/名称`，支持 `$1`/`$@`），放在 `~/.sah/` 或项目里。
 - **模式匹配内核** —— 消息、事件、entry、工具都是位置化 tagged list；
   `ai/` / `agent/` / `session/` / `tools/` 用 `match` 分发
   （[`src/vendor/match.ss`](../../sah/src/vendor/match.ss)）。
 - **Scheme 原生会话** —— `SexprL`：每行一个 Scheme datum，可用 `read` 读回，
-  结构是树形（`id`/`parent`，id 即下标），移动游标就是分叉。
+  结构是树形（`id`/`parent`，id 即下标），移动游标就是分叉。尾部截断可只读恢复，
+  `/repair` 会先备份原始文件再恢复写入。
 - **会话可互通** —— `--export-pi` / `--import-pi` 在 sah 的 SexprL 与 pi 的
   JSONL 之间互转；两边 entry 集合同构，所以往返无损（见 [DESIGN.md](DESIGN.md)）。
 - **Scheme 原生配置** —— `~/.sah/config.scm` 就是一个 alist。
-- **`eval`** —— 在 session-local Chez scope 中求值；durable definition 写入
-  `scope-form`，按当前会话分支重放。
+- **`eval`** —— 在 session-local Chez scope 中求值；durable definition 以及
+  `include`/`import` 等环境表单写入 `scope-form`，按当前会话分支重放。
 - **独立可执行文件** —— `build.scm` 把一切编译成 `dist/sah.exe` + `dist/sah.boot`（POSIX 上是 `dist/sah`）。
 - **离线测试** —— 完整测试套件不需要联网。
 
@@ -73,8 +81,10 @@ hello.scm prints 42.
 ```bash
 cd sah
 scheme --script sah.ss -- "list the files in src"
+scheme --script sah.ss --tui
 scheme --script sah.ss --repl
 scheme --script sah.ss --continue -- "and now refactor it"
+scheme --script sah.ss --rpc
 ```
 
 或者编译并运行独立可执行文件（见 [INSTALL.md](INSTALL.md)）：
@@ -93,10 +103,18 @@ sah [options] [--] [prompt | @file ...]
 
 | 选项 | 说明 |
 |------|------|
-| `--repl` | 交互模式 |
+| `--tui` | 全屏终端界面；交互终端且无 prompt 时也是默认模式 |
+| `--repl` | 便携行式交互模式 |
+| `-p`, `--print` | one-shot 模式 |
+| `--mode <mode>` | `tui`、`repl`、`print`、`json` 或 `rpc` |
+| `--format <format>` | `plain`、`ansi`、`markdown`、`html` 或 `json` |
+| `--json` | JSON event 输出 |
+| `--rpc` | JSONL RPC 模式 |
 | `-C`, `--continue` | 续接本目录最近一次会话 |
 | `-r`, `--resume` | 从本目录已保存的会话里选一个 |
 | `--session <path|id>` | 指定会话文件，或完整/部分会话 id |
+| `--no-session` | 使用不落盘的内存会话 |
+| `-n`, `--name <name>` | 启动时命名会话 |
 | `--export-pi <file>` | 把会话写成 pi 的 JSONL（`-` 表示 stdout） |
 | `--import-pi <file>` | 导入 pi 的 JSONL 会话，生成一个新的 sah 会话 |
 | `--fork` | 把当前会话的这条路径复制成一个新会话 |
@@ -273,13 +291,13 @@ EOF
 的所有 entry 都是共享的——不复制、不销毁任何东西。
 
 续接方式：`-C` / `--continue`（本目录最近一次）、`-r` / `--resume`（从列表里选）、
-`--session <id|path>`（完整或部分会话 id，或 `.ss` 文件路径）。退出 REPL 时 sah 会
-打印 `To resume this session: sah --session <id>`。不带 prompt 时，`sah`、`sah -r`、
-`sah --session <id>` 都会直接进入 REPL。
+`--session <id|path>`（完整或部分会话 id，或 `.ss` 文件路径）。退出行式 REPL 时 sah
+会打印 `To resume this session: sah --session <id>`。在交互终端不带 prompt 时，
+`sah` 默认进入 TUI；可用 `--repl` 强制行式模式。
 
-REPL 内：`/compact [instructions]`、`/context`（下一次请求会带什么）、`/tree`
-（列出 entry、移动游标即分叉）、`/label`、`/name`、`/fork`（把这条路径复制成新会话）、
-`/help`。命令是**能力**而不是模式：
+交互模式内置 `/compact`、`/context`、`/tree`、`/label`、`/name`、`/fork`、
+`/clone`、`/new`、`/resume`、`/session`、`/repair`、`/export`、`/model`、
+`/thinking`、`/plugins`、`/plugin`、`/reload` 和 `/help`。命令是**能力**而不是模式：
 在 print 模式下同样可用（`sah "/context"`）。
 
 ## 数据约定
@@ -342,6 +360,7 @@ src/core/           agent 自身的概念与基础设施：
                       runtime.ss runtime、事件与 hook
                       capability.ss  tool/command/input 所有权
                       plugin.ss  op algebra 与事务挂载
+                      render.ss  canonical projection、renderer、widget、导出
                       transport.ss  curl 发 HTTP
                       config.ss  ~/.sah 路径、设置、system prompt
 src/extend/         定制面：
@@ -351,15 +370,17 @@ src/extend/         定制面：
                       loader.ss  加载扩展、技能、模板
                       builtin-commands.ss  内置命令（含 /fork）
 src/ai/             chat.ss + providers/openai-compatible.ss
-src/session/        log.ss（不可变 entry 树）+ manager.ss（SexprL 文件）
+src/session/        log.ss（不可变 entry 树）+ manager.ss（SexprL、恢复/repair）
+                    + host.ss（active session 生命周期）
                     + discovery.ss（查找/选择）+ pi-format.ss（读写 pi 的
                     JSONL，供 --export-pi / --import-pi 使用）
 src/tools/          read.ss write.ss edit.ss ls.ss grep.ss find.ss shell.ss eval.ss
 src/agent/          machine.ss（显式控制）+ agent.ss（effect interpreter）
                     + context.ss + compaction.ss
                     + branch.ss（为被放弃的分支生成摘要）
+src/tui/            terminal.ss + editor.ss + component.ss
 src/modes/          cli.ss + oneshot.ss（--export-pi/--import-pi/--fork）
-                    + print.ss + repl.ss
+                    + print.ss + repl.ss + tui.ss + rpc.ss
 src/main.ss         入口
 examples/           扩展 / 技能 / 提示模板 示例
 tests/run-tests.ss  离线测试套件
@@ -384,14 +405,14 @@ bench/              数据结构与规模测量
 数据流：
 
 ```
-main → runtime/session → machine-transition
+main → session-host → runtime/session → machine-transition
                   ──► effect interpreter：构建上下文
                   ──► llm-chat（ai/chat.ss → providers/openai-compatible.ss
                                → core/transport.ss → curl）
                   ──► 落盘 assistant 消息（session/manager.ss）
                   ──► 对每个 tool call：runtime-call-tool（core/capability.ss）
                   ──► 落盘 tool 结果，重复 / 停止
-        每一步都作为事件发射；打印处理器负责渲染
+        每一步都作为事件发射；renderer registry 供 TUI/print/JSON/RPC 共享
 ```
 
 ## 开发
@@ -405,8 +426,9 @@ scheme --script sah.ss --repl        # 从源码运行
 
 编译、安装、卸载见 [INSTALL.md](INSTALL.md)，路线图见 [`PLAN.md`](PLAN.md)。
 
-## 尚未实现
+## 仍在演进
 
-中断与跨进程恢复、多 provider、会话树 *UI*（数据模型和 `/tree` 已有）、RPC/JSON
-模式、TUI、沙箱，以及 pi 的项目*信任*机制（sah 无条件加载项目扩展，见
-[EXTENDING.md](EXTENDING.md)）。见路线图。
+当前主要 gap 是运行中取消与跨进程 machine checkpoint、结构化 tool result/policy、
+原子 candidate-runtime reload、provider continuation state 分离、项目 trust/sandbox，
+以及更完整的异步 RPC 和高级 TUI component API。见
+[GAP-IMPLEMENTATION.md](GAP-IMPLEMENTATION.md)。

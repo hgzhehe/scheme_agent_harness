@@ -1,247 +1,216 @@
 # sah 当前 gap 与实施路线
 
 > 快照日期：2026-09-14
-> 已完成一次内核级重写。本文只列当前实现之后仍然存在的 gap，不保留旧 M0 叙述。
+> 本文从当前可用版本继续向前，只列尚未闭合的工程问题。
 
-## 1. 已经闭合的核心
+## 1. 当前基线
 
-本次重写已完成：
+当前版本已经形成一条可实际使用的主路径：
 
-- 删除 process-global tool、command、hook、event、plugin registry；
-- 引入显式 runtime ownership；
-- 内置工具改为纯 datum 和显式 bootstrap；
-- agent loop 改为 defunctionalized machine + effect interpreter；
-- context overflow 改为显式 compact-and-retry transition；
-- session `eval` 接入独立 lexical scope；
-- durable `define` / `define-syntax` / `set!` 写入 `scope-form`；
-- branch、resume、fork 按当前 journal path 重放 scope；
-- durable eval 与 journal append 形成失败恢复事务；
-- plugin dependency graph 与 lexical export facade 分离；
-- mount 覆盖完整 dependency subgraph；
-- 所有 op 先 prepare，再统一 commit；
-- commit 失败逆序 rollback；
-- rollback/dispose 失败保留 residual frame 和可重试状态；
-- capability registry 使用 owner shadow stack；
-- extension load failure 清除全部 owned definition；
-- reload 清除动态 op handler 和 capability；
-- generated system prompt 在 extension tool 加载后刷新；
-- pi JSONL round trip 保留 scope-form；
-- source、tests、build 共用 manifest；
-- Windows standalone bundle 构建和 smoke check 通过。
+- runtime 独占 tool、command、hook、event、plugin、renderer 和 widget registry；
+- agent loop 是 defunctionalized machine，effect 与 continuation 都是 datum；
+- provider、tool、hook 和 journal IO 只由 effect interpreter 执行；
+- session host 统一 start、stop、switch、new、resume、fork、clone 和 run；
+- model、provider、thinking level 作为当前 session path 的 durable metadata；
+- SexprL journal 支持树形分支、session-local scope replay、尾部截断恢复和显式 repair；
+- plugin 支持 dependency/export facade、全图 prepare、事务 mount、逆序 rollback、
+  residual retry、dispose 和 dependent-aware restart；
+- plugin 与 extension 都能注册 renderer 和 TUI widget，并由 owner 自动清理；
+- TUI 已具备流式 transcript、多行 editor、history、session/tree selector、状态行和
+  plugin widget placement；
+- plain、ANSI、Markdown、HTML、JSON 使用同一 canonical projection；
+- JSONL RPC 支持 prompt、command、state、session 切换、fork、模型设置和导出；
+- source、test、build 共用 manifest，Windows standalone bundle 已通过真实 provider
+  冒烟。
 
-这些机制已经有离线契约测试，不再属于路线图。
+这些能力属于基线，不再以“未来目标”描述。
 
-## 2. P0：让 machine 可恢复
+## 2. P0：Durable machine checkpoint
 
 ### 现状
 
-machine、effect、kont 已经是显式 datum，但 continuation 中仍直接携带 session record 和
-config，且没有写入 journal。
-
-### Gap
-
-进程中断时，只能恢复已提交历史，不能回答：
-
-- 当时处于哪个 phase；
-- 正在等待哪个 provider/tool effect；
-- 该 effect 是否已经执行但结果尚未 commit；
-- 是否可以安全重试。
+machine、effect、kont 已经显式数据化，但 continuation 仍携带进程内 session/config
+对象，也没有写入 journal。当前只能恢复已提交历史，不能恢复正在等待的控制状态。
 
 ### 实施
 
-1. 将 machine state 中的 runtime object reference 改为稳定 id；
-2. 为 effect 分配 operation id；
+1. machine 中只保存稳定 session id、config revision 和 path cursor；
+2. 给每个 effect 分配 operation id 和 retry class；
 3. journal 增加 `machine-checkpoint`、`effect-started`、`effect-committed`；
-4. 区分可重试 effect 与最多一次 effect；
-5. 启动时从最后 checkpoint 恢复；
-6. 对未完成 provider/tool effect 应用明确恢复策略；
-7. 增加 crash-point fault injection。
+4. provider read-only effect 与可能产生副作用的 tool effect 使用不同恢复策略；
+5. 启动时解释最后一个未完成 checkpoint，而不是猜测是否重试；
+6. 在每个 await/commit 边界加入 crash fault injection。
 
 ### 验收
 
-- 在每个 await 前后强制退出都能得到确定恢复结果；
-- tool 不会因为模糊重试而重复产生不可逆副作用；
-- 恢复后的上下文、step 和 journal parent 与不中断运行一致。
+- 任意 checkpoint 前后退出都得到确定恢复结果；
+- 非幂等 tool 不会因模糊重试重复执行；
+- 恢复后的 step、cursor、context 和不中断执行一致。
 
-## 3. P0：取消与并发控制
+## 3. P0：取消、会话写纪律与异步前端
 
 ### 现状
 
-machine 可以表达等待，但 interpreter 使用同步 provider、tool 调用。
+TUI 和 RPC 已经建立，但 provider/tool interpreter 仍同步。一个 runtime 也没有正式的
+session writer lease。
 
 ### 实施
 
 - effect interpreter 接受 cancellation token；
-- provider transport 支持终止子进程和 stream；
-- shell/tool effect 明确取消语义；
+- transport 能终止 curl 进程和未读完的 stream；
 - machine 增加 `cancelled` terminal state；
-- lifecycle 保证 `agent-end` / `agent-settled` 恰好一次；
-- 同一个 session 同时只允许一个 writer，或引入显式 revision check。
+- `agent-end` / `agent-settled` 在 success、failure、cancel 三条路径都恰好一次；
+- 每个 session file 只有一个 writer lease，或 append 前做 revision compare；
+- RPC 增加 request id、cancel 和异步 event envelope；
+- TUI 的 Esc/Ctrl-C 先取消当前 run，再决定是否退出进程。
 
 ### 验收
 
-- provider、shell、tool batch 三处都能取消；
-- 取消后 journal 保持完整 datum；
-- 不留下无法关闭的 port/process；
-- 下一次 run 可继续使用同一 session。
+- provider、shell 和 tool batch 都能取消；
+- cancel 后没有悬挂 process/port，也没有半条 journal datum；
+- RPC 可在流式 prompt 期间发送 cancel；
+- 同一 session 的两个 writer 不会静默覆盖或交错。
 
-## 4. P0：Session recovery mode
+## 4. P1：结构化 tool contract
 
 ### 现状
 
-损坏 datum 会给出文件、datum index 和可用 byte offset；完整 rewrite 使用 staging 和
-backup。但读取仍是“完整成功或抛错”。
+schema 会发送给模型，但本地没有统一 validation；tool result 仍主要是
+`(values string error?)`，大输出和副作用策略没有统一表示。
 
 ### 实施
 
-- `healthy`、`recovered`、`read-only`、`corrupt` 状态；
-- 识别仅尾部截断和中段损坏；
-- 保留 last-good offset；
-- 提供显式 repair 命令，不在读取时静默改文件；
-- session header 记录格式 feature；
-- recovery 事件进入可观察面。
+- 在 `runtime-call-tool` 前验证项目使用到的 JSON Schema 子集；
+- tool result 改为 tagged datum，区分 success、invalid-arguments、blocked、
+  execution-error 和 cancelled；
+- 大输出落 artifact store，消息只持有摘要和 reference；
+- shell/write/edit 声明 effect class、cwd policy 和 approval policy；
+- renderer 与 RPC 对所有 result kind 提供稳定 projection。
 
 ### 验收
 
-- 尾部半条 datum 可只读恢复到 last-good entry；
-- 中段损坏不会误当 EOF；
-- repair 前原文件有完整备份；
-- 恢复状态在 CLI 中可见。
+- 不合法参数不会进入 handler；
+- provider、journal、TUI、JSON 对错误种类理解一致；
+- 大结果不会无界占用 context 或 RPC 单行。
 
-## 5. P1：Provider state 与 usage 分离
+## 5. P1：Provider continuation state 独立
 
-### 现状
+OpenAI Responses 的 opaque output 目前借存在 usage alist 的 `responses-output` 中。
+token accounting 与 provider continuation state 应分离。
 
-OpenAI Responses 的 opaque output 保存在 usage alist 的 `responses-output` 中。
+建议把 assistant message 演进为带显式 metadata 的兼容形状，或新增 tagged metadata
+entry，并同步：
 
-### 问题
+- journal migration；
+- context projection；
+- compaction；
+- pi import/export；
+- provider adapter；
+- JSON/HTML export。
 
-token accounting 与 provider continuation state 是两个概念。混在一起会让：
+切换 provider 时必须明确旧 continuation state 是丢弃、保留但不发送，还是经 adapter
+迁移，不能由某个 codec 隐式决定。
 
-- compaction 代码知道 provider 私有字段；
-- session format 难以演进；
-- 跨 provider resume 语义不清楚。
-
-### 实施
-
-将 assistant message 演进为显式 metadata：
-
-```scheme
-(msg assistant CONTENT CALLS STOP USAGE PROVIDER-STATE)
-```
-
-或引入向后兼容的 tagged metadata entry。需要同步 migration、pi conversion、context
-projection 和 provider adapter。
-
-## 6. P1：Plugin 生命周期完善
+## 6. P1：Plugin activation 与原子 reload
 
 ### 已有
 
-依赖图解析、export facade、两阶段 mount、逆序 rollback、residual retry 已成立。
+单次 dependency closure mount 已经全量 prepare；失败会 rollback；dispose/restart 会
+处理 active dependents；owner cleanup 覆盖 registry、renderer 和 widget。
 
 ### 剩余
 
-1. dependency activation 目前没有显式 reference count；
-2. plugin definition owner 与 mount request owner 尚未分开；
-3. 整批 resource reload 不是跨所有文件的单一事务；
-4. frame 没有时间戳和 journal projection；
-5. 自定义 op constructor 仍依赖 runtime root 中可见的 Scheme binding；
-6. mounted plugin 的 handler algebra 不能动态替换，当前通过 kind 唯一性避免歧义。
-
-### 实施建议
-
-- 增加 activation lease，而不是简单 mounted boolean；
-- mount request 记录 root 与 dependency reason；
-- resource loader 先解析全部文件到 candidate runtime，再原子交换；
-- 为 frame 增加 stable id 和 lifecycle event id；
-- 提供显式 plugin DSL binding table。
-
-## 7. P1：结构化 tool contract
-
-### 现状
-
-tool schema 会发送给模型，但本地只检查少量 handler 自己关心的字段。
+- dependency activation 没有 reference-counted lease；
+- plugin definition owner 与 mount request owner 尚未分开；
+- 多个 extension 文件的 reload 不是一个整体事务；
+- frame 没有 stable id、timestamp 和可选 journal projection；
+- mounted plugin 的 op handler algebra 不能热替换。
 
 ### 实施
 
-- 在 `runtime-call-tool` 前统一校验 JSON Schema 子集；
-- 区分 invalid-arguments、blocked、execution-error、cancelled；
-- tool result 使用结构化 datum，而不是 `(values string boolean)`；
-- 为大输出提供 artifact reference；
-- 对 write/edit/shell 增加可配置 policy。
+1. mount request 记录 root、request owner 和 dependency reason；
+2. dependency 使用 activation lease，只有最后一个 lease 释放后才 dispose；
+3. 把全部 extension/plugin 读入 candidate runtime；
+4. candidate 完成 link、prepare 和验证后原子替换 active dynamic layer；
+5. 旧 layer 在新 layer 生效后逆序 dispose；
+6. reload 失败继续使用完整旧 layer。
 
-## 8. P1：项目 trust 与能力策略
+## 7. P1：项目 trust 与 capability policy
 
-### 现状
+项目 `.sah/extensions` 和 session `eval` 都以当前用户权限执行。词法隔离不是安全沙箱。
 
-项目 `.sah/extensions` 会在本机用户权限下直接 load。session eval 也不是安全沙箱。
-
-### 实施
+需要：
 
 - canonical cwd trust store；
-- global extension 与 project extension 分阶段加载；
-- 非交互模式明确默认策略；
-- project extension 在 trust 通过前不可注册 effect；
-- shell/write/edit capability policy；
-- 文档明确“lexical isolation 不等于 security sandbox”。
+- global resource 与 project resource 分阶段加载；
+- 非交互模式的明确默认 trust policy；
+- 未信任项目不可注册或执行 effect capability；
+- shell/write/edit 的路径、命令和网络 policy；
+- TUI、REPL 与 RPC 共用同一个 policy decision protocol。
 
-## 9. P2：RPC、TUI 与多前端
+这项工作应早于 package manager 或公开分发生态。
 
-当前 event bus 和 machine 已经允许新增前端，但还没有稳定协议。
+## 8. P2：TUI 与 RPC 产品化
 
-顺序建议：
+当前 TUI 是可工作的第一版 engine，不是 pi TUI API 的完整复刻。后续应围绕真实工作流
+演进：
 
-1. 定义 versioned event envelope；
-2. 增加 JSONL RPC driver；
-3. 增加 command request/reply；
-4. 暴露 machine state 和 pending effect；
-5. 最后构建 TUI。
+- overlay/modal component 与焦点栈；
+- 统一 keymap、theme token 和 resize event；
+- tool detail 折叠、diff/artifact viewer；
+- transcript virtualization，避免超长 session 全量重绘；
+- plugin component 生命周期，而不只是 placement widget；
+- versioned RPC envelope、request id、增量 event 和 capability discovery；
+- PTY 驱动的 Windows/POSIX 终端回归。
 
-不要让 TUI 直接调用 session 内部 mutation。所有前端都应使用同一 driver/runtime API。
+前端仍不得直接修改 session internals；新增交互先扩展 host/runtime protocol。
 
-## 10. P2：测试深化
+## 9. P2：验证深化
 
-当前 42 个测试覆盖核心不变量。下一步不是恢复上千个细碎断言，而是增加：
+当前 89 个离线契约测试覆盖主要不变量。下一阶段增加：
 
-- journal tree property tests；
-- branch/scope model-based tests；
-- plugin transaction fault matrix；
-- reload candidate-runtime 测试；
-- provider stream fixture；
-- crash recovery fault injection；
+- journal tree property test；
+- branch/scope model-based test；
+- plugin transaction 和 candidate reload fault matrix；
+- provider stream fixtures；
+- crash checkpoint recovery；
+- cancellation race；
+- PTY TUI snapshot 与 resize/Unicode 输入；
 - Windows/POSIX build matrix。
 
 重点 fault point：
 
 ```text
 after scope eval / before journal flush
-after each plugin apply
-after each rollback
-after staged session write
-after backup rename
+after each plugin apply / rollback
+after staged session write / backup rename
 before provider result commit
-after tool effect / before tool-result journal append
+after tool effect / before tool-result append
+during cancellation and session switch
 ```
 
-## 11. 推荐实施顺序
+## 10. 推荐实施顺序
 
-| 顺序 | 工作 | 原因 |
+| 顺序 | 工作 | 形成的能力 |
 |---|---|---|
-| 1 | durable machine checkpoint + effect id | 让显式 CPS 真正跨进程 |
-| 2 | cancellation + session writer discipline | machine 可恢复后才能定义可靠取消 |
-| 3 | session recovery mode | 补齐 durable substrate |
-| 4 | provider state 独立 | 为跨 provider resume 清理数据模型 |
-| 5 | structured tool result/schema validation | 稳定 effect 边界 |
-| 6 | plugin activation lease + candidate reload | 完善动态组合 |
-| 7 | project trust/policy | 在扩展面扩大前建立安全边界 |
-| 8 | RPC/TUI | 建立在稳定 runtime 和 event protocol 上 |
+| 1 | durable checkpoint + effect id | defunctionalized CPS 跨进程恢复 |
+| 2 | cancellation + writer lease | 可中断且不会破坏会话 |
+| 3 | structured tool result/schema/policy | 稳定 effect 边界 |
+| 4 | provider continuation state 独立 | 清晰的跨 provider resume |
+| 5 | activation lease + candidate reload | 真正原子的动态组合 |
+| 6 | project trust | 可以放心扩大扩展面 |
+| 7 | async RPC + advanced TUI | 在稳定协议上完善交互 |
+| 8 | property/fault/build matrix | 把故障恢复变成持续保证 |
 
-## 12. 暂不追求
+## 11. 收束标准
 
-- 与 pi TypeScript extension API 兼容；
-- 把任意 Scheme 副作用自动变成可回滚 effect；
-- 在核心中内置复杂 planning/todo 产品功能；
-- 通过 lexical scope 冒充安全 sandbox；
-- 为了“纯函数”而把所有 Chez runtime object 强行序列化。
+下一阶段不以“功能数量”判断完成，而以四条硬标准收束：
 
-目标仍然是小而完整：先让控制、历史、作用和作用域的语义闭合，再扩展产品面。
+1. 一个普通编码任务能在 TUI、print 和 RPC 中走完同一条 runtime 路径；
+2. session 能切换、分支、恢复、repair，并且任何失败都不伪造持久事实；
+3. plugin 能安装、卸载、重启和 reload，失败后仍有可解释状态；
+4. 所有新增能力都落在 machine、effect、journal、scope、capability 或 renderer 这几个
+   既有语义中心，不另建平行框架。
+
+目标不是复制 pi 或 DSH 的表面 API，而是保留 pi 的小内核、Cordis 的动态组合精神，
+再用 Scheme datum 和显式解释器把控制、历史、作用与界面统一起来。

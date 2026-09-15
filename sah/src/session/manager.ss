@@ -23,7 +23,8 @@
 
 (define-record-type session
   (fields id cwd file (mutable log) (mutable port)
-          created model parent (mutable scope)))
+          created model parent (mutable scope)
+          (mutable health) (mutable recovery)))
 
 (define (cwd-slug cwd)
   (list->string
@@ -108,6 +109,8 @@
           (lambda ()
             (guard (close-error (#t #t)) (close-port p)))))
       (replace-session-file! staged path)
+      (session-health-set! s 'healthy)
+      (session-recovery-set! s #f)
       ;; The durable rewrite has committed. If reopening append-only fails, leave
       ;; the port lazy; the next append can safely perform another rewrite.
       (guard (append-error (#t (session-port-set! s #f)))
@@ -117,12 +120,17 @@
 ;; Write the newest entry (or rewrite the whole file once, for a session that
 ;; came from disk and has no port yet).
 (define (session-flush! s)
-  (let* ((lg (session-log s))
-         (e (log-ref lg (- (log-count lg) 1)))
-         (p (session-port s)))
-    (if p
-        (session-write! p e)
-        (session-rewrite! s)))
+  (when (session-file s)
+    (when (eq? (session-health s) 'recovered)
+      (error
+       'session
+       "journal is recovered and read-only; run /repair before writing"))
+    (let* ((lg (session-log s))
+           (e (log-ref lg (- (log-count lg) 1)))
+           (p (session-port s)))
+      (if p
+          (session-write! p e)
+          (session-rewrite! s))))
   s)
 
 (define (session-close! s)
@@ -186,15 +194,21 @@
 (define (session-branch! rt s id)
   (let* ((previous-log (session-log s))
          (previous-scope (session-scope s))
-         (next-log (log-set-leaf previous-log id)))
+         (old-leaf (log-leaf previous-log))
+         (next-log
+          (log-push-custom
+           (log-set-leaf previous-log id)
+           'sah-cursor
+           `((from . ,old-leaf) (target . ,id))))
+         (next-scope
+          (session-scope-from-log rt (session-id s) next-log)))
     (guard
       (e (#t
           (session-log-set! s previous-log)
           (session-scope-set! s previous-scope)
           (raise e)))
-      (session-log-set! s next-log)
-      (session-scope-set!
-       s (session-scope-from-log rt (session-id s) next-log))
+      (session-set-log-and-flush! s next-log)
+      (session-scope-set! s next-scope)
       s)))
 
 ;; Move the cursor AND append a summary in one step: the summary's parent has to
@@ -214,15 +228,20 @@
   s)
 
 (define (session-eval-form! rt s form)
-  (if (not (scope-durable-form? form))
-      (scope-eval (session-scope s) form)
-      (guard
-        (e (#t
-            (session-rebuild-scope! rt s)
-            (raise e)))
-        (let ((value (scope-eval (session-scope s) form)))
-          (session-add-scope-form! s form)
-          value))))
+  ;; Evaluation and journaling are one transaction. Besides the explicit
+  ;; replayable forms, persist any macro form that actually changes the set of
+  ;; bindings (for example define-record-type).
+  (let ((before (scope-symbols (session-scope s))))
+    (guard
+      (e (#t
+          (session-rebuild-scope! rt s)
+          (raise e)))
+      (let* ((value (scope-eval (session-scope s) form))
+             (after (scope-symbols (session-scope s))))
+        (when (or (scope-durable-form? form)
+                  (scope-bindings-changed? before after))
+          (session-add-scope-form! s form))
+        value))))
 
 (define (session-new rt cwd model)
   (let* ((dir (session-dir cwd))
@@ -233,32 +252,83 @@
                            (now-ms) model #f
                            (scope-layer
                             (runtime-session-root-scope rt)
-                            'session id))))
+                            'session id)
+                           'healthy #f)))
       (session-port-set! s (open-session-port file))
       (session-write! (session-port s) (session-header s))
       s)))
+
+(define (session-memory rt cwd model)
+  (make-session
+   (short-id) cwd #f (log-empty) #f
+   (now-ms) model #f
+   (scope-layer
+    (runtime-session-root-scope rt)
+    'session 'memory)
+   'healthy #f))
 
 ;;----------------------------------------------------------------------------
 ;; reading
 ;;----------------------------------------------------------------------------
 
+(define (line->datum path index line)
+  (let ((port (open-input-string line)))
+    (guard
+      (e (#t
+          (error 'session
+                 (format "cannot read ~a at datum ~a: ~a"
+                         path index (err->string e)))))
+      (let ((datum (read port)))
+        (if (eof-object? datum)
+            #f
+            (let ((tail (read port)))
+              (unless (eof-object? tail)
+                (error 'session
+                       (format
+                        "cannot read ~a at datum ~a: trailing data"
+                        path index)))
+              datum))))))
+
+;; SexprL makes tail recovery decidable: a malformed final line without a
+;; terminating newline is an interrupted append. Any malformed complete line,
+;; or malformed data before the final line, remains a hard corruption error.
+(define (read-entries/status path)
+  (let* ((text (file->string path))
+         (text-length (string-length text))
+         (terminated?
+          (and (> text-length 0)
+               (char=? (string-ref text (- text-length 1)) #\newline)))
+         (parts (string-split text "\n"))
+         (lines
+          (if (and terminated?
+                   (pair? parts)
+                   (string=? (car (reverse parts)) ""))
+              (take-list (- (length parts) 1) parts)
+              parts))
+         (last-index (- (length lines) 1)))
+    (let loop ((lines lines) (index 0) (entries '()))
+      (if (null? lines)
+          (values (reverse entries) 'healthy #f)
+          (guard
+            (e (#t
+                (if (and (= index last-index)
+                         (not terminated?))
+                    (values
+                     (reverse entries)
+                     'recovered
+                     `((kind . truncated-tail)
+                       (datum-index . ,index)
+                       (message . ,(err->string e))))
+                    (raise e))))
+            (let ((datum (line->datum path index (car lines))))
+              (loop (cdr lines)
+                    (+ index 1)
+                    (if datum (cons datum entries) entries))))))))
+
 (define (read-entries path)
-  (call-with-input-file
-    path
-    (lambda (p)
-      (let loop ((acc '()) (index 0))
-        (let* ((offset (guard (e (#t #f)) (port-position p)))
-               (d (guard
-                    (e (#t
-                        (error 'session
-                               (format "cannot read ~a at datum ~a~a: ~a"
-                                       path index
-                                       (if offset (format " (byte ~a)" offset) "")
-                                       (err->string e)))))
-                    (read p))))
-          (if (eof-object? d)
-              (reverse acc)
-              (loop (cons d acc) (+ index 1))))))))
+  (let-values (((entries health recovery)
+                (read-entries/status path)))
+    entries))
 
 ;; migration from older file shapes. Sessions written before tagged lists used
 ;; alists; sessions written before index numbering used hex ids.
@@ -321,39 +391,162 @@
             ((char=? (string-ref stem i) #\_) (substring stem (+ i 1) (string-length stem)))
             (else (loop (- i 1)))))))
 
+(define (read-scope-forms code)
+  (guard
+    (e (#t '()))
+    (let ((port (open-input-string code)))
+      (let loop ((forms '()))
+        (let ((form (read port)))
+          (if (eof-object? form)
+              (reverse forms)
+              (loop (cons form forms))))))))
+
+(define (successful-eval-results entries)
+  (let ((results (make-hashtable equal-hash equal?)))
+    (for-each
+     (lambda (entry)
+       (match entry
+         [(message ,entry-id ,parent ,ts
+                   (msg tool ,call-id eval ,content ,error?))
+          (unless error?
+            (hashtable-set! results call-id entry-id))]
+         [,other #t]))
+     entries)
+    results))
+
+(define (scope-form-journaled-for-call? entries start-id result-id form)
+  (exists
+   (lambda (entry)
+     (and (> (entry-id entry) start-id)
+          (< (entry-id entry) result-id)
+          (eq? (entry-kind entry) 'scope-form)
+          (equal? (entry-field entry 4) form)))
+   entries))
+
+(define (legacy-bootstrap-forms entry entries successful)
+  ;; Older sessions did not journal include/import. Recover only those
+  ;; environment-building forms, and only when the matching eval result
+  ;; succeeded. Ordinary expressions are deliberately never replayed.
+  (match entry
+    [(message ,entry-id ,parent ,ts
+              (msg assistant ,content ,calls ,stop ,usage))
+     (fold-right
+      append '()
+      (map
+       (lambda (call)
+         (match call
+           [(call ,call-id eval ,args)
+            (let ((result-id (hashtable-ref successful call-id #f))
+                  (code (assq-ref args 'code)))
+              (if (and result-id (string? code))
+                  (filter
+                   (lambda (form)
+                     (and
+                      (scope-bootstrap-form? form)
+                      (not
+                       (scope-form-journaled-for-call?
+                        entries entry-id result-id form))))
+                   (read-scope-forms code))
+                  '()))]
+           [,other '()]))
+       calls))]
+    [,other '()]))
+
+(define (session-scope-replay-forms log)
+  (let* ((entries (log-path log #f))
+         (successful (successful-eval-results entries)))
+    (fold-right
+     append '()
+     (map
+      (lambda (entry)
+        (append
+         (legacy-bootstrap-forms entry entries successful)
+         (match entry
+           [(scope-form ,id ,parent ,ts ,form) (list form)]
+           [,other '()])))
+      entries))))
+
 (define (session-scope-from-log rt label log)
   (let ((scope
          (scope-layer (runtime-session-root-scope rt) 'session label)))
     (scope-replay!
-     scope
-     (filter
-      (lambda (form) form)
-      (map (lambda (entry)
-             (match entry
-               [(scope-form ,id ,parent ,ts ,form) form]
-               [,other #f]))
-           (log-path log #f))))
+     scope (session-scope-replay-forms log))
     scope))
 
 (define (session-load rt path)
-  (let* ((raw (map normalize-entry (read-entries path)))
-         (first (if (pair? raw) (car raw) #f))
-         (has-header? (and (pair? first) (eq? (car first) 'session)))
-         (header (if has-header? first '()))
-         (entries (migrate-entries (if has-header? (cdr raw) raw)))
-         (log (log-from-entries entries)))
-    (match header
-      [(session ,version ,id ,cwd ,created ,model . ,rest)
-       (make-session id cwd path log #f created model
-                     (if (pair? rest) (car rest) #f)
-                     (session-scope-from-log rt id log))]
-      [,other
-       ;; no header (hand-edited or truncated file): recover what we can and let
-       ;; the next append write a fresh one
-       (make-session (id-from-filename path) (current-directory) path
-                     log #f (now-ms) "" #f
-                     (session-scope-from-log
-                      rt (id-from-filename path) log))])))
+  (let-values (((raw health recovery)
+                (read-entries/status path)))
+    (let* ((raw (map normalize-entry raw))
+           (first (if (pair? raw) (car raw) #f))
+           (has-header?
+            (and (pair? first) (eq? (car first) 'session)))
+           (header (if has-header? first '()))
+           (entries
+            (migrate-entries
+             (if has-header? (cdr raw) raw)))
+           (log (log-from-entries entries))
+           (health
+            (if (and (eq? health 'healthy) has-header?)
+                'healthy
+                'recovered))
+           (recovery
+            (or recovery
+                (and (not has-header?)
+                     '((kind . missing-header))))))
+      (match header
+        [(session ,version ,id ,cwd ,created ,model . ,rest)
+         (make-session
+          id cwd path log #f created model
+          (if (pair? rest) (car rest) #f)
+          (session-scope-from-log rt id log)
+          health recovery)]
+        [,other
+         ;; A missing header is recoverable. The next append rewrites a complete
+         ;; file before opening append mode again.
+         (let ((id (id-from-filename path)))
+           (make-session
+            id (current-directory) path
+            log #f (now-ms) "" #f
+            (session-scope-from-log rt id log)
+            health recovery))]))))
+
+(define (copy-file-bytes! source target)
+  (let* ((input (open-file-input-port source))
+         (bytes (get-bytevector-all input)))
+    (close-port input)
+    (let ((output
+           (open-file-output-port
+            target (file-options replace))))
+      (put-bytevector output bytes)
+      (close-port output))))
+
+(define (session-repair! s)
+  (if (not (eq? (session-health s) 'recovered))
+      #f
+      (let ((path (session-file s)))
+        (unless path
+          (error 'session "an in-memory session cannot be repaired"))
+        (let ((backup
+               (string-append
+                path ".recovered-" (short-id) ".bak")))
+          (copy-file-bytes! path backup)
+          (guard
+            (error
+             (#t
+              (when (file-exists? backup)
+                (guard (cleanup-error (#t #t))
+                  (delete-file backup)))
+              (raise error)))
+            (session-rewrite! s)
+            backup)))))
+
+(define (session-health-description s)
+  (case (session-health s)
+    ((healthy) "healthy")
+    ((recovered)
+     (format "recovered/read-only (~s)"
+             (session-recovery s)))
+    (else (format "~a" (session-health s)))))
 
 (define (session-latest rt cwd)
   (let ((dir (session-dir cwd)))
@@ -375,6 +568,27 @@
 (define (session-messages s) (entries->messages (session-entries s)))
 (define (session-context-messages s) (log-context-messages (session-log s) #f))
 (define (session-context s) (log-context (session-log s) #f))
+
+(define (session-latest-path-entry s kind)
+  (find
+   (lambda (entry) (eq? (entry-kind entry) kind))
+   (reverse (log-path (session-log s) #f))))
+
+(define (session-active-model s)
+  (let ((entry
+         (session-latest-path-entry s 'model-change)))
+    (or (and entry (entry-field entry 5))
+        (session-model s))))
+
+(define (session-active-provider s)
+  (let ((entry
+         (session-latest-path-entry s 'model-change)))
+    (and entry (entry-field entry 4))))
+
+(define (session-active-thinking-level s)
+  (let ((entry
+         (session-latest-path-entry s 'thinking-level)))
+    (and entry (entry-field entry 4))))
 
 ;;----------------------------------------------------------------------------
 ;; forking: extract one path into a session of its own
@@ -425,7 +639,8 @@
                            log #f (now-ms)
                            (session-model session)
                            (if (session-file session) (session-file session) #f)
-                           (session-scope-from-log rt new-id log))))
+                           (session-scope-from-log rt new-id log)
+                           'healthy #f)))
       (session-port-set! s (open-session-port file))
       (session-write! (session-port s) (session-header s))
       (for-each (lambda (e) (session-write! (session-port s) e)) entries)

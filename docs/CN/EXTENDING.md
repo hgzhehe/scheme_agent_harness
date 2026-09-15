@@ -4,7 +4,7 @@ sah 有三个定制面，全都是普通文件：
 
 | 面 | 是什么 | 放在哪 |
 |---|---|---|
-| **extension** | 注册 hook / 工具 / 命令的 Scheme 文件 | `~/.sah/extensions/*.ss`、`<项目>/.sah/extensions/*.ss` |
+| **extension** | 注册 hook / 工具 / 命令 / renderer / widget 的 Scheme 文件 | `~/.sah/extensions/*.ss`、`<项目>/.sah/extensions/*.ss` |
 | **skill** | 按需加载的 markdown 指令 | `~/.sah/skills/<名称>/SKILL.md`、`<项目>/.sah/skills/...` |
 | **prompt template** | 变成 `/命令` 的 markdown 文件 | `~/.sah/prompts/<名称>.md`、`<项目>/.sah/prompts/<名称>.md` |
 
@@ -17,8 +17,9 @@ sah 有三个定制面，全都是普通文件：
 ## Extension
 
 extension 就是一个普通的 Scheme 文件。加载它等于执行它的顶层代码，里面调用
-`register-hook!`、`register-tool!`、`register-command!`。没有 API 对象、没有工厂
-函数、没有构建步骤、没有类型定义——因为扩展语言就是实现语言。
+`register-hook!`、`register-tool!`、`register-command!`、`register-*-renderer!`
+或 `register-widget!`。没有 API 对象、没有工厂函数、没有构建步骤、没有类型定义，
+因为扩展语言就是实现语言。
 
 ```scheme
 ;; ~/.sah/extensions/guard-destructive.ss
@@ -40,6 +41,8 @@ hook 按注册顺序执行，每个都能看到上一个的结果（中间件风
 | hook | 参数 | 可返回 |
 |---|---|---|
 | `session-start` | `session config` | 忽略（只用副作用） |
+| `session-before-switch` | `current next reason` | `'(cancel . WHY)` |
+| `session-shutdown` | `session reason target-file` | 忽略（只用副作用） |
 | `before-agent-start` | `text session config` | `'(prompt . TEXT)`、`'(inject . TEXT)`、`#f` |
 | `input` | `text` | `'continue`、`'(transform TEXT)`、`'handled` |
 | `before-request` | `messages config` | 替换后的消息列表 |
@@ -66,6 +69,8 @@ hook 按注册顺序执行，每个都能看到上一个的结果（中间件风
 - `before-fork` 与 `before-tree` 是**否决**阶段：在 fork 或移动游标之前跑，可返回
   `'(cancel . WHY)`。`--fork` 遇到否决会以非零码退出，所以脚本不会把“被拒绝”误当成
   “已 fork”。
+- `session-before-switch` 是所有 mode 共用的切换否决点；`session-shutdown` 在旧 session
+  被关闭前执行。不要在 TUI/RPC 中另做一套切换生命周期。
 - `before-compact` 返回的 instructions 会追加到摘要提示里，这是做领域专用检查点的
   办法。
 
@@ -84,6 +89,31 @@ hook 按注册顺序执行，每个都能看到上一个的结果（中间件风
 `'handled`。
 
 与内置命令（`/compact`、`/context`、`/tree`、`/help`）重名时，内置的那一方胜出。
+
+### Renderer 与 Widget
+
+renderer 接收 `(value format width)`，返回逻辑行列表；返回 `#f` 表示交给内置
+renderer：
+
+```scheme
+(register-message-renderer!
+ 'assistant
+ (lambda (message format width)
+   (and (eq? format 'plain)
+        (list (string-append "assistant> " (msg-content message))))))
+
+(register-widget!
+ 'footer 'project-mode
+ (lambda (context format width)
+   (list "project mode: review")))
+```
+
+消息、entry、event 分别使用 `register-message-renderer!`、
+`register-entry-renderer!`、`register-event-renderer!`。widget placement 当前支持
+`header`、`above-editor`、`below-editor` 和 `footer`。
+
+renderer/widget 也是 owner capability：reload 或 plugin dispose 后会被清理；同 key
+的旧定义会重新可见。renderer 抛异常时 sah 会使用内置呈现继续运行。
 
 ## Skill
 
@@ -116,16 +146,18 @@ argument-hint: "[关注点]"
 
 ## 与 pi 的对比
 
-pi 的扩展系统更大，是因为它的扩展是 TypeScript 模块：需要加载器（jiti）、schema 库
-（typebox）、异步工厂函数、带类型的事件收窄、约 30 种事件、TUI 组件 API，以及包
-管理器。sah 用大约 120 行拿到同一套核心机制——具名 hook 点、`#f` 表示“没意见”、
-从扩展文件注册工具与命令——因为 Scheme 扩展本身就可以是 Scheme。
+pi 的扩展系统更大，是因为它的扩展是 TypeScript 模块：需要加载器、schema 库、
+异步工厂函数、带类型的事件收窄、完整 TUI 组件 API，以及包管理器。sah 通过普通
+Scheme datum、owner registry 和 plugin op 获得同一类核心机制，因为 Scheme 扩展本身
+就是实现语言。
 
 有意留下的差距，按“多可能造成影响”排序：
 
 1. **没有项目信任机制。** pi 先加载全局扩展，等信任解析完才加载项目扩展；sah 无条件
    都加载。所以项目扩展和你自己的文件权限一样大——只在你会运行其代码的仓库里跑 sah。
-2. **没有主题 / TUI 组件。** 没有 TUI 可主题化；模式层是行式 REPL。
+2. **TUI API 仍是第一版。** 已有 editor、selector、viewport 和 placement widget，
+   但还没有 overlay/focus stack、主题 token、虚拟化 transcript 和完整 component
+   生命周期。
 3. **没有包管理。** 扩展就是文件；没有 registry、没有版本锁定、没有 `pi install`。
 4. **只有同步。** 阻塞的 hook 会阻塞 agent。pi 的 handler 可以是异步的；如果你需要在
    hook 里访问网络，请保持短小，或把工作放进工具里。
@@ -134,6 +166,7 @@ pi 的扩展系统更大，是因为它的扩展是 TypeScript 模块：需要�
 
 - `/help` 列出实际被发现到的命令、模板与技能。
 - `/tools`（或 `(all-tools)`）列出已注册工具，包含扩展注册的。
+- `/plugins` 和 `/plugin inspect|mount|dispose|restart NAME` 检查动态 plugin 状态。
 - 启动时会打印 `[sah] extensions: ...`，列出加载成功的每个扩展文件。
 - 抛异常的 hook 会打印 `[sah] hook NAME failed: ...` 然后跳过——所以轮次中间出现
   堆栈，通常是扩展的问题，不是 sah 的。
@@ -150,7 +183,8 @@ sah "/context"          # 下一次请求会带什么
 ```
 
 内置命令有 `/compact`、`/context`、`/tree`、`/label`、`/name`、`/fork`、
-`/reload`、`/help`。同名的扩展
+`/clone`、`/new`、`/resume`、`/session`、`/repair`、`/export`、`/model`、
+`/thinking`、`/plugins`、`/plugin`、`/reload`、`/help`。同名的扩展
 命令会输给内置的（内置在扩展之后注册，而最后注册的同名命令胜出）。
 
 一条用户消息会依次经过几个阶段，每个阶段查自己的注册表：

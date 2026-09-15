@@ -6,16 +6,19 @@
 > 参考对象：本仓 `../ext-ref/`（pi v0.84.3 的完整架构资料）。
 > 基线环境：Chez Scheme 10.5（`scheme --script`），Windows / POSIX 均可。
 >
-> **与本文的偏离。** 实现有 5 处走了不同的路。正文保持原样，差异集中记在这里，
+> **与本文的偏离。** 实现有若干处走了不同的路。正文保持原样，差异集中记在这里，
 > 而不是改回正文：
 >
 > - 上下文文件是 `SYSTEM.md`；`AGENTS.scm`（§8.7 及另外 8 处）从未实现，
 >   “eval 出动态上下文注入”也没做
-> - `modes/` 是 `cli` / `print` / `oneshot` / `repl` —— 没有 rpc 模式
+> - `modes/` 现在包含全屏 TUI、行式 REPL、print/JSON 输出与 JSONL RPC，且共用一个
+>   session host
 > - `models.scm` 未实现；模型 id 与 base URL 在 `config.scm` 里
 > - provider 是流式的（SSE，`message-delta` / `thinking-delta`）；v0 规格写的是非流式
 > - 工具是 `read` / `write` / `edit` / `ls` / `grep` / `find` / `shell` / `eval`，
 >   不是 §8 的 `read` / `write` / `echo` / `bash`
+> - plugin program 使用显式 op/frame transaction，并可贡献 renderer 与 TUI widget
+> - `config.scm` 作为 alist datum 读取，不作为程序求值
 
 ---
 

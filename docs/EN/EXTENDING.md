@@ -4,7 +4,7 @@ sah has three customization surfaces, all of them plain files:
 
 | surface | what it is | where it lives |
 |---|---|---|
-| **extension** | a Scheme file that registers hooks, tools and commands | `~/.sah/extensions/*.ss`, `<project>/.sah/extensions/*.ss` |
+| **extension** | a Scheme file that registers hooks, tools, commands, renderers, and widgets | `~/.sah/extensions/*.ss`, `<project>/.sah/extensions/*.ss` |
 | **skill** | markdown instructions, loaded on demand | `~/.sah/skills/<name>/SKILL.md`, `<project>/.sah/skills/...` |
 | **prompt template** | a markdown file that becomes a `/command` | `~/.sah/prompts/<name>.md`, `<project>/.sah/prompts/<name>.md` |
 
@@ -18,9 +18,10 @@ guessing, and can find the right source file when you ask it to extend sah.
 ## Extensions
 
 An extension is an ordinary Scheme file. Loading it runs its top level, which
-calls `register-hook!`, `register-tool!` and `register-command!`. There is no
-API object, no factory, no build step, and no type definitions — because the
-extension language is the implementation language.
+calls `register-hook!`, `register-tool!`, `register-command!`,
+`register-*-renderer!`, or `register-widget!`. There is no API object, factory,
+build step, or type definition because the extension language is the
+implementation language.
 
 ```scheme
 ;; ~/.sah/extensions/guard-destructive.ss
@@ -42,6 +43,8 @@ Hooks run in registration order and each sees the previous one's result
 | hook | called with | may return |
 |---|---|---|
 | `session-start` | `session config` | ignored (side effects) |
+| `session-before-switch` | `current next reason` | `'(cancel . WHY)` |
+| `session-shutdown` | `session reason target-file` | ignored (side effects) |
 | `before-agent-start` | `text session config` | `'(prompt . TEXT)`, `'(inject . TEXT)`, `#f` |
 | `input` | `text` | `'continue`, `'(transform TEXT)`, `'handled` |
 | `before-request` | `messages config` | a replacement message list |
@@ -72,6 +75,8 @@ Notes that matter in practice:
 - `before-fork` and `before-tree` are veto stages: they run before a fork or a
   cursor move and may return `'(cancel . WHY)`. `--fork` exits non-zero on a
   veto, so a script cannot mistake "refused" for "forked".
+- `session-before-switch` is the common veto point for every frontend;
+  `session-shutdown` runs before the old session is closed.
 - `before-compact` returns instructions that are appended to the summarization
   prompt, which is how you get a domain-specific checkpoint.
 
@@ -91,6 +96,29 @@ agent instead of what the user typed), or `'handled`.
 
 Command names that clash with a built-in (`/compact`, `/context`, `/tree`,
 `/help`) lose to the built-in.
+
+### Renderers and widgets
+
+A renderer receives `(value format width)` and returns logical lines. Return
+`#f` to delegate to the built-in renderer:
+
+```scheme
+(register-message-renderer!
+ 'assistant
+ (lambda (message format width)
+   (and (eq? format 'plain)
+        (list (string-append "assistant> " (msg-content message))))))
+
+(register-widget!
+ 'footer 'project-mode
+ (lambda (context format width)
+   (list "project mode: review")))
+```
+
+Use `register-entry-renderer!` and `register-event-renderer!` for the other
+canonical surfaces. Widget placements are `header`, `above-editor`,
+`below-editor`, and `footer`. Owner cleanup removes these registrations on
+reload or plugin disposal, and renderer failures fall back to built-in output.
 
 ## Skills
 
@@ -139,8 +167,9 @@ Deliberate gaps, in order of how likely they are to matter:
    project-local ones only after; sah loads both unconditionally. Project
    extensions therefore have the same reach as your own files — only run sah in
    repositories you would run code from.
-2. **No themes / TUI components.** There is no TUI to theme; the mode layer is a
-   line REPL.
+2. **The TUI API is still a first version.** It has an editor, selectors,
+   viewport handling, and placement widgets, but not an overlay/focus stack,
+   theme tokens, transcript virtualization, or a full component lifecycle.
 3. **No packages.** Extensions are files; there is no registry, no version
    pinning, no `pi install`.
 4. **Synchronous only.** A hook that blocks blocks the agent. pi's handlers may
@@ -151,6 +180,7 @@ Deliberate gaps, in order of how likely they are to matter:
 
 - `/help` lists the commands, templates and skills that were actually discovered.
 - `/tools` (or `(all-tools)`) lists registered tools, including extension ones.
+- `/plugins` and `/plugin inspect|mount|dispose|restart NAME` expose plugin state.
 - Startup prints `[sah] extensions: ...` for every extension file it loaded.
 - Hooks that raise print `[sah] hook NAME failed: ...` and are skipped, so a
   stack trace in the middle of a turn is usually an extension, not sah.
@@ -168,9 +198,11 @@ Commands are registered by `main` for every mode, so they work in print mode too
 sah "/context"          # what the next request would carry
 ```
 
-The built-ins are `/compact`, `/context`, `/tree`, `/label`, `/name`, `/fork`,
-`/reload` and `/help`. An extension command with the same name loses (built-ins
-are registered after extensions, and the last registration of a name wins).
+The built-ins include `/compact`, `/context`, `/tree`, `/label`, `/name`,
+`/fork`, `/clone`, `/new`, `/resume`, `/session`, `/repair`, `/export`,
+`/model`, `/thinking`, `/plugins`, `/plugin`, `/reload`, and `/help`. An
+extension command with the same name loses because built-ins are registered
+after extensions.
 
 A user message passes through stages, each of which consults its own registry:
 

@@ -1,7 +1,7 @@
 # sah
 
-Implementation of the Scheme Agent Harness — a minimal pi-style coding agent in
-Chez Scheme.
+Implementation of the Scheme Agent Harness, a small pi-style coding agent and
+plugin runtime in Chez Scheme.
 
 **Documentation** (kept outside this directory):
 
@@ -10,16 +10,18 @@ Chez Scheme.
 
 ```bash
 scheme --script build.scm          # build the runnable dist/ bundle
+scheme --script sah.ss --tui       # fullscreen interactive UI
 scheme --script sah.ss -- "hello"  # run from source
 scheme --script tests/run-tests.ss # offline tests
 scheme --script bench/bench-fp.ss  # data-structure measurements
 ```
 
 Layout: `sah.ss` entry, `build.scm` bundler, `manifest.ss` (the one source list,
-shared by every entry point), `src/` split by what a file may know (`util/` knows
-nothing about sah, `core/` knows the agent's concepts, `extend/` is the
-customization surface, then `fp/ ai/ session/ tools/ agent/ modes/`), plus
-`examples/`, `tests/`, `bench/`.
+shared by every entry point), `src/` split by what a file may know (`util/`
+knows nothing about sah, `core/` owns runtime/plugin/rendering concepts,
+`extend/` is the customization surface, then
+`fp/ ai/ session/ tools/ agent/ tui/ modes/`), plus `examples/`, `tests/`,
+`bench/`.
 
 Platform differences are keyed off the Chez machine type rather than off OS
 tests. `src/util/platform.ss` turns `(machine-type)` into the facts the program

@@ -61,16 +61,19 @@ flowchart TD
     Runtime --> Hooks["hooks and events"]
     Runtime --> Plugins["plugin definitions and mounts"]
     Runtime --> Resources["skills, prompts, extensions"]
-    Main --> Session["session"]
+    Main --> Host["session host"]
+    Host --> Session["active session"]
     Session --> Journal["persistent log + cursor"]
     Session --> Scope["session lexical scope"]
-    Main --> Driver["agent driver"]
+    Host --> Driver["agent driver"]
     Driver --> Machine["defunctionalized machine"]
     Machine --> Effects["effect requests"]
     Effects --> Provider["provider"]
     Effects --> Tools["tools"]
     Effects --> Journal
     Effects --> Hooks
+    Runtime --> Renderers["renderers + widgets"]
+    Renderers --> Frontends["TUI / REPL / print / JSON / RPC"]
 ```
 
 源码主轴是：
@@ -103,6 +106,7 @@ core/data
   next-token
   plugins mounts op-handlers
   skills prompts extensions
+  renderers
   chat-override)
 ```
 
@@ -152,7 +156,9 @@ core read
 - slash commands；
 - input handlers；
 - hooks；
-- plugin op handlers。
+- plugin op handlers；
+- message / entry / event renderer；
+- TUI widget。
 
 核心工具以纯 datum 定义：
 
@@ -185,6 +191,10 @@ core read
 
 `machine-resume` 只查看 continuation 和 effect result，生成下一 machine state。
 provider、工具、文件写入、hook 和事件都不在这两个函数中执行。
+
+`machine-transition` 对 `(done ...)` 与 `(failed ...)` 也是总函数。effect 失败后产生的
+terminal datum 不会再被当成六槽 machine 读取，因此 provider 的原始错误不会被控制层
+二次异常掩盖。
 
 ### 6.2 当前 phase
 
@@ -258,6 +268,39 @@ journal 落盘格式是 SexprL，每行一个完整 datum。新 session 保持 a
 的 session 首次写入时，通过完整 sibling staging file 和可恢复替换完成迁移，避免先删
 旧文件再写新文件。
 
+读取以“完整行”为恢复边界：
+
+- 最后一行未结束且不可读，视为 interrupted append，恢复到最后一个完整 datum；
+- 中段损坏或已经换行结束的坏 datum 仍是 hard corruption；
+- recovered session 是只读的，直到显式 `/repair`；
+- repair 先保留原文件为 `.recovered-<id>.bak`，再写入完整 journal；
+- health 与 recovery metadata 通过 `/session`、TUI 和 event protocol 可见。
+
+### 7.1 Session host
+
+前端不持有一个永远不变的 session 闭包，而是持有：
+
+```scheme
+(session-host RT CWD CONFIG ACTIVE-SESSION STARTED?)
+```
+
+`new`、`resume`、`fork`、`clone` 全部走同一个 switch path：
+
+```text
+session-before-switch veto
+  -> session-shutdown / session-end
+  -> remove old session-owned capabilities
+  -> close old journal
+  -> replace active session
+  -> restore model/thinking settings from active path
+  -> session-start
+  -> register new session commands
+```
+
+因此 REPL、TUI、RPC 和 print command 不会各自实现一套生命周期。`model-change` 与
+`thinking-level` entry 由 host 消费；`/model`、`/thinking` 和 RPC 修改会继续写回
+journal，branch/resume 后按当前 path 恢复。
+
 ## 8. Session scope：环境是当前路径的投影
 
 每个 session 有独立的 lexical scope。`eval` 的 durable form：
@@ -266,9 +309,18 @@ journal 落盘格式是 SexprL，每行一个完整 datum。新 session 保持 a
 define
 define-syntax
 set!
+include
+include-ci
+import
 ```
 
-会以 `(scope-form ...)` 写入 journal，但不会进入发送给模型的消息上下文。
+会以 `(scope-form ...)` 写入 journal，但不会进入发送给模型的消息上下文。除此之外，
+如果一个顶层宏表单实际改变了 scope 的 binding 集合，例如 `define-record-type`，
+它也会被识别为 durable form。
+
+旧版 journal 可能已经保存了依赖某个 `include`/`import` 的定义，却没有保存环境构造
+表单本身。加载时只会从当前路径上“成功的 eval 调用及其成功结果”中补回这类表单；
+普通表达式和失败调用不会被重放。
 
 ### 8.1 分支语义
 
@@ -289,7 +341,7 @@ branch: (set! x 7)
 
 ### 8.2 Durable eval 事务
 
-持久定义必须同时满足：
+持久 scope 变更必须同时满足：
 
 1. Scheme 求值成功；
 2. scope-form journal append 成功。
@@ -327,6 +379,8 @@ branch: (set! x 7)
 (op-register-tool 'project-name "..." (schema '()) handler)
 (op-register-hook 'before-agent-start hook)
 (op-register-command 'status "..." handler)
+(op-register-renderer 'message 'assistant renderer)
+(op-register-widget 'footer 'build-status widget)
 ```
 
 ### 9.2 Graph 与 scope chain 分离
@@ -424,6 +478,15 @@ dispose failure         -> dispose-failed
 
 `transaction-failed` 和 `dispose-failed` 都是诚实状态，不是日志警告。
 
+### 9.7 Restart
+
+`runtime-restart-plugin!` 不是只重跑一个文件。它先求出当前激活的 dependents closure，
+按依赖逆序 dispose，再按原激活关系 mount。这样重启 dependency 后，其 dependents
+不会留在“逻辑上 mounted、实际依赖已被替换”的悬空状态。
+
+plugin renderer、widget、tool、command、hook 和自定义 op handler 都使用同一 owner
+清理路径。dispose 成功后，不应留下任何该 plugin 拥有的可观察能力。
+
 ## 10. Hooks 与 events
 
 events 和 hooks 使用同一个 runtime，但语义完全不同。
@@ -470,7 +533,48 @@ system prompt
 OpenAI Responses 的 opaque output 当前保存在 usage alist 的 `responses-output` 中以供
 下一次请求重放。这保持了协议正确性，但概念上仍应从 token usage 中拆出，见 gap 文档。
 
-## 12. Bootstrap
+## 12. Renderer 与多前端
+
+核心只发 canonical event、message 和 journal entry，不直接打印。runtime 中的
+renderer registry 按三类 target 分派：
+
+```text
+message + role
+entry   + kind
+event   + kind
+widget  + placement/key
+```
+
+renderer 是 capability，因此支持 owner shadow、plugin mount/dispose 和失败回退。
+扩展 renderer 抛异常时，事件会记录到诊断端口，并退回内置 renderer；显示层故障不能
+中断 agent 或破坏 journal。
+
+所有格式都从同一 canonical projection 生成：
+
+- `plain`：无终端控制符；
+- `ansi`：终端颜色与状态；
+- `markdown`：可读会话文档；
+- `html`：独立会话导出文档；
+- `json`：稳定外部对象，适合程序消费。
+
+TUI 不是第二套 agent。它只维护 editor、selector、viewport 和流式显示状态，提交输入、
+切换会话、修改模型仍通过 `session-host`。核心组件接口以可用宽度为输入，输出受宽度
+约束的行和光标位置；文本宽度按终端 display width 计算，不把宽字符当成一个 ASCII
+列。
+
+JSONL RPC 同样复用 host，当前支持：
+
+```text
+prompt command get_state new_session resume fork
+set_model set_thinking export shutdown
+```
+
+stdout 只写协议 envelope；诊断、hook 和 renderer 错误写 stderr。当前 interpreter
+仍是同步的，所以 RPC 是串行 request/reply 协议，还不承诺取消或并发 steering。
+state envelope 包含 session、model、provider、thinking 和 journal health；shutdown
+会先返回确认响应。
+
+## 13. Bootstrap
 
 `main` 的顺序是确定的：
 
@@ -485,18 +589,18 @@ parse args
   -> load extensions / mount plugins
   -> load skills and prompts
   -> refresh generated system prompt
-  -> resolve or create session
-  -> subscribe renderer
-  -> session-start hooks
-  -> register session commands
-  -> run REPL or print driver
-  -> session-end hooks
-  -> close journal
+  -> resolve or create initial session
+  -> create session host
+  -> subscribe selected event renderer
+  -> host start: hooks + session-owned commands
+  -> run TUI / REPL / print / JSON / RPC driver
+  -> host stop: shutdown hooks + close journal
+  -> dispose mounted plugins
 ```
 
 这个顺序也是生命周期契约。源码文件的加载顺序不再承担 runtime 初始化。
 
-## 13. 核心不变量
+## 14. 核心不变量
 
 1. 一个运行实例的动态状态只属于一个 runtime。
 2. 核心路径显式传递 runtime；dynamic parameter 只用于边界。
@@ -514,8 +618,12 @@ parse args
 14. extension 加载失败不能留下 tool、command、hook、plugin 或 op handler。
 15. 两个 runtime 不能共享可变 registry。
 16. source、test、build 使用同一个 manifest。
+17. 所有 mode 通过同一个 session host 执行切换、恢复、fork 和模型状态修改。
+18. renderer/widget 失败只能降级显示，不能改变 agent、session 或 plugin 事务结果。
+19. JSON/RPC 模式的 stdout 只包含结构化协议数据，诊断必须写 stderr。
+20. recovered session 在显式 repair 前不可写；repair 必须先保留原始字节备份。
 
-## 14. 这种设计为什么适合 Scheme
+## 15. 这种设计为什么适合 Scheme
 
 这里的 Scheme 优雅不在于“少写几行”，而在于几个层次使用同一种材料：
 

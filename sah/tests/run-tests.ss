@@ -10,7 +10,7 @@
 
 (define test-root (string-append (script-dir) "/.."))
 (load (string-append test-root "/manifest.ss"))
-(load-sah-sources! test-root sah-kernel-source-files)
+(load-sah-sources! test-root sah-source-files)
 
 (define passed 0)
 (define failed 0)
@@ -221,6 +221,13 @@
 (check "session evaluation cannot see harness internals"
        #f
        (scope-has? (session-scope session-a-loaded) 'runtime-new))
+(scope-eval (session-scope session-a-loaded)
+            '(define car 123))
+(scope-eval (session-scope session-a-loaded)
+            '(set! car 456))
+(check "an explicit local definition may shadow and mutate an import"
+       456
+       (scope-value (session-scope session-a-loaded) 'car))
 
 (define branch-session
   (session-new rt-scope test-dir "test-model"))
@@ -257,6 +264,96 @@
         (session-count atomic-session)
         (scope-has? (session-scope atomic-session) 'ghost-value)))
 
+(define match-path
+  (path-join test-root "src" "vendor" "match.ss"))
+(define match-include-form `(include ,match-path))
+(define match-fact-form
+  '(define (journaled-fact-cps n k)
+     (match n
+       [0 (journaled-apply-k k 1)]
+       [,n
+        (journaled-fact-cps
+         (- n 1) (list 'mul n k))])))
+(define match-apply-form
+  '(define (journaled-apply-k k value)
+     (match k
+       [done value]
+       [(mul ,n ,rest)
+        (journaled-apply-k rest (* n value))])))
+
+(define include-session
+  (session-new rt-scope test-dir "test-model"))
+(session-eval-form! rt-scope include-session match-include-form)
+(session-eval-form! rt-scope include-session match-fact-form)
+(session-eval-form! rt-scope include-session match-apply-form)
+(define include-session-file (session-file include-session))
+(session-close! include-session)
+(define include-session-loaded
+  (session-load rt-scope include-session-file))
+(check "include is journaled before definitions that depend on its syntax"
+       120
+       (scope-eval
+        (session-scope include-session-loaded)
+        '(journaled-fact-cps 5 'done)))
+(check-true
+ "include itself is a scope-form"
+ (find
+  (lambda (entry)
+    (and (eq? (entry-kind entry) 'scope-form)
+         (equal? (entry-field entry 4) match-include-form)))
+  (session-entries include-session-loaded)))
+(check "a journaled include is replayed exactly once"
+       1
+       (length
+        (filter
+         (lambda (form) (equal? form match-include-form))
+         (session-scope-replay-forms
+          (session-log include-session-loaded)))))
+
+(define record-session
+  (session-new rt-scope test-dir "test-model"))
+(session-eval-form!
+ rt-scope record-session
+ '(define-record-type journaled-point
+    (fields x)))
+(define record-session-file (session-file record-session))
+(session-close! record-session)
+(define record-session-loaded
+  (session-load rt-scope record-session-file))
+(check "binding-producing macro forms are discovered and replayed"
+       9
+       (scope-eval
+        (session-scope record-session-loaded)
+        '(journaled-point-x (make-journaled-point 9))))
+
+(define legacy-include-session
+  (session-new rt-scope test-dir "test-model"))
+(define legacy-call-id "legacy-include")
+(session-add-message!
+ legacy-include-session
+ `(msg assistant ""
+       ((call ,legacy-call-id eval
+              ((code . ,(format "~s" match-include-form)))))
+       tool-use
+       ((input . 1) (output . 1))))
+;; Reproduce the old transaction boundary: include changed the live scope but
+;; was not a scope-form, while the dependent definitions were journaled.
+(scope-eval (session-scope legacy-include-session) match-include-form)
+(session-add-message!
+ legacy-include-session
+ `(msg tool ,legacy-call-id eval "" #f))
+(session-eval-form! rt-scope legacy-include-session match-fact-form)
+(session-eval-form! rt-scope legacy-include-session match-apply-form)
+(define legacy-include-file (session-file legacy-include-session))
+(session-close! legacy-include-session)
+(define legacy-include-loaded
+  (session-load rt-scope legacy-include-file))
+(check "old successful eval include calls repair missing scope bootstrap"
+       120
+       (scope-eval
+        (session-scope legacy-include-loaded)
+        '(journaled-fact-cps 5 'done)))
+
 (let-values (((header pi-entries)
               (pi-jsonl->sah (session->pi-jsonl branch-loaded))))
   (check "pi round trip preserves the whole scope-form tree"
@@ -276,6 +373,155 @@
 (check-error "malformed journal is not accepted as EOF"
              "cannot read"
              (lambda () (session-load rt-scope bad-session)))
+
+(define recovered-path
+  (path-join test-dir "recovered-session.ss"))
+(string->file
+ recovered-path
+ "(session 3 \"recovered\" \"cwd\" 1 \"m\")\n(message 0 #f 2 (msg user \"good\"))\n(message 1 0")
+(define recovered-session
+  (session-load rt-scope recovered-path))
+(check "a truncated final line recovers the complete prefix"
+       '(recovered 1)
+       (list
+        (session-health recovered-session)
+        (session-count recovered-session)))
+(check-error "a recovered journal stays read-only until repair"
+             "read-only"
+             (lambda ()
+               (session-add-message!
+                recovered-session '(msg user "blocked"))))
+(define recovered-backup
+  (session-repair! recovered-session))
+(session-add-message!
+ recovered-session '(msg user "after repair"))
+(check "repair preserves the original and reopens durable writes"
+       '(#t healthy 2)
+       (list
+        (and recovered-backup
+             (file-exists? recovered-backup))
+        (session-health recovered-session)
+        (session-count recovered-session)))
+
+;;----------------------------------------------------------------------------
+(section "session host")
+
+(define rt-host (test-runtime))
+(define host-events '())
+(runtime-subscribe!
+ rt-host
+ (lambda (event)
+   (set! host-events (cons event host-events))))
+(define host
+  (make-session-host*
+   rt-host test-dir (runtime-config rt-host)
+   (session-memory rt-host test-dir "m")))
+(session-host-start! host 'initial #f)
+(define first-host-id
+  (session-id (session-host-session host)))
+(check-true "starting a host installs session-owned commands"
+            (runtime-find-command rt-host 'session))
+(define next-host-session
+  (session-memory rt-host test-dir "m"))
+(define next-host-id (session-id next-host-session))
+(session-host-switch! host next-host-session 'resume)
+(check "switching a host emits one end/start pair and replaces commands"
+       (list next-host-id #t #t)
+       (list
+        (session-id (session-host-session host))
+        (and
+         (find
+          (lambda (event)
+            (match event
+              [(ev session-end ,session resume #f)
+               (string=? (session-id session) first-host-id)]
+              [,other #f]))
+          host-events)
+         #t)
+        (and
+         (find
+          (lambda (event)
+            (match event
+              [(ev session-start ,session resume #f)
+               (string=? (session-id session) next-host-id)]
+              [,other #f]))
+          host-events)
+         #t)))
+(session-host-stop! host 'exit #f)
+(check "stopping a host removes session-owned commands"
+       #f
+       (and (runtime-find-command rt-host 'session) #t))
+
+(define settings-session
+  (session-memory rt-host test-dir "old-model"))
+(session-add-model-change!
+ settings-session 'test "restored-model")
+(session-add-thinking-level!
+ settings-session 'high)
+(define settings-host
+  (make-session-host*
+   rt-host test-dir (runtime-config rt-host)
+   settings-session))
+(session-host-start! settings-host 'resume #f)
+(check "a host restores model and thinking state from the active path"
+       '("restored-model" test high)
+       (list
+        (assq-ref
+         (session-host-config settings-host) 'model)
+        (assq-ref
+         (session-host-config settings-host) 'provider)
+        (assq-ref
+         (session-host-config settings-host)
+         'reasoning-effort)))
+(session-host-set-model!
+ settings-host "next-model" 'test-next)
+(session-host-set-thinking! settings-host 'low)
+(check "model controls are durable session metadata"
+       '("next-model" test-next low)
+       (list
+        (session-active-model settings-session)
+        (session-active-provider settings-session)
+        (session-active-thinking-level
+         settings-session)))
+(session-host-stop! settings-host 'exit #f)
+
+(define boundary-rt (test-runtime))
+(define lifecycle-session-id #f)
+(runtime-register-hook!
+ boundary-rt 'test 'session-start
+ (lambda (session config)
+   (set! lifecycle-session-id
+         (session-id (require-session)))))
+(runtime-register-command!
+ boundary-rt 'test 'current-session-id
+ "Return the dynamically bound active session id."
+ (lambda (args)
+   (session-id (require-session))))
+(define boundary-host
+  (make-session-host*
+   boundary-rt test-dir (runtime-config boundary-rt)
+   (session-memory boundary-rt test-dir "m")))
+(session-host-start! boundary-host 'initial #f)
+(check "lifecycle hooks and commands see the host session boundary"
+       (list
+        (session-id (session-host-session boundary-host))
+        (session-id (session-host-session boundary-host)))
+       (list
+        lifecycle-session-id
+        (session-host-process-input
+         boundary-host "/current-session-id")))
+(session-host-set-model!
+ boundary-host "normalized-model" "test-next")
+(check "host model controls normalize JSON provider names"
+       'test-next
+       (assq-ref
+        (session-host-config boundary-host) 'provider))
+(check-error "thinking controls render invalid levels"
+             "unknown thinking level: impossible"
+             (lambda ()
+               (session-host-set-thinking!
+                boundary-host 'impossible)))
+(session-host-stop! boundary-host 'exit #f)
 
 ;;----------------------------------------------------------------------------
 (section "machine algebra")
@@ -375,6 +621,21 @@
         (member '(ev agent-end) failed-machine-events)
         (member '(ev agent-settled) failed-machine-events)
         #t))
+
+(define rt-provider-failure (test-runtime))
+(runtime-chat-override-set!
+ rt-provider-failure
+ (lambda args
+   (error 'provider "authentication failed")))
+(check-error "provider failures preserve their original reason"
+             "authentication failed"
+             (lambda ()
+               (run-agent
+                rt-provider-failure
+                (session-memory
+                 rt-provider-failure test-dir "m")
+                (runtime-config rt-provider-failure)
+                "fail cleanly")))
 
 ;;----------------------------------------------------------------------------
 (section "plugin program")
@@ -509,6 +770,414 @@
         (and (runtime-find-tool rt-plugin 'unstable-tool) #t)
         rollback-attempts))
 
+(parameterize ((current-runtime rt-plugin)
+               (current-owner 'test-file))
+  (plugin visual
+    (imports)
+    (exports)
+    (op-register-renderer
+     'message 'assistant
+     (lambda (message format width)
+       (list "custom assistant")))
+    (op-register-widget
+     'footer 'visual-status
+     (lambda (context format width)
+       (list "visual widget")))))
+(runtime-mount-plugin! rt-plugin 'visual)
+(check "a mounted plugin can replace message rendering"
+       '("custom assistant")
+       (render-message-lines
+        rt-plugin
+        '(msg assistant "ignored" () stop #f)
+        'plain 80))
+(check "a mounted plugin can contribute a TUI widget"
+       '("visual widget")
+       (runtime-widget-lines
+        rt-plugin 'footer '() 'ansi 80))
+(runtime-dispose-plugin! rt-plugin 'visual)
+(check "disposing a plugin removes renderers and widgets"
+       '(#f ())
+       (list
+        (string=?
+         "custom assistant"
+         (car
+          (render-message-lines
+           rt-plugin
+           '(msg assistant "ignored" () stop #f)
+           'plain 80)))
+        (runtime-widget-lines
+         rt-plugin 'footer '() 'ansi 80)))
+
+(runtime-register-renderer!
+ rt-plugin 'broken-renderer 'message 'assistant
+ (lambda (message format width)
+   (error 'renderer "deliberate failure")))
+(check-true "a failed plugin renderer falls back to the built-in renderer"
+            (string=?
+             "Assistant"
+             (car
+              (render-message-lines
+               rt-plugin
+               '(msg assistant "ok" () stop #f)
+               'plain 80))))
+(runtime-remove-renderer-owner!
+ rt-plugin 'broken-renderer)
+
+(parameterize ((current-runtime rt-plugin)
+               (current-owner 'test-file))
+  (plugin restart-base
+    (imports)
+    (exports restart-value)
+    (op-define 'restart-value 9)
+    (op-register-tool
+     'restart-base-tool "base" (schema '())
+     (lambda (args) "base")))
+  (plugin restart-dependent
+    (imports restart-base)
+    (exports)
+    (op-register-tool
+     'restart-dependent-tool "dependent" (schema '())
+     (lambda (args)
+       (number->string restart-value)))))
+(runtime-mount-plugin! rt-plugin 'restart-dependent)
+(runtime-restart-plugin! rt-plugin 'restart-base)
+(check "restarting a dependency restores its active dependents"
+       '(mounted mounted #t #t)
+       (list
+        (mount-state
+         (runtime-mount rt-plugin 'restart-base))
+        (mount-state
+         (runtime-mount rt-plugin 'restart-dependent))
+        (and
+         (runtime-find-tool rt-plugin 'restart-base-tool)
+         #t)
+        (and
+         (runtime-find-tool
+          rt-plugin 'restart-dependent-tool)
+         #t)))
+
+;;----------------------------------------------------------------------------
+(section "rendering and TUI primitives")
+
+(define render-session-value
+  (session-memory rt-plugin test-dir "m"))
+(session-add-message!
+ render-session-value '(msg user "hello"))
+(session-add-message!
+ render-session-value
+ '(msg assistant "# Result\n\nok" () stop
+       ((input . 2) (output . 1))))
+(check-true "markdown session rendering uses the canonical path"
+            (and
+             (string-contains?
+              "## User"
+              (render-session
+               rt-plugin render-session-value
+               'markdown 80))
+             (string-contains?
+              "## Assistant"
+              (render-session
+               rt-plugin render-session-value
+               'markdown 80))))
+(check-true "HTML export is a standalone document"
+            (string-prefix?
+             "<!doctype html>"
+             (render-session
+              rt-plugin render-session-value 'html 80)))
+(check "JSON projection gives session metadata stable external kinds"
+       'model_change
+       (assq-ref
+        (entry->json
+         '(model-change 2 1 3 test "model"))
+        'type))
+(check "display width accounts for wide codepoints"
+       3
+       (string-display-width
+        (string #\a (integer->char #x4e2d))))
+
+(define editor (make-editor))
+(editor-handle-key! editor (cons 'text "abcd"))
+(let-values (((lines row column)
+              (editor-render editor 5)))
+  (check "editor wrapping preserves a stable cursor position"
+         '(("> abc" "  d") 1 3)
+         (list lines row column)))
+(editor-handle-key! editor 'enter)
+(editor-handle-key! editor (cons 'text "next"))
+(editor-handle-key! editor 'up)
+(check "editor history restores the previous submission"
+       "abcd"
+       (tui-editor-text editor))
+(editor-handle-key! editor 'alt-enter)
+(check-true "editor supports explicit multiline insertion"
+            (string-contains?
+             "\n" (tui-editor-text editor)))
+
+(define wheel-up-terminal
+  (make-tui-terminal
+   (open-input-string
+    (string-append esc "[<64;20;10M"))
+   (current-output-port)
+   #f #f #f #f
+   '() 0 0 0 0))
+(define wheel-down-terminal
+  (make-tui-terminal
+   (open-input-string
+    (string-append esc "[<65;20;10M"))
+   (current-output-port)
+   #f #f #f #f
+   '() 0 0 0 0))
+(check "SGR mouse wheel up is decoded"
+       'scroll-up
+       (terminal-read-key wheel-up-terminal))
+(check "SGR mouse wheel down is decoded"
+       'scroll-down
+       (terminal-read-key wheel-down-terminal))
+(check-true
+ "unsupported console readiness never escapes as an exception"
+ (guard
+   (error (#t #f))
+   (boolean?
+    (terminal-input-ready?
+     (make-tui-terminal
+     (standard-input-port)
+      (current-output-port)
+      #f #f #f #f
+      '() 0 0 0 0)
+     0))))
+(check
+ "regular TUI preserves native scrollback and mouse selection"
+ '(#f #f #f #t)
+ (list
+  (and
+   (string-contains?
+    (string-append esc "[?1049h")
+    terminal-enter-sequence)
+   #t)
+  (and
+   (string-contains?
+    (string-append esc "[?1000h")
+    terminal-enter-sequence)
+   #t)
+  (and
+   (string-contains?
+    (string-append esc "[?1006h")
+    terminal-enter-sequence)
+   #t)
+  (and
+   (string-contains?
+    (string-append esc "[?2004h")
+    terminal-enter-sequence)
+   #t)))
+(define main-screen-output
+  (open-output-string))
+(define main-screen-terminal
+  (make-tui-terminal
+   (open-input-string "")
+   main-screen-output
+   #f #t #f #f
+   '() 0 0 0 0))
+(terminal-render!
+ main-screen-terminal
+ '("one" "two" "three")
+ 1 2)
+(terminal-render!
+ main-screen-terminal
+ '("one" "two changed" "three")
+ 1 2)
+(check
+ "main-screen renderer retains state for differential updates"
+ '("one" "two changed" "three")
+ (tui-terminal-previous-lines
+  main-screen-terminal))
+
+(define selector
+  (make-selector
+   "pick" '(("one" . 1) ("two" . 2))))
+(selector-handle-key! selector 'down)
+(check "selector navigation returns the selected value"
+       '(selected . 2)
+       (selector-handle-key! selector 'enter))
+
+(define frame-host
+  (make-session-host*
+   rt-host test-dir (runtime-config rt-host)
+   (session-memory rt-host test-dir "m")))
+(define frame-app
+  (make-tui-app* frame-host (make-terminal)))
+(tui-app-notice-set!
+ frame-app
+ "a deliberately long notice that must not push the editor away")
+(editor-set-text!
+ (tui-app-editor frame-app)
+ "one\ntwo\nthree\nfour\nfive\nsix")
+(let-values (((lines row column)
+              (tui-normal-frame frame-app 20 8)))
+  (check-true "small TUI frames keep the editor cursor on screen"
+              (and
+               (<= (length lines) 8)
+               (>= row 0)
+               (< row (length lines))
+               (for-all
+                (lambda (line)
+                  (<= (string-display-width line) 20))
+                lines))))
+
+(define fact-session
+  (session-memory rt-host test-dir "m"))
+(session-add-message!
+ fact-session
+ '(msg user "用 Scheme eval 算 (fact 5)"))
+(session-add-message!
+ fact-session
+ '(msg assistant ""
+       ((call "fact-call" eval
+              ((code
+                . "(let fact ([n 5]) (if (zero? n) 1 (* n (fact (sub1 n)))))"))))
+       tool-use
+       ((input . 1) (output . 1))))
+(session-add-message!
+ fact-session
+ '(msg tool "fact-call" eval "120\n" #f))
+(session-add-message!
+ fact-session
+ '(msg assistant "Scheme eval result: 120"
+       () stop ((input . 1) (output . 1))))
+(define fact-frame-host
+  (make-session-host*
+   rt-host test-dir (runtime-config rt-host)
+   fact-session))
+(define fact-frame-app
+  (make-tui-app* fact-frame-host (make-terminal)))
+(check-true
+ "TUI renders the Scheme eval fact-5 transcript in ANSI mode"
+ (guard
+   (error (#t #f))
+   (let-values (((lines row column)
+                 (tui-normal-frame
+                  fact-frame-app 120 30)))
+     (string-contains?
+     "120" (string-join lines "\n")))))
+(check-true
+ "main-screen TUI keeps transcript lines beyond the viewport"
+ (let-values (((main-lines main-row main-column)
+               (tui-main-frame fact-frame-app 120)))
+   (let-values (((viewport-lines viewport-row viewport-column)
+                 (tui-normal-frame fact-frame-app 120 8)))
+     (> (length main-lines)
+        (length viewport-lines)))))
+(check-true
+ "ANSI event rendering handles eval tool start and end"
+ (guard
+   (error (#t #f))
+   (and
+    (pair?
+     (render-event-lines
+      rt-host
+      '(ev tool-start "fact-call" eval
+           ((code . "(fact 5)")))
+      'ansi 120))
+    (pair?
+     (render-event-lines
+      rt-host
+      '(ev tool-end "fact-call" eval #f "120\n")
+      'ansi 120)))))
+(tui-handle-event!
+ fact-frame-app
+ '(ev message-start))
+(tui-handle-event!
+ fact-frame-app
+ '(ev thinking-delta "visible reasoning summary"))
+(check-true
+ "TUI displays a reasoning delta when the provider supplies one"
+ (let-values (((lines row column)
+               (tui-normal-frame fact-frame-app 120 30)))
+   (string-contains?
+    "visible reasoning summary"
+    (string-join lines "\n"))))
+(tui-handle-event!
+ fact-frame-app
+ '(ev message-end
+      (msg assistant "done" () stop #f)))
+(define (fact-frame-has-reasoning?)
+  (let-values (((lines row column)
+                (tui-normal-frame fact-frame-app 120 30)))
+    (and
+     (string-contains?
+      "visible reasoning summary"
+      (string-join lines "\n"))
+     #t)))
+(define reasoning-after-message
+  (fact-frame-has-reasoning?))
+(tui-handle-event!
+ fact-frame-app
+ '(ev agent-settled))
+(define reasoning-after-settle
+  (fact-frame-has-reasoning?))
+(tui-handle-event!
+ fact-frame-app
+ '(ev message-start))
+(check
+ "TUI keeps completed reasoning until the next model turn"
+ '(#t #t #f)
+ (list
+  reasoning-after-message
+  reasoning-after-settle
+  (fact-frame-has-reasoning?)))
+
+(check "CLI mode and format parsing is data"
+       '((no-session . #t) (format . json) (mode . rpc))
+       (car
+        (parse-args
+         '("--mode" "rpc"
+           "--format" "json"
+           "--no-session"))))
+(check-error "CLI missing values name the offending option"
+             "option --mode requires a value"
+             (lambda () (parse-args '("--mode"))))
+(check-error "CLI rejects an unknown mode with a rendered value"
+             "unknown mode: unknown"
+             (lambda ()
+               (selected-mode
+                '((mode . unknown)) "")))
+(define rpc-test-host
+  (make-session-host*
+   rt-host test-dir
+   (alist-merge
+    (runtime-config rt-host)
+    '((provider . rpc-provider)
+      (reasoning-effort . medium)))
+   (session-memory rt-host test-dir "rpc-model")))
+(check "RPC state exposes provider and thinking"
+       '(rpc-provider medium)
+       (let ((state (rpc-session-state rpc-test-host)))
+         (list
+          (assq-ref state 'provider)
+          (assq-ref state 'thinking))))
+(check-true "RPC shutdown is acknowledged"
+            (let ((output (open-output-string)))
+              (parameterize
+                  ((current-input-port
+                    (open-input-string
+                     "{\"type\":\"shutdown\"}\n"))
+                   (current-output-port output))
+                (run-rpc rpc-test-host))
+              (find
+               (lambda (line)
+                 (and
+                  (not (string=? (string-trim line) ""))
+                  (let ((datum (read-json-string line)))
+                    (and
+                     (equal?
+                      (assq-ref datum 'type)
+                      "response")
+                     (equal?
+                      (assq-ref datum 'command)
+                      "shutdown")
+                     (assq-ref datum 'success)))))
+               (string-split
+                (get-output-string output) "\n"))))
+
 ;;----------------------------------------------------------------------------
 (section "resources and manifest")
 
@@ -574,7 +1243,10 @@
  (lambda (session)
    (guard (error (#t #t)) (session-close! session)))
  (list session-a-loaded branch-loaded atomic-session
-       machine-session-value overflow-session))
+       include-session-loaded record-session-loaded
+       legacy-include-loaded
+       machine-session-value overflow-session
+       recovered-session render-session-value fact-session))
 
 (printf "~%---~%~a passed, ~a failed~%" passed failed)
 (if (> failed 0) (exit 1) (exit 0))
