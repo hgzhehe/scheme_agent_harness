@@ -140,38 +140,31 @@
 ;; registration + loop
 ;;----------------------------------------------------------------------------
 
-(define (register-builtin-commands! rt host)
-  (let* ((session (session-host-session host))
+(define (register-builtin-commands! rt)
+  (let* ((session (runtime-session rt))
          (owner (session-capability-owner session)))
     (runtime-register-command!
      rt owner 'compact "Compact the context (optional instructions)."
      (lambda (args)
-       (compact! rt
-                 (session-host-session host)
-                 (session-host-config host)
-                 'manual
-                 (if (string=? args "") #f args))
+       (compact!
+        rt (runtime-session rt) (runtime-config rt)
+        'manual (if (string=? args "") #f args))
        #f))
     (runtime-register-command!
      rt owner 'context "Show what the next request would carry."
      (lambda (args)
-       (context-command
-        (session-host-session host)
-        (session-host-config host))
+       (context-command (runtime-session rt) (runtime-config rt))
        #f))
     (runtime-register-command!
      rt owner 'tree "Show the session tree; move the cursor to branch here."
      (lambda (args)
-       (tree-command
-        rt
-        (session-host-session host)
-        (session-host-config host))
+       (tree-command rt (runtime-session rt) (runtime-config rt))
        #f))
     (runtime-register-command!
      rt owner 'label
      "Label an entry: /label <id> <text> (no text clears it)."
      (lambda (args)
-       (label-command (session-host-session host) args)
+       (label-command (runtime-session rt) args)
        #f))
     (runtime-register-command!
      rt owner 'name "Name this session: /name <text>."
@@ -180,58 +173,58 @@
            (printf "usage: /name <text>~%")
            (begin
              (session-add-name!
-              (session-host-session host)
+              (runtime-session rt)
               (string-trim args))
              (printf "session named ~a~%" (string-trim args))))
        #f))
     (runtime-register-command!
      rt owner 'fork
      "Fork at an entry and continue in the new session."
-     (lambda (args) (fork-command host args) #f))
+     (lambda (args) (fork-command rt args) #f))
     (runtime-register-command!
      rt owner 'clone
      "Clone the active path and continue in the new session."
      (lambda (args)
-       (session-host-clone! host)
+       (runtime-clone-session! rt)
        (printf "cloned into session ~a~%"
-               (session-id (session-host-session host)))
+               (session-id (runtime-session rt)))
        #f))
     (runtime-register-command!
      rt owner 'new "Start a new session."
      (lambda (args)
-       (session-host-new! host)
+       (runtime-new-session! rt)
        (printf "new session ~a~%"
-               (session-id (session-host-session host)))
+               (session-id (runtime-session rt)))
        #f))
     (runtime-register-command!
      rt owner 'resume
      "Switch session: /resume [id-or-path]."
      (lambda (args)
-       (resume-command host args)
+       (resume-command rt args)
        #f))
     (runtime-register-command!
      rt owner 'session
      "Show the active session status."
      (lambda (args)
-       (session-info-command host)
+       (session-info-command rt)
        #f))
     (runtime-register-command!
      rt owner 'model
      "Show or set the active model: /model [id] [provider]."
      (lambda (args)
-       (model-command host args)
+       (model-command rt args)
        #f))
     (runtime-register-command!
      rt owner 'thinking
      "Show or set reasoning effort: /thinking [level]."
      (lambda (args)
-       (thinking-command host args)
+       (thinking-command rt args)
        #f))
     (runtime-register-command!
      rt owner 'repair
      "Rewrite a recovered session as a complete journal."
      (lambda (args)
-       (let ((current (session-host-session host)))
+       (let ((current (runtime-session rt)))
          (if (eq? (session-health current) 'healthy)
              (printf "session journal is healthy~%")
              (let ((backup (session-repair! current)))
@@ -242,7 +235,7 @@
      rt owner 'export
      "Export the active path: /export [html|markdown|json|plain] [file]."
      (lambda (args)
-       (export-command rt (session-host-session host) args)
+       (export-command rt (runtime-session rt) args)
        #f))
     (runtime-register-command!
      rt owner 'plugins "List plugin definitions and mount states."
@@ -260,25 +253,20 @@
      (lambda (args) (print-help rt) #f))
     (runtime-register-command!
      rt owner 'reload "Reload extensions, skills and prompts."
-     (lambda (args) (reload-command rt host) #f)))
+     (lambda (args) (reload-command rt) #f)))
   rt)
 
-;; A reload re-reads every extension file after putting the registries back to
-;; their built-in state, so it also has to put the built-in commands back (they
-;; are registered after extensions, and the restore removed them).
-(define (reload-command rt host)
-  (let ((config (session-host-config host)))
-    (reload-resources! rt config (session-host-cwd host))
-    (register-builtin-commands! rt host))
+(define (reload-command rt)
+  (reload-resources! rt (runtime-config rt) (runtime-cwd rt))
   (let ((n (lambda (l) (number->string (length l)))))
     (printf "reloaded ~a extension~a, ~a skill~a, ~a template~a~%"
             (n (all-extensions rt)) (if (= 1 (length (all-extensions rt))) "" "s")
             (n (all-skills rt)) (if (= 1 (length (all-skills rt))) "" "s")
             (n (all-prompts rt)) (if (= 1 (length (all-prompts rt))) "" "s"))))
 
-(define (session-info-command host)
-  (let ((session (session-host-session host))
-        (config (session-host-config host)))
+(define (session-info-command rt)
+  (let ((session (runtime-session rt))
+        (config (runtime-config rt)))
   (printf "id:       ~a~%" (session-id session))
   (printf "name:     ~a~%"
           (or (log-session-name (session-log session)) "(unnamed)"))
@@ -296,56 +284,52 @@
   (printf "journal:  ~a~%"
           (session-health-description session))))
 
-(define (model-command host args)
+(define (model-command rt args)
   (let ((parts
          (filter
           (lambda (part) (not (string=? part "")))
           (string-split (string-trim args) " "))))
     (if (null? parts)
         (printf "~a (~a)~%"
-                (assq-ref (session-host-config host) 'model)
-                (assq-ref (session-host-config host) 'provider))
+                (assq-ref (runtime-config rt) 'model)
+                (assq-ref (runtime-config rt) 'provider))
         (let ((model (car parts))
               (provider
                (and (pair? (cdr parts))
                     (string->symbol (cadr parts)))))
           (if provider
-              (session-host-set-model!
-               host model provider)
-              (session-host-set-model! host model))
+              (runtime-set-model! rt model provider)
+              (runtime-set-model! rt model))
           (printf "model set to ~a (~a)~%"
                   model
-                  (assq-ref
-                   (session-host-config host)
-                   'provider))))))
+                  (assq-ref (runtime-config rt) 'provider))))))
 
-(define (thinking-command host args)
+(define (thinking-command rt args)
   (let ((text (string-trim args)))
     (if (string=? text "")
         (printf "~a~%"
                 (or (assq-ref
-                     (session-host-config host)
+                     (runtime-config rt)
                      'reasoning-effort)
                     'off))
         (let ((level
-               (session-host-set-thinking!
-                host text)))
+               (runtime-set-thinking! rt text)))
           (printf "thinking set to ~a~%" level)))))
 
-(define (resume-command host args)
+(define (resume-command rt args)
   (let* ((text (string-trim args))
          (path
           (if (string=? text "")
-              (pick-session-path (session-host-cwd host))
+              (pick-session-path (runtime-cwd rt))
               (session-lookup text))))
     (cond
       ((not path)
        (printf "session not found or not selected~%")
        #f)
       (else
-       (session-host-resume! host path)
+       (runtime-resume-session! rt path)
        (printf "resumed session ~a~%"
-               (session-id (session-host-session host)))
+               (session-id (runtime-session rt)))
        #t))))
 
 (define (parse-export-args args)
@@ -426,13 +410,13 @@
              (printf "restarted ~a~%" name))
             ((inspect show)
              (let ((plugin (runtime-plugin rt name))
-                   (mount (runtime-mount rt name)))
+                   (slot (runtime-plugin-slot rt name)))
                (if (not plugin)
                    (printf "plugin not found: ~a~%" name)
                    (begin
                      (printf "name:     ~a~%" name)
                      (printf "state:    ~a~%"
-                             (mount-state mount))
+                             (plugin-slot-state slot))
                      (printf "imports:  ~s~%"
                              (plugin-imports plugin))
                      (printf "exports:  ~s~%"
@@ -442,7 +426,7 @@
                       (lambda (frame)
                         (printf "  ~a~%"
                                 (frame-show rt frame)))
-                      (mount-frames mount))))))
+                      (plugin-slot-frames slot))))))
             (else
              (printf
               "usage: /plugin mount|dispose|restart|inspect <name>~%")))))))
@@ -459,9 +443,8 @@
             (printf "~a entry #~a~%" (if (string=? text "") "cleared label on" "labelled") n))))))
 
 ;; /fork [entry-id] -- write the path root->entry into a session of its own
-(define (fork-command host args)
-  (let* ((session (session-host-session host))
-         (rt (session-host-rt host))
+(define (fork-command rt args)
+  (let* ((session (runtime-session rt))
          (lg (session-log session))
          (txt (string-trim args))
          (n (if (string=? txt "") (log-leaf lg) (string->number txt))))
@@ -471,8 +454,8 @@
           (if veto
               (printf "fork cancelled: ~a~%" veto)
               (begin
-                (session-host-fork! host n)
-                (let ((new (session-host-session host)))
+                (runtime-fork-session! rt n)
+                (let ((new (runtime-session rt)))
                   (printf
                    "forked ~a entr~a; continuing as session ~a~%  file: ~a~%"
                    (session-count new)

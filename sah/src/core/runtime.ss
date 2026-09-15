@@ -1,85 +1,173 @@
-;;; runtime.ss -- the one mutable owner of a running sah instance.
-;;;
-;;; All process-changing registries live here. The dynamic parameters exist only
-;;; at extension/tool evaluation boundaries; core execution passes the runtime
-;;; explicitly.
+;;; runtime.ss -- the one mutable root of a sah process.
+
+;; (cap TOKEN OWNER KIND KEY VALUE)
+(define (cap-token cell) (list-ref cell 1))
+(define (cap-owner cell) (list-ref cell 2))
+(define (cap-kind cell) (list-ref cell 3))
+(define (cap-key cell) (list-ref cell 4))
+(define (cap-value cell) (list-ref cell 5))
 
 (define-record-type runtime
-  (fields (mutable config)
+  (fields cwd
+          (mutable config)
+          (mutable session)
+          (mutable session-started?)
           root-scope
           session-root-scope
-          (mutable tools)
-          (mutable commands)
-          (mutable hooks)
-          (mutable input-handlers)
-          (mutable subscribers)
-          (mutable next-token)
+          (mutable capability-cells)
           (mutable plugins)
-          (mutable mounts)
-          (mutable op-handlers)
-          (mutable skills)
-          (mutable prompts)
-          (mutable extensions)
-          (mutable renderers)
-          (mutable chat-override)))
+          (mutable resources)
+          (mutable chat-override)
+          (mutable next-token)))
 
-(define (runtime-new config)
-  (make-runtime config
+(define (runtime-new cwd config)
+  (make-runtime cwd config #f #f
                 (make-runtime-root-scope)
                 (make-session-root-scope)
-                '() '() '() '() '() 0
-                '() '() '() '() '() '() '() #f))
+                '() '()
+                '((skills . ())
+                  (prompts . ())
+                  (extensions . ()))
+                #f 0))
 
 (define current-runtime (make-parameter #f))
-(define current-session (make-parameter #f))
 (define current-owner (make-parameter 'extension))
 
 (define (require-runtime)
   (or (current-runtime)
       (error 'runtime "no current runtime at this extension boundary")))
 
+(define (current-session)
+  (let ((rt (current-runtime)))
+    (and rt (runtime-session rt))))
+
 (define (require-session)
   (or (current-session)
-      (error 'runtime "no current session at this capability boundary")))
+      (error 'runtime "no active session at this capability boundary")))
+
+(define (runtime-resource rt key)
+  (let ((item (assq key (runtime-resources rt))))
+    (if item (cdr item) '())))
+
+(define (runtime-resource-set! rt key value)
+  (runtime-resources-set!
+   rt
+   (cons (cons key value)
+         (filter
+          (lambda (item) (not (eq? (car item) key)))
+          (runtime-resources rt))))
+  value)
 
 (define (runtime-next-token! rt)
-  (let ((n (+ 1 (runtime-next-token rt))))
-    (runtime-next-token-set! rt n)
-    n))
+  (let ((token (+ 1 (runtime-next-token rt))))
+    (runtime-next-token-set! rt token)
+    token))
+
+;; Newest cells are stored first. Ordered queries reverse once; visible queries
+;; keep only the newest cell per key and return those cells in registration
+;; order.
+(define (runtime-add-capability! rt owner kind key value)
+  (let ((token (runtime-next-token! rt)))
+    (runtime-capability-cells-set!
+     rt
+     (cons `(cap ,token ,owner ,kind ,key ,value)
+           (runtime-capability-cells rt)))
+    token))
+
+(define (runtime-capability-cell rt kind key)
+  (find
+   (lambda (cell)
+     (and (eq? (cap-kind cell) kind)
+          (equal? (cap-key cell) key)))
+   (runtime-capability-cells rt)))
+
+(define (runtime-capability rt kind key)
+  (let ((cell (runtime-capability-cell rt kind key)))
+    (and cell (cap-value cell))))
+
+(define (runtime-capability-cells-of rt kind)
+  (reverse
+   (filter
+    (lambda (cell) (eq? (cap-kind cell) kind))
+    (runtime-capability-cells rt))))
+
+(define (runtime-capabilities rt kind)
+  (map cap-value (runtime-capability-cells-of rt kind)))
+
+(define (runtime-capabilities-for rt kind key)
+  (map
+   cap-value
+   (filter
+    (lambda (cell) (equal? (cap-key cell) key))
+    (runtime-capability-cells-of rt kind))))
+
+(define (runtime-visible-capability-cells rt kind)
+  (let loop ((cells (runtime-capability-cells rt))
+             (seen '())
+             (visible '()))
+    (cond
+      ((null? cells) visible)
+      ((or (not (eq? (cap-kind (car cells)) kind))
+           (member (cap-key (car cells)) seen))
+       (loop (cdr cells) seen visible))
+      (else
+       (loop (cdr cells)
+             (cons (cap-key (car cells)) seen)
+             (cons (car cells) visible))))))
+
+(define (runtime-remove-capability! rt token)
+  (runtime-capability-cells-set!
+   rt
+   (filter
+    (lambda (cell) (not (eqv? (cap-token cell) token)))
+    (runtime-capability-cells rt)))
+  #t)
+
+(define (runtime-remove-owner! rt owner)
+  (runtime-capability-cells-set!
+   rt
+   (filter
+    (lambda (cell) (not (equal? (cap-owner cell) owner)))
+    (runtime-capability-cells rt)))
+  #t)
 
 ;;----------------------------------------------------------------------------
-;; events
+;; Events
 ;;----------------------------------------------------------------------------
 
 (define (runtime-subscribe! rt proc)
-  (let ((token (runtime-next-token! rt)))
-    (runtime-subscribers-set!
-     rt (cons (cons token proc) (runtime-subscribers rt)))
-    token))
+  (runtime-add-capability!
+   rt (current-owner) 'subscriber #f proc))
 
 (define (runtime-unsubscribe! rt token)
-  (runtime-subscribers-set!
-   rt (filter (lambda (item) (not (eqv? (car item) token)))
-              (runtime-subscribers rt)))
-  #t)
+  (runtime-remove-capability! rt token))
 
 (define (runtime-emit! rt event)
   (for-each
-   (lambda (item)
-     (guard (e (#t
-                (printf "[sah] event subscriber failed on ~a: ~a~%"
-                        (if (pair? event) (car event) event)
-                        (err->string e))))
-       ((cdr item) event)))
-   (reverse (runtime-subscribers rt)))
+   (lambda (subscriber)
+     (guard
+       (error
+        (#t
+         (fprintf
+          (current-error-port)
+          "[sah] event subscriber failed on ~a: ~a~%"
+          (if (pair? event) (car event) event)
+          (err->string error))))
+       (subscriber event)))
+   (runtime-capabilities rt 'subscriber))
   event)
 
-(define (subscribe! proc) (runtime-subscribe! (require-runtime) proc))
-(define (unsubscribe! token) (runtime-unsubscribe! (require-runtime) token))
-(define (emit event) (runtime-emit! (require-runtime) event))
+(define (subscribe! proc)
+  (runtime-subscribe! (require-runtime) proc))
+
+(define (unsubscribe! token)
+  (runtime-unsubscribe! (require-runtime) token))
+
+(define (emit event)
+  (runtime-emit! (require-runtime) event))
 
 ;;----------------------------------------------------------------------------
-;; hooks
+;; Hooks
 ;;----------------------------------------------------------------------------
 
 ;; (STAGE KIND FAILURE-POLICY)
@@ -103,58 +191,58 @@
   (let ((spec (assq stage hook-specs)))
     (if spec (list-ref spec 2) 'fail-open)))
 
-;; (hook TOKEN OWNER STAGE PROC)
 (define (runtime-register-hook! rt owner stage proc)
-  (let ((token (runtime-next-token! rt)))
-    (runtime-hooks-set!
-     rt (cons (list 'hook token owner stage proc) (runtime-hooks rt)))
-    token))
+  (runtime-add-capability! rt owner 'hook stage proc))
 
 (define (runtime-unregister-hook! rt token)
-  (runtime-hooks-set!
-   rt (filter (lambda (hook) (not (eqv? (list-ref hook 1) token)))
-              (runtime-hooks rt)))
-  #t)
+  (runtime-remove-capability! rt token))
 
 (define (runtime-hooks-for rt stage)
-  (map (lambda (hook) (list-ref hook 4))
-       (filter (lambda (hook) (eq? (list-ref hook 3) stage))
-               (reverse (runtime-hooks rt)))))
+  (runtime-capabilities-for rt 'hook stage))
 
 (define (runtime-invoke-hook rt stage thunk)
   (guard
-    (e (#t
-        (let* ((policy (hook-failure-policy stage))
-               (reason (format "hook ~a failed~a: ~a"
-                               stage
-                               (if (eq? policy 'fail-closed) " closed" "")
-                               (err->string e))))
-          (printf "[sah] ~a~%" reason)
-          (runtime-emit! rt `(ev hook-failed ,stage ,policy ,reason))
-          (values 'failed reason))))
+    (error
+     (#t
+      (let* ((policy (hook-failure-policy stage))
+             (reason
+              (format "hook ~a failed~a: ~a"
+                      stage
+                      (if (eq? policy 'fail-closed) " closed" "")
+                      (err->string error))))
+        (fprintf (current-error-port) "[sah] ~a~%" reason)
+        (runtime-emit! rt `(ev hook-failed ,stage ,policy ,reason))
+        (values 'failed reason))))
     (values 'ok (thunk))))
 
 (define (runtime-run-transform rt stage value apply-hook)
-  (let loop ((hooks (runtime-hooks-for rt stage)) (value value))
+  (let loop ((hooks (runtime-hooks-for rt stage))
+             (value value))
     (if (null? hooks)
         value
         (call-with-values
          (lambda ()
-           (runtime-invoke-hook rt stage
-                                (lambda () (apply-hook (car hooks) value))))
+           (runtime-invoke-hook
+            rt stage
+            (lambda () (apply-hook (car hooks) value))))
          (lambda (status result)
-           (cond ((eq? status 'failed)
-                  (if (eq? (hook-failure-policy stage) 'fail-closed)
-                      (error 'hook result)
-                      (loop (cdr hooks) value)))
-                 ((eq? result #f) (loop (cdr hooks) value))
-                 (else (loop (cdr hooks) result))))))))
+           (cond
+             ((eq? status 'failed)
+              (if (eq? (hook-failure-policy stage) 'fail-closed)
+                  (error 'hook result)
+                  (loop (cdr hooks) value)))
+             ((eq? result #f)
+              (loop (cdr hooks) value))
+             (else
+              (loop (cdr hooks) result))))))))
 
 (define (runtime-run-hook-effects rt stage apply-hook)
   (for-each
    (lambda (hook)
      (call-with-values
-      (lambda () (runtime-invoke-hook rt stage (lambda () (apply-hook hook))))
+      (lambda ()
+        (runtime-invoke-hook
+         rt stage (lambda () (apply-hook hook))))
       (lambda (status result)
         (when (and (eq? status 'failed)
                    (eq? (hook-failure-policy stage) 'fail-closed))
@@ -168,27 +256,29 @@
         #f
         (call-with-values
          (lambda ()
-           (runtime-invoke-hook rt stage
-                                (lambda () (apply (car hooks) args))))
+           (runtime-invoke-hook
+            rt stage
+            (lambda () (apply (car hooks) args))))
          (lambda (status result)
-           (cond ((eq? status 'failed)
-                  (if (eq? (hook-failure-policy stage) 'fail-closed)
-                      result
-                      (loop (cdr hooks))))
-                 ((and (pair? result) (eq? (car result) 'cancel))
-                  (cdr result))
-                 (else (loop (cdr hooks)))))))))
+           (cond
+             ((eq? status 'failed)
+              (if (eq? (hook-failure-policy stage) 'fail-closed)
+                  result
+                  (loop (cdr hooks))))
+             ((and (pair? result) (eq? (car result) 'cancel))
+              (cdr result))
+             (else
+              (loop (cdr hooks)))))))))
 
 (define (register-hook! stage proc)
-  (runtime-register-hook! (require-runtime) (current-owner) stage proc))
+  (runtime-register-hook!
+   (require-runtime) (current-owner) stage proc))
+
 (define (unregister-hook! token)
   (runtime-unregister-hook! (require-runtime) token))
-(define (hooks-for stage) (runtime-hooks-for (require-runtime) stage))
+
+(define (hooks-for stage)
+  (runtime-hooks-for (require-runtime) stage))
+
 (define (veto-reason stage . args)
   (apply runtime-veto-reason (require-runtime) stage args))
-
-(define (runtime-remove-hook-owner! rt owner)
-  (runtime-hooks-set!
-   rt (filter (lambda (hook) (not (equal? (list-ref hook 2) owner)))
-              (runtime-hooks rt)))
-  #t)

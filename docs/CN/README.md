@@ -35,7 +35,7 @@ hello.scm prints 42.
   import/export facade、两阶段 mount、可重试 rollback、动态 restart，以及
   renderer/widget 注册。见
   [EXTENDING.md](EXTENDING.md)。
-- **完整会话生命周期** —— `session-host` 统一 new、resume、switch、fork、clone、
+- **完整会话生命周期** —— Runtime 统一 new、resume、switch、fork、clone、
   model/thinking 状态恢复；所有前端共享同一套生命周期。
 - **多前端** —— 默认全屏 TUI，另有便携行式 REPL、one-shot print、结构化 JSON 和
   JSONL RPC。
@@ -405,7 +405,7 @@ bench/              数据结构与规模测量
 数据流：
 
 ```
-main → session-host → runtime/session → machine-transition
+main → runtime/session-control → machine-step
                   ──► effect interpreter：构建上下文
                   ──► llm-chat（ai/chat.ss → providers/openai-compatible.ss
                                → core/transport.ss → curl）

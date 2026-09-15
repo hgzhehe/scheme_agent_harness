@@ -1,309 +1,187 @@
 # sah 核心机制设计
 
-> 状态：当前实现的规范性设计文档
-> 日期：2026-09-14
-> 配套文档：[系统开发](DEVELOPMENT.md) ·
-> [组合与扩展](DESIGN-COMPOSITION.md) ·
-> [当前 gap](GAP-IMPLEMENTATION.md)
+> 状态：规范性设计
+> 日期：2026-09-15
+> 适用分支：`rewrite/low-entropy-core`
 
-## 1. 一句话定义
+## 1. 设计目标
 
-sah 是一个用 Scheme datum 描述控制、历史、作用和组合关系，再由少量解释器执行的
-agent harness。
+sah 是一个以 Scheme datum 为共同语言的 agent harness：
 
-它借用了三组思想，但没有把三套框架简单拼在一起：
+- 会话历史是 datum；
+- agent 控制状态和 continuation 是 datum；
+- plugin program、effect plan 和 rollback frame 是 datum；
+- message、tool call、event 与外部 JSON 投影仍从同一组 datum 产生。
 
-- 从 pi agent 取最小 harness：模型、工具、会话、资源和界面分层；
-- 从 Cordis 取 effect ownership：每个动态作用都必须知道由谁安装、如何撤销；
-- 从 defunctionalized CPS 取显式控制：下一步工作和 continuation 是数据，不藏在
-  宿主递归栈里；
-- 从 Scheme 取同像性：消息、状态、程序、日志和扩展计划尽量使用同一种可读数据表示。
+它吸收三类思想：
 
-最终形成的不是“带插件的聊天循环”，而是一个小型 agent 抽象机：
+1. pi agent 的小内核：provider、tool、session、resource、frontend 各自保持薄边界；
+2. Cordis 的动态组合：动态作用必须有 owner、安装证据和撤销路径；
+3. defunctionalized CPS：控制状态与下一步不藏在宿主调用栈和闭包中。
+
+目标不是复刻另一个 agent 的表面 API，而是得到一个 Scheme 风格的稳定内核：
 
 ```text
 input
-  -> machine transition
+  -> pure machine state
   -> effect request
   -> effect interpreter
   -> effect result
-  -> continuation resume
-  -> next machine state
+  -> data continuation
+  -> next state
 ```
 
-会话 journal 记录已经提交的事实，machine 描述尚未完成的控制，plugin frame 记录动态
-能力的撤销证据，runtime 则是这些可变资源的唯一所有者。
+## 2. 唯一总原则
 
-## 2. 五个正交对象
+> 一个事实只能有一个可变所有者。
 
-| 对象 | 回答的问题 | 当前表示 |
-|---|---|---|
-| datum | 系统正在处理什么值 | `msg`、`call`、entry、event |
-| machine / kont | 下一步要做什么 | `machine`、`await`、`kont`、`effect-result` |
-| effect / frame | 要改变什么，如何撤销 | agent effect、plugin op、prepared、frame |
-| journal / cursor | 什么已经提交，当前在哪条历史 | `slog`、SexprL session file |
-| scope / owner | 名字与动态能力属于谁 | `scope`、runtime-owned registry cell |
+这条规则决定整个结构：
 
-这五者不能互相替代：
+| 事实 | 唯一所有者 |
+|---|---|
+| 当前配置、活动会话、动态能力、插件槽、资源 | Runtime |
+| 已提交历史、cursor、会话词法状态 | Session |
+| 一次 agent run 尚未完成的控制 | Machine datum |
+| 一次插件激活的撤销证据 | PluginSlot.frames |
+| editor、selector、瞬时流式文本 | TUI app |
 
-- event 是实时观察，不是事实存储；
-- transcript 是历史，不是 continuation；
-- dependency graph 决定依赖，不等于 Scheme 的单父环境链；
-- rollback frame 能撤销已声明的动态 effect，不能让任意外部世界倒流；
-- `eval` 提供 Scheme 求值能力，但不定义 agent 控制语义。
+event 不是状态仓库，parameter 不是第二份状态，frontend 也不能复制核心对象。
 
-## 3. 总体结构
+## 3. 五个正交对象
 
-```mermaid
-flowchart TD
-    Main["main: bootstrap"] --> Runtime["runtime"]
-    Runtime --> Cap["capability registries"]
-    Runtime --> Hooks["hooks and events"]
-    Runtime --> Plugins["plugin definitions and mounts"]
-    Runtime --> Resources["skills, prompts, extensions"]
-    Main --> Host["session host"]
-    Host --> Session["active session"]
-    Session --> Journal["persistent log + cursor"]
-    Session --> Scope["session lexical scope"]
-    Host --> Driver["agent driver"]
-    Driver --> Machine["defunctionalized machine"]
-    Machine --> Effects["effect requests"]
-    Effects --> Provider["provider"]
-    Effects --> Tools["tools"]
-    Effects --> Journal
-    Effects --> Hooks
-    Runtime --> Renderers["renderers + widgets"]
-    Renderers --> Frontends["TUI / REPL / print / JSON / RPC"]
-```
+### Runtime
 
-源码主轴是：
+进程内唯一可变根，回答“这个 sah 实例现在拥有什么”。
 
-```text
-core/data
-  -> core/scope
-  -> core/runtime
-  -> core/capability
-  -> core/plugin
-  -> session / provider / tools
-  -> agent/machine
-  -> agent/agent
-  -> modes / main
-```
+### Session
 
-`manifest.ss` 是唯一加载顺序。加载源码只定义函数和 datum；真正的安装发生在
-`main` 的显式 bootstrap 中。
+已经提交的事实集合，回答“这条会话路径发生过什么”。
 
-## 4. Runtime：唯一的可变所有者
+### Machine
 
-`runtime` record 收拢一个 sah 实例的全部动态状态：
+纯控制 datum，回答“这次运行下一步要请求什么 effect”。
+
+### PluginSlot
+
+一个插件在 Runtime 中的完整事实，回答“定义、状态、scope 与撤销证据是什么”。
+
+### Renderer
+
+canonical datum 到显示或协议投影的纯边界，回答“同一个事实如何被不同前端观察”。
+
+这些对象不能互相代替：
+
+- transcript 不能充当 continuation；
+- event 不能充当 durable journal；
+- plugin dependency graph 不能充当 Scheme 环境 parent chain；
+- UI status 不能充当 agent state；
+- rollback frame 不能承诺撤销插件没有声明的外部副作用。
+
+## 4. Runtime
+
+Runtime 的当前形状是：
 
 ```scheme
 (runtime
+  cwd
   config
+  session
+  session-started?
   root-scope
   session-root-scope
-  tools commands hooks input-handlers subscribers
-  next-token
-  plugins mounts op-handlers
-  skills prompts extensions
-  renderers
-  chat-override)
+  capability-cells
+  plugins
+  resources
+  chat-override
+  next-token)
 ```
 
-这里最重要的不是 record 本身，而是所有权规则：
+### 4.1 两种 root scope
 
-1. 核心调用链显式传递 `rt`；
-2. 两个 runtime 的工具、hook、插件、事件订阅和 provider override 完全隔离；
-3. `current-runtime`、`current-session`、`current-owner` 只用于 extension/tool
-   边界，避免要求扩展作者手工传递整条上下文；
-4. load-time 不再修改 process-global registry；
-5. reload 根据 owner 删除动态能力，不依赖“保存一份 baseline 再整体还原”。
+`root-scope` 服务插件程序。它能看到 sah 的扩展 DSL 和 `op-*` 构造子。
 
-### 4.1 两种根作用域
+`session-root-scope` 服务会话 `eval`。它基于 Chez Scheme 环境，但不自动暴露 sah
+内部绑定。
 
-runtime 内有两个不同目的的根环境：
+这是语义隔离，不是安全沙箱。会话 Scheme 仍以当前用户权限运行。
 
-- `root-scope` 基于 `interaction-environment`，供 plugin program 求值。构建产物会把
-  sah 的顶层定义装入该环境，使插件可以使用 `op-*` 构造子和扩展 DSL；
-- `session-root-scope` 基于 `(environment '(chezscheme))` 的可变副本，供会话 `eval`
-  使用。会话能使用 Chez Scheme，但不会自动看到 sah 的 runtime 内部绑定。
+### 4.2 Parameter 的边界
 
-这不是安全沙箱。Chez 标准环境仍然具有文件和进程能力。它解决的是语义隔离和状态归属，
-不是恶意代码隔离。
+`current-runtime` 与 `current-owner` 只在 extension、tool handler 等动态边界使用。
+核心调用显式传递 `rt`。
 
-## 5. Capability：带 owner 的遮蔽栈
+`current-session` 不保存独立值，而是从 `current-runtime` 读取活动 Session，因此不会
+与 Runtime.session 发生漂移。
 
-工具和命令不是单值哈希表，而是按注册顺序保存的 owner cell：
+## 5. Capability
+
+所有动态能力只有一种底层表示：
 
 ```scheme
-(owned OWNER VALUE)
+(cap TOKEN OWNER KIND KEY VALUE)
 ```
 
-同名注册形成遮蔽：
+底层操作只有：
+
+```scheme
+(runtime-add-capability! rt owner kind key value)
+(runtime-capability rt kind key)
+(runtime-capabilities rt kind)
+(runtime-remove-capability! rt token)
+(runtime-remove-owner! rt owner)
+```
+
+tool、command、hook、subscriber、input handler、op handler、renderer 和 widget 都只是
+这个表之上的领域 API，不拥有自己的 registry。
+
+### 5.1 遮蔽
+
+同 kind、同 key 的新 cell 遮蔽旧 cell。删除 owner 或 token 后，下面的定义自然重新
+出现：
 
 ```text
-extension read
-core read
+extension/read
+core/read
 ```
 
-查找只看到最上层定义。删除 extension owner 后，原来的 core 定义自然重新出现。这个
-性质对 reload 和失败清理很关键，它避免“扩展覆盖了内置工具，扩展加载又失败，原工具也
-永久消失”的状态破坏。
+因此扩展覆盖内置工具后即使加载失败，核心工具仍能恢复，不需要 registry snapshot。
 
-当前 capability 包括：
+### 5.2 Owner 清理
 
-- tools；
-- slash commands；
-- input handlers；
-- hooks；
-- plugin op handlers；
-- message / entry / event renderer；
-- TUI widget。
+extension load failure、session stop、plugin rollback 和 reload 使用同一种删除语义。
+系统不再按 capability kind 分别维护 cleanup 代码。
 
-核心工具以纯 datum 定义：
+## 6. Session 与 Journal
+
+Session 只拥有已提交事实：
 
 ```scheme
-(tool NAME DESCRIPTION PARAMETERS HANDLER)
+(session id cwd file log port created model parent scope health recovery)
 ```
 
-源码加载不会注册它们。`install-core-tools!` 在 runtime 创建后统一安装。
-
-## 6. Agent machine：显式控制而非直接递归
-
-### 6.1 数据形状
-
-`agent/machine.ss` 定义四种控制 datum：
+内存日志是不可变树：
 
 ```scheme
-(machine PHASE SESSION CONFIG STEP PAYLOAD)
-(await EFFECT KONT)
-(kont TAG ...)
-(effect-result ok VALUE)
-(effect-result error KIND REASON)
+(slog persistent-vector cursor linear?)
 ```
 
-`machine-transition` 只查看 machine datum，返回：
+entry 的 ID 是 vector 位置，parent 指向父 entry。移动 cursor 会选择另一条 root-to-leaf
+路径，但不会删除旧分支。
 
-- 一个新的纯 machine state；
-- 一个待解释的 `await`；
-- `(done REPLY)`；
-- `(failed REASON)`。
+### 6.1 Cursor 是唯一视角
 
-`machine-resume` 只查看 continuation 和 effect result，生成下一 machine state。
-provider、工具、文件写入、hook 和事件都不在这两个函数中执行。
+cursor 同时决定：
 
-`machine-transition` 对 `(done ...)` 与 `(failed ...)` 也是总函数。effect 失败后产生的
-terminal datum 不会再被当成六槽 machine 读取，因此 provider 的原始错误不会被控制层
-二次异常掩盖。
+1. 发送给模型的 message path；
+2. 当前可见的 compaction checkpoint；
+3. 当前 model/provider/thinking metadata；
+4. 会话 Scheme scope 的 replay path。
 
-### 6.2 当前 phase
+这样不会出现“聊天回到了旧分支，但 Scheme 定义仍来自新分支”的双重现实。
 
-| phase | 意义 | 请求的 effect |
-|---|---|---|
-| `begin` | 准备并提交用户输入 | `begin` |
-| `turn` | 检查 step 上限并开始一轮 | `auto-compact` |
-| `request` | 请求模型 | `provider` |
-| `force-compact` | context overflow 后强制压缩 | `force-compact` |
-| `commit` | 持久化 assistant reply | `commit-reply` |
-| `tools` | 顺序执行工具调用 | `execute-tool` |
-| `finish` | 关闭生命周期 | `finish` |
-| `done` | 终态 | 无 |
+### 6.2 Durable eval
 
-context overflow 不是散落在 provider 调用外层的异常重试。它变成：
-
-```text
-provider error(context-overflow)
-  -> force-compact
-  -> provider retry once
-  -> success or failed
-```
-
-重试标记位于 machine payload 中，因此控制决策是可检查的。
-
-### 6.3 Effect interpreter
-
-`agent/agent.ss` 是 machine 的 effect interpreter。它负责：
-
-- 执行 `before-agent-start`；
-- 把 user/assistant/tool message 写入 journal；
-- 调 provider；
-- 执行 tool hook 和 tool handler；
-- 执行 compaction；
-- 发射生命周期事件；
-- 把异常归一成 `effect-result`。
-
-driver 只做一件事：反复执行
-`machine-transition -> interpret effect -> machine-resume`，直到 `done` 或 `failed`。
-
-当前 continuation 已经数据化，但还没有写入 session journal。进程崩溃后可以恢复历史，
-不能恢复“当时正等待哪个 effect”。这是明确保留的下一阶段 gap，而不是隐藏能力。
-
-## 7. Journal：历史是带游标的不可变树
-
-会话内存结构是：
-
-```scheme
-(slog PERSISTENT-VECTOR CURSOR LINEAR?)
-```
-
-每个 entry 的 `ID` 是 vector 下标，`PARENT` 指向父 entry：
-
-```scheme
-(message ID PARENT TS MSG)
-(compaction ID PARENT TS SUMMARY FIRST-KEPT TOKENS DETAILS)
-(branch-summary ID PARENT TS FROM SUMMARY)
-(scope-form ID PARENT TS FORM)
-...
-```
-
-因此：
-
-- append 只增加一条 entry；
-- branching 只是移动 cursor；
-- 原分支不会被删除；
-- 当前上下文由 `root -> cursor` 路径推导；
-- compaction 是树上的普通 checkpoint，不会重写旧消息。
-
-journal 落盘格式是 SexprL，每行一个完整 datum。新 session 保持 append port；从磁盘恢复
-的 session 首次写入时，通过完整 sibling staging file 和可恢复替换完成迁移，避免先删
-旧文件再写新文件。
-
-读取以“完整行”为恢复边界：
-
-- 最后一行未结束且不可读，视为 interrupted append，恢复到最后一个完整 datum；
-- 中段损坏或已经换行结束的坏 datum 仍是 hard corruption；
-- recovered session 是只读的，直到显式 `/repair`；
-- repair 先保留原文件为 `.recovered-<id>.bak`，再写入完整 journal；
-- health 与 recovery metadata 通过 `/session`、TUI 和 event protocol 可见。
-
-### 7.1 Session host
-
-前端不持有一个永远不变的 session 闭包，而是持有：
-
-```scheme
-(session-host RT CWD CONFIG ACTIVE-SESSION STARTED?)
-```
-
-`new`、`resume`、`fork`、`clone` 全部走同一个 switch path：
-
-```text
-session-before-switch veto
-  -> session-shutdown / session-end
-  -> remove old session-owned capabilities
-  -> close old journal
-  -> replace active session
-  -> restore model/thinking settings from active path
-  -> session-start
-  -> register new session commands
-```
-
-因此 REPL、TUI、RPC 和 print command 不会各自实现一套生命周期。`model-change` 与
-`thinking-level` entry 由 host 消费；`/model`、`/thinking` 和 RPC 修改会继续写回
-journal，branch/resume 后按当前 path 恢复。
-
-## 8. Session scope：环境是当前路径的投影
-
-每个 session 有独立的 lexical scope。`eval` 的 durable form：
+改变词法状态的成功表单会写为 `scope-form`：
 
 ```scheme
 define
@@ -314,56 +192,166 @@ include-ci
 import
 ```
 
-会以 `(scope-form ...)` 写入 journal，但不会进入发送给模型的消息上下文。除此之外，
-如果一个顶层宏表单实际改变了 scope 的 binding 集合，例如 `define-record-type`，
-它也会被识别为 durable form。
+如果宏表单实际产生新 binding，也会被识别为 durable form。
 
-旧版 journal 可能已经保存了依赖某个 `include`/`import` 的定义，却没有保存环境构造
-表单本身。加载时只会从当前路径上“成功的 eval 调用及其成功结果”中补回这类表单；
-普通表达式和失败调用不会被重放。
-
-### 8.1 分支语义
-
-scope 不是对整个文件顺序重放，而是只重放当前 cursor 路径上的 `scope-form`：
+durable eval 的不变量是：
 
 ```text
-root:   (define x 1)
-old:    (define abandoned 2)
-branch: (set! x 7)
+scope evaluation succeeds
+  and journal append succeeds
+  or the scope is rebuilt from the durable path
 ```
 
-切到 root 后创建 branch，新的 scope 中有 `x = 7`，没有 `abandoned`。重新加载 session
-时结果相同。
+因此 journal 写失败不会留下只存在于内存的定义。
 
-这条规则把 Scheme 环境和会话树真正绑定起来：
+### 6.3 损坏恢复
 
-> cursor 决定对话上下文，也决定 lexical state。
+SexprL 文件以完整换行 datum 为恢复边界：
 
-### 8.2 Durable eval 事务
+- 最后一行被中断：恢复完整前缀，标记为 recovered/read-only；
+- 中间行损坏或完整坏行：拒绝加载；
+- `/repair` 先保留原字节备份，再写完整 journal；
+- repair 成功前禁止继续 append。
 
-持久 scope 变更必须同时满足：
+## 7. Session Control
 
-1. Scheme 求值成功；
-2. scope-form journal append 成功。
+Runtime 直接拥有唯一活动 Session。没有额外的 session host record。
 
-如果写日志失败，session 会从最后一个完整 journal 路径重建 scope，删除刚才产生的
-幽灵绑定。于是内存状态不会领先于持久事实。
+统一生命周期入口：
 
-普通非 durable 表达式只求值，不写 journal。它们的外部副作用不具备自动回滚语义。
+```scheme
+(runtime-start-session! rt reason previous-file)
+(runtime-stop-session! rt reason target-file)
+(runtime-switch-session! rt next reason)
+(runtime-new-session! rt)
+(runtime-resume-session! rt path)
+(runtime-fork-session! rt entry-id)
+(runtime-clone-session! rt)
+```
 
-### 8.3 作用域写规则
+switch 的固定顺序是：
 
-- 本层 `define` 可以创建或重定义本地名字；
-- 本层 `set!` 只能修改本层已经定义的名字；
-- import 或父层名字不可被子层 `set!`；
-- 子层可以通过 `define` 显式遮蔽父层；
-- 多个 plugin import 导出同名 binding 时，链接失败，不静默选一个。
+```text
+session-before-switch veto
+  -> shutdown/end hooks
+  -> session-end event
+  -> remove old session owner
+  -> close old journal
+  -> replace Runtime.session
+  -> project model/thinking into Runtime.config
+  -> session-start event/hooks
+  -> install session commands
+```
 
-## 9. Plugin：依赖图、词法 facade 与 effect transaction
+TUI、RPC、REPL 和 slash command 不得自行拼装这条流程。
 
-### 9.1 Plugin program
+## 8. Defunctionalized CPS Machine
 
-插件源码形状类似 Scheme library：
+Machine 只含稳定数据：
+
+```scheme
+(start PROMPT LIMIT)
+(turn STEP LIMIT)
+(request STEP LIMIT RETRIED?)
+(force-compact STEP LIMIT)
+(commit STEP LIMIT REPLY)
+(tools STEP LIMIT CALLS)
+(await EFFECT CONTINUATION)
+(done REPLY)
+(failed REASON)
+```
+
+它不包含 Runtime、Session、config、port 或 procedure。
+
+纯函数：
+
+```scheme
+(machine-step state)
+(machine-resume continuation effect-result)
+```
+
+continuation 当前有：
+
+```scheme
+(next STATE)
+(provider STEP LIMIT RETRIED?)
+(committed STEP LIMIT REPLY)
+```
+
+### 8.1 Effect interpreter
+
+`agent/agent.ss` 解释以下 effect：
+
+```scheme
+(effect begin PROMPT)
+(effect auto-compact STEP)
+(effect provider STEP)
+(effect force-compact)
+(effect commit-reply STEP REPLY)
+(effect execute-tool CALL)
+```
+
+provider、tool、hook、journal 和 event 都只在 interpreter 中发生。
+
+### 8.2 Driver
+
+唯一 agent 入口是：
+
+```scheme
+(run-agent! rt prompt)
+```
+
+唯一输入入口是：
+
+```scheme
+(runtime-submit! rt input)
+```
+
+所有 mode 只提交输入。它们不再组合 `process-input` 和 `run-agent`。
+
+agent 成功或失败都通过同一个 finalizer 发射：
+
+```scheme
+agent-failed? -> agent-end -> agent-settled
+```
+
+### 8.3 Context overflow
+
+overflow 是显式控制转换：
+
+```text
+provider error(context-overflow)
+  -> force-compact
+  -> request(retried? = true)
+  -> reply or failed
+```
+
+是否已经重试是 machine datum 的一部分，不藏在异常处理闭包中。
+
+## 9. Plugin
+
+一个插件只对应一个 Runtime slot：
+
+```scheme
+(plugin-slot OWNER DEFINITION STATE SCOPE OPS FRAMES)
+```
+
+不存在独立 plugin table 与 mount table。
+
+状态只有：
+
+```text
+defined
+mounted
+transaction-failed
+dispose-failed
+```
+
+`linking`、`committing`、`disposing` 是调用栈中的短暂过程，不是需要持久同步的状态。
+
+### 9.1 Program 与 Scope
+
+插件程序：
 
 ```scheme
 (plugin NAME
@@ -372,281 +360,162 @@ branch: (set! x 7)
   OP-FORM ...)
 ```
 
-插件体不是任意 load-time effect，而是一组求值后产生 op datum 的表达式：
+链接器先解析依赖图，再把 dependency 的 declared exports 投影到 import facade。private
+binding 不会泄漏；同名 export 冲突会失败。
+
+### 9.2 Op algebra
+
+op handler 描述：
 
 ```scheme
-(op-define 'project-name "sah")
-(op-register-tool 'project-name "..." (schema '()) handler)
-(op-register-hook 'before-agent-start hook)
-(op-register-command 'status "..." handler)
-(op-register-renderer 'message 'assistant renderer)
-(op-register-widget 'footer 'build-status widget)
+(op-handler UNDO-KIND REQUIRES PREPARE APPLY ROLLBACK SHOW)
 ```
 
-### 9.2 Graph 与 scope chain 分离
+- `REQUIRES` 声明词法依赖；
+- `PREPARE` 在任何外部作用前取得所需信息；
+- `APPLY` 执行作用并返回 handle；
+- `ROLLBACK` 使用 handle 撤销；
+- `SHOW` 只负责诊断。
 
-依赖关系是图，Chez 环境只有单 parent。sah 不把二者混为一谈：
+registry op 的 handle 是 capability token。scope op 的撤销是丢弃未发布 scope。
 
-1. 递归解析 dependency graph；
-2. 确认无缺失依赖和 cycle；
-3. 读取每个 dependency 的 declared exports；
-4. 把 export 值投影到独立 import facade；
-5. 将多个 facade 合成为插件的 parent chain；
-6. 在其上创建 plugin local scope。
+### 9.3 Mount transaction
 
-private binding 不会穿过 facade。冲突判断只针对 declared 且实际存在的 exports。
-
-### 9.3 Op algebra
-
-op handler 由 runtime 持有，形状为：
-
-```scheme
-(op-handler OWNER KIND UNDO-KIND
-            REQUIRES PREPARE APPLY ROLLBACK SHOW)
-```
-
-职责：
-
-- `REQUIRES` 声明 op 需要的 binding；
-- `PREPARE` 在任何外部 effect 发生前读取 rollback 所需状态；
-- `APPLY` 执行 effect，返回 handle；
-- `ROLLBACK` 使用 prepared state 和 handle 撤销；
-- `SHOW` 可选，只负责可读呈现。
-
-执行后形成 frame：
-
-```scheme
-(frame OWNER OP SOURCE PREPARED HANDLE UNDO-KIND STATUS)
-```
-
-frame 是撤销证据，不是不透明 disposer 闭包。
-
-### 9.4 两阶段 mount
-
-一次 `runtime-mount-plugin!` 覆盖本次新激活的完整 dependency subgraph：
+一次 mount：
 
 ```text
-resolve/link all scopes
-  -> build complete op plan
-  -> prepare every effect op
-  -> mark mounts committing
+resolve dependency order
+  -> link every fresh scope
+  -> prepare every external effect
   -> apply in dependency order
-  -> record frames
-  -> mark all mounted
-  -> publish buffered events
+  -> publish slots as mounted
 ```
 
-prepare 阶段失败时，apply 次数必须为 0。
+prepare 失败时 apply 次数为零。apply 失败时，已执行 frame 严格逆序 rollback。
 
-commit 阶段失败时，已经 apply 的 frame 按严格逆序 rollback。rollback 全部成功后恢复
-mount snapshot；rollback 自身失败时，不能伪装成成功，而是保留：
+如果 rollback 也失败，残余 frame 会写回对应 PluginSlot，状态为
+`transaction-failed`。后续 dispose 可以重试；系统不会用日志警告假装清理完成。
+
+### 9.4 Dispose 与 Restart
+
+dispose 先处理 active dependents，再撤销自己的 frames。
+
+restart 记录当前 active dependent closure，完成 dispose 后按依赖顺序恢复。这样不会留下
+“状态显示 mounted，但依赖 scope 已被替换”的悬挂插件。
+
+## 10. Extension 与 Resource
+
+extension 文件的 owner 是其绝对路径。加载失败时：
+
+```text
+dispose owned plugin slots
+  -> remove every capability with this owner
+  -> do not publish extension path
+```
+
+skills、prompts、extensions 使用 Runtime.resources 的同一资源表，不各自建立可变字段。
+
+项目级资源优先于用户级资源。它们当前仍以本机用户权限执行，因此 trust/policy 是明确
+gap。
+
+## 11. Renderer 与 Frontend
+
+渲染层分成四个责任：
+
+| 模块 | 责任 |
+|---|---|
+| `render/text.ss` | display width、ANSI、plain/Markdown/HTML 文本 |
+| `render/json.ss` | message、entry、event 的稳定结构化投影 |
+| `render/dispatch.ss` | renderer capability、失败回退、event sink |
+| `render/session.ss` | 整体会话文档与导出 |
+
+JSON 是协议投影，不允许显示插件改写。plain、ANSI、Markdown、HTML 可以被 renderer
+capability 覆盖。
+
+renderer 失败只写诊断并回退内置实现，不能打断 agent 或改变 journal。
+
+### 11.1 TUI
+
+TUI 只保存：
+
+- editor；
+- selector；
+- stream/reasoning 瞬时文本；
+- status 与 notice；
+- terminal adapter 和 event subscription。
+
+它使用一个 `tui-frame` 组装布局：
 
 ```scheme
-(mount NAME transaction-failed SCOPE OPS RESIDUAL-FRAMES)
+(tui-frame app width)         ; 保留原生 terminal scrollback
+(tui-frame app width height)  ; 有界视口
 ```
 
-之后 `runtime-dispose-plugin!` 可以继续处理 residual frame。
+Windows Terminal 使用主屏而不是 alternate screen，因而保留滚动条和原生鼠标选择。
+鼠标滚轮输入被解码但不会调用不可靠的 stdin readiness 路径。
 
-### 9.5 Dispose
+当前 agent interpreter 仍同步；真正的 cancel、steering 和输入队列属于 gap，而不是用
+虚假的 UI 状态宣称已经完成。
 
-dispose 先卸载依赖当前 plugin 的 mounted plugin，再逆序撤销自己的 registry frame。
-scope effect 的逆是丢弃整个 plugin scope，因为 Chez 没有可靠的单 binding 删除操作。
+### 11.2 RPC
 
-失败状态为：
-
-```text
-dispose-failed
-```
-
-未撤销的 frame 原样保留，可再次调用 dispose。只有 frame 真正撤销后才发
-`plugin-undo` 事件。
-
-### 9.6 Mount 状态
-
-```text
-defined
-  -> linking
-  -> linked
-  -> committing
-  -> mounted
-  -> disposing
-  -> defined
-
-commit rollback failure -> transaction-failed
-dispose failure         -> dispose-failed
-```
-
-`transaction-failed` 和 `dispose-failed` 都是诚实状态，不是日志警告。
-
-### 9.7 Restart
-
-`runtime-restart-plugin!` 不是只重跑一个文件。它先求出当前激活的 dependents closure，
-按依赖逆序 dispose，再按原激活关系 mount。这样重启 dependency 后，其 dependents
-不会留在“逻辑上 mounted、实际依赖已被替换”的悬空状态。
-
-plugin renderer、widget、tool、command、hook 和自定义 op handler 都使用同一 owner
-清理路径。dispose 成功后，不应留下任何该 plugin 拥有的可观察能力。
-
-## 10. Hooks 与 events
-
-events 和 hooks 使用同一个 runtime，但语义完全不同。
-
-### Events
-
-- 只观察；
-- subscriber 异常被记录但不改变核心流程；
-- plugin mount 事件只在整个事务提交后发布；
-- session journal 才是持久事实源。
-
-### Hooks
-
-- 可以 transform、veto 或产生 effect；
-- 每个 stage 有集中定义的 failure policy；
-- guard/veto 类 hook 默认 fail-closed；
-- observer/transform 类 hook 默认 fail-open；
-- hook failure 会发 `(ev hook-failed ...)`。
-
-当前 stage 与策略定义集中在 `core/runtime.ss` 的 `hook-specs`，调用点不能自行发明失败
-语义。
-
-## 11. Provider 与 context
-
-provider adapter 只负责协议形状：
-
-- OpenAI-compatible Chat Completions；
-- OpenAI Responses；
-- streaming delta 转换为 runtime event；
-- request/response codec；
-- usage 与 provider continuation data。
-
-agent context 由：
-
-```text
-system prompt
-  + current journal path projected to messages
-  + latest compaction checkpoint
-```
-
-动态工具列表来自 runtime。生成式默认 system prompt 会在 extension tools 加载后重新
-计算，因此 prompt 里列出的工具与实际可调用工具一致。
-
-OpenAI Responses 的 opaque output 当前保存在 usage alist 的 `responses-output` 中以供
-下一次请求重放。这保持了协议正确性，但概念上仍应从 token usage 中拆出，见 gap 文档。
-
-## 12. Renderer 与多前端
-
-核心只发 canonical event、message 和 journal entry，不直接打印。runtime 中的
-renderer registry 按三类 target 分派：
-
-```text
-message + role
-entry   + kind
-event   + kind
-widget  + placement/key
-```
-
-renderer 是 capability，因此支持 owner shadow、plugin mount/dispose 和失败回退。
-扩展 renderer 抛异常时，事件会记录到诊断端口，并退回内置 renderer；显示层故障不能
-中断 agent 或破坏 journal。
-
-所有格式都从同一 canonical projection 生成：
-
-- `plain`：无终端控制符；
-- `ansi`：终端颜色与状态；
-- `markdown`：可读会话文档；
-- `html`：独立会话导出文档；
-- `json`：稳定外部对象，适合程序消费。
-
-TUI 不是第二套 agent。它只维护 editor、selector、viewport 和流式显示状态，提交输入、
-切换会话、修改模型仍通过 `session-host`。核心组件接口以可用宽度为输入，输出受宽度
-约束的行和光标位置；文本宽度按终端 display width 计算，不把宽字符当成一个 ASCII
-列。
-
-JSONL RPC 同样复用 host，当前支持：
+RPC 与其他 mode 使用同一个 Runtime：
 
 ```text
 prompt command get_state new_session resume fork
 set_model set_thinking export shutdown
 ```
 
-stdout 只写协议 envelope；诊断、hook 和 renderer 错误写 stderr。当前 interpreter
-仍是同步的，所以 RPC 是串行 request/reply 协议，还不承诺取消或并发 steering。
-state envelope 包含 session、model、provider、thinking 和 journal health；shutdown
-会先返回确认响应。
+stdout 只写 JSONL envelope，诊断写 stderr。当前协议是串行的。
 
-## 13. Bootstrap
+## 12. Bootstrap
 
-`main` 的顺序是确定的：
+加载源码只定义值，不安装动态能力。
+
+启动顺序：
 
 ```text
-parse args
-  -> load raw config
+parse config
   -> runtime-new
-  -> install core op handlers
-  -> install core tools
-  -> install resource input handlers
-  -> finalize base config
-  -> load extensions / mount plugins
-  -> load skills and prompts
-  -> refresh generated system prompt
-  -> resolve or create initial session
-  -> create session host
-  -> subscribe selected event renderer
-  -> host start: hooks + session-owned commands
-  -> run TUI / REPL / print / JSON / RPC driver
-  -> host stop: shutdown hooks + close journal
-  -> dispose mounted plugins
+  -> install core op handlers/tools/input handlers
+  -> finalize config
+  -> load resources and mount plugins
+  -> create or load session
+  -> Runtime.session := session
+  -> runtime-start-session!
+  -> run selected mode
+  -> runtime-stop-session!
+  -> dispose plugins
 ```
 
-这个顺序也是生命周期契约。源码文件的加载顺序不再承担 runtime 初始化。
+`manifest.ss` 是 source、tests、bench 和 build 共用的唯一加载顺序。
 
-## 14. 核心不变量
+## 13. 核心不变量
 
-1. 一个运行实例的动态状态只属于一个 runtime。
-2. 核心路径显式传递 runtime；dynamic parameter 只用于边界。
-3. machine transition 和 continuation resume 不执行 IO。
-4. 只有 effect interpreter 执行 provider、tool、hook 和 journal effect。
-5. journal 只追加完整 datum；内存状态不能领先于 durable journal。
-6. cursor 同时决定 conversation context 和 session lexical scope。
-7. scope-form 不进入模型上下文。
-8. import 只暴露 declared exports，private binding 不泄漏。
-9. 子 scope 不能 `set!` 父 scope binding。
-10. plugin dependency subgraph 在任何 apply 前完成 prepare。
-11. commit 事件只在整个 plugin transaction 成功后发布。
-12. rollback/dispose 失败必须保留 residual frame 和失败状态。
-13. owner 删除后，被遮蔽的旧 capability 必须重新可见。
-14. extension 加载失败不能留下 tool、command、hook、plugin 或 op handler。
-15. 两个 runtime 不能共享可变 registry。
-16. source、test、build 使用同一个 manifest。
-17. 所有 mode 通过同一个 session host 执行切换、恢复、fork 和模型状态修改。
-18. renderer/widget 失败只能降级显示，不能改变 agent、session 或 plugin 事务结果。
-19. JSON/RPC 模式的 stdout 只包含结构化协议数据，诊断必须写 stderr。
-20. recovered session 在显式 repair 前不可写；repair 必须先保留原始字节备份。
+1. 一个进程实例只有一个 Runtime。
+2. 一个 Runtime 只有一个 capability list。
+3. 当前 config 和 active session 只保存在 Runtime。
+4. Session journal 只记录已经提交的事实。
+5. cursor 同时决定 context、metadata 与 Scheme scope。
+6. Machine 是纯 datum，不持有运行时对象或 procedure。
+7. mode 只通过 `runtime-submit!` 提交输入。
+8. agent 生命周期只有一个 finalizer。
+9. 一个 plugin 名字只有一个 PluginSlot。
+10. plugin effect 在完整 prepare 后才开始 apply。
+11. rollback 失败必须保留 residual frame。
+12. JSON projection 是稳定协议，不是主题系统。
+13. TUI 不复制 Session、config 或 Machine。
+14. 旧 representation 被替代时必须在同一变更中删除。
 
-## 15. 这种设计为什么适合 Scheme
+## 14. 非目标
 
-这里的 Scheme 优雅不在于“少写几行”，而在于几个层次使用同一种材料：
+当前内核不声称：
 
-- 对话是 datum；
-- machine state 是 datum；
-- continuation 是 datum；
-- plugin program 是 datum；
-- op 和 frame 是 datum；
-- journal 是 datum stream；
-- config 是 alist；
-- 协议边界才转换为 JSON。
+- Scheme eval 是安全沙箱；
+- 任意外部 plugin effect 都可回滚；
+- 进程崩溃后能恢复未完成 continuation；
+- provider/tool 调用可异步取消；
+- RPC 支持并发 steering；
+- 多进程可同时写同一 session。
 
-因此检查、测试、打印、持久化和解释不需要五套对象模型。复杂度集中在少数解释器和
-不变量上，而不是分散在类层级、回调生命周期和隐藏 singleton 中。
-
-真正应当保持的“极简”不是文件数量少，而是语义中心少：
-
-```text
-machine explains control
-journal explains history
-scope explains names
-op/frame explains owned effects
-runtime explains mutable ownership
-```
-
-其余模块都应当是这些中心的具体解释器或边界适配器。
+这些限制写入 gap 文档，不能通过兼容层、第二状态表或 UI 拼装掩盖。

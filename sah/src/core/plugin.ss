@@ -1,185 +1,145 @@
-;;; plugin.ss -- plugins are data programs interpreted by a runtime.
-;;;
-;;; Source:
-;;;   (plugin NAME (imports ...) (exports ...) OP-FORM ...)
-;;;
-;;; Runtime data:
-;;;   (op-handler OWNER KIND UNDO-KIND REQUIRES PREPARE APPLY ROLLBACK SHOW)
-;;;   (frame OWNER OP SOURCE PREPARED HANDLE UNDO-KIND STATUS)
-;;;   (mount NAME STATE SCOPE OPS FRAMES)
-;;;
-;;; The import graph and lexical chain are distinct. Dependencies are resolved as
-;;; a graph, then each declared export surface is projected into a scope facade.
-;;; Mount is one transaction over every dependency activated by the request.
+;;; plugin.ss -- dependency-linked programs with transactional effects.
 
-(define (plugin-name plugin) (list-ref plugin 1))
-(define (plugin-imports plugin) (list-ref plugin 2))
-(define (plugin-declared-exports plugin) (list-ref plugin 3))
-(define (plugin-body plugin) (list-ref plugin 4))
+(define (plugin-name p) (list-ref p 1))
+(define (plugin-imports p) (list-ref p 2))
+(define (plugin-declared-exports p) (list-ref p 3))
+(define (plugin-body p) (list-ref p 4))
 
-(define (plugin-entry-owner entry) (list-ref entry 1))
-(define (plugin-entry-plugin entry) (list-ref entry 2))
+;; One slot is the whole runtime truth for one plugin.
+(define-record-type plugin-slot
+  (fields owner definition
+          (mutable state)
+          (mutable scope)
+          (mutable ops)
+          (mutable frames)))
 
-(define (mount-name mount) (list-ref mount 1))
-(define (mount-state mount) (list-ref mount 2))
-(define (mount-scope mount) (list-ref mount 3))
-(define (mount-ops mount) (list-ref mount 4))
-(define (mount-frames mount) (list-ref mount 5))
+(define (plugin-slot-name slot)
+  (plugin-name (plugin-slot-definition slot)))
 
-(define (frame-owner frame) (list-ref frame 1))
-(define (frame-op frame) (list-ref frame 2))
-(define (frame-source frame) (list-ref frame 3))
-(define (frame-prepared frame) (list-ref frame 4))
-(define (frame-handle frame) (list-ref frame 5))
-(define (frame-undo-kind frame) (list-ref frame 6))
-(define (frame-status frame) (list-ref frame 7))
+(define (plugin-slot-reset! slot)
+  (plugin-slot-state-set! slot 'defined)
+  (plugin-slot-scope-set! slot #f)
+  (plugin-slot-ops-set! slot '())
+  (plugin-slot-frames-set! slot '())
+  slot)
+
+(define (plugin-slot-active? slot)
+  (and slot
+       (memq (plugin-slot-state slot)
+             '(mounted transaction-failed dispose-failed))
+       #t))
+
+(define (runtime-plugin-slot rt name)
+  (find (lambda (slot) (eq? (plugin-slot-name slot) name))
+        (runtime-plugins rt)))
 
 (define (runtime-plugin rt name)
-  (let ((entry
-         (find
-          (lambda (entry)
-            (eq? (plugin-name (plugin-entry-plugin entry)) name))
-          (runtime-plugins rt))))
-    (and entry (plugin-entry-plugin entry))))
+  (let ((slot (runtime-plugin-slot rt name)))
+    (and slot (plugin-slot-definition slot))))
 
-(define (runtime-mount rt name)
-  (let ((item (assq name (runtime-mounts rt))))
-    (and item (cdr item))))
-
-(define (runtime-set-mount! rt name mount)
-  (runtime-mounts-set!
-   rt (cons (cons name mount)
-            (filter (lambda (item) (not (eq? (car item) name)))
-                    (runtime-mounts rt))))
-  mount)
-
-(define (runtime-define-plugin! rt plugin)
-  (let ((name (plugin-name plugin)))
-    (when (runtime-plugin rt name)
-      (error 'plugin
-             (format "duplicate plugin definition: ~a" name)))
+(define (runtime-define-plugin! rt definition)
+  (let ((name (plugin-name definition)))
+    (when (runtime-plugin-slot rt name)
+      (error 'plugin (format "duplicate plugin definition: ~a" name)))
     (runtime-plugins-set!
-     rt (cons (list 'plugin-entry (current-owner) plugin)
-              (runtime-plugins rt)))
-    (runtime-set-mount! rt name (list 'mount name 'defined #f '() '()))
+     rt
+     (cons (make-plugin-slot
+            (current-owner) definition 'defined #f '() '())
+           (runtime-plugins rt)))
     name))
 
 (define (runtime-plugin-list rt)
-  (map (lambda (item)
-         (cons (car item) (mount-state (cdr item))))
-       (runtime-mounts rt)))
+  (map (lambda (slot)
+         (cons (plugin-slot-name slot)
+               (plugin-slot-state slot)))
+       (reverse (runtime-plugins rt))))
 
 ;;----------------------------------------------------------------------------
-;; op algebra
+;; Op algebra
 ;;----------------------------------------------------------------------------
 
-(define (handler-owner handler) (list-ref handler 1))
-(define (handler-kind handler) (list-ref handler 2))
-(define (handler-undo-kind handler) (list-ref handler 3))
-(define (handler-requires handler) (list-ref handler 4))
-(define (handler-prepare handler) (list-ref handler 5))
-(define (handler-apply handler) (list-ref handler 6))
-(define (handler-rollback handler) (list-ref handler 7))
+;; (op-handler UNDO-KIND REQUIRES PREPARE APPLY ROLLBACK SHOW)
+(define (handler-undo h) (list-ref h 1))
+(define (handler-requires h) (list-ref h 2))
+(define (handler-prepare h) (list-ref h 3))
+(define (handler-apply h) (list-ref h 4))
+(define (handler-rollback h) (list-ref h 5))
+(define (handler-show h) (list-ref h 6))
 
-(define (runtime-register-op-handler! rt owner kind undo-kind requires prepare apply rollback . show)
-  (when (find (lambda (handler) (eq? (handler-kind handler) kind))
-              (runtime-op-handlers rt))
-    (error 'plugin
-           (format "duplicate op handler: ~a" kind)))
-  (let ((handler
-         (list 'op-handler owner kind undo-kind requires prepare apply rollback
-               (if (pair? show) (car show) #f))))
-    (runtime-op-handlers-set!
-     rt (cons handler (runtime-op-handlers rt)))
-    kind))
+(define (runtime-register-op-handler!
+         rt owner kind undo requires prepare apply rollback . show)
+  (when (runtime-capability rt 'op-handler kind)
+    (error 'plugin (format "duplicate op handler: ~a" kind)))
+  (runtime-add-capability!
+   rt owner 'op-handler kind
+   (list 'op-handler undo requires prepare apply rollback
+         (and (pair? show) (car show)))))
 
 (define (runtime-op-handler rt op)
-  (let ((handler
-         (and (pair? op)
-              (find
-               (lambda (handler)
-                 (eq? (handler-kind handler) (car op)))
-               (runtime-op-handlers rt)))))
-    (if handler
-        handler
-        (error
-         'plugin
-         (format "op is not in this runtime's algebra: ~s" op)))))
+  (or (and (pair? op)
+           (runtime-capability rt 'op-handler (car op)))
+      (error 'plugin
+             (format "op is not in this runtime's algebra: ~s" op))))
 
 (define (op-kind op) (car op))
 
-(define (runtime-remove-op-handler-owner! rt owner)
-  (runtime-op-handlers-set!
-   rt (filter
-       (lambda (handler)
-         (not (equal? (handler-owner handler) owner)))
-       (runtime-op-handlers rt)))
-  #t)
-
-(define (runtime-clear-dynamic-op-handlers! rt)
-  (runtime-op-handlers-set!
-   rt (filter
-       (lambda (handler)
-         (equal? (handler-owner handler) 'core))
-       (runtime-op-handlers rt)))
-  rt)
-
 (define (op-show rt op)
-  (let* ((handler (runtime-op-handler rt op))
-         (custom (list-ref handler 8))
-         (kind-text
-          (let ((text (symbol->string (op-kind op))))
-            (if (string-prefix? "op-" text)
-                (substring text 3 (string-length text))
-                text))))
+  (let* ((custom (handler-show (runtime-op-handler rt op)))
+         (raw (symbol->string (op-kind op)))
+         (kind (if (string-prefix? "op-" raw)
+                   (substring raw 3 (string-length raw))
+                   raw)))
     (or (and custom (custom op))
         (string-append
-         kind-text
-         (if (and (> (length op) 1) (symbol? (cadr op)))
+         kind
+         (if (and (pair? (cdr op)) (symbol? (cadr op)))
              (string-append " " (symbol->string (cadr op)))
              "")))))
 
-(define (prepare-op rt owner scope source op)
+;; (prepared OWNER OP VALUE UNDO)
+(define (prepare-op rt owner scope op)
   (let* ((handler (runtime-op-handler rt op))
-         (requires ((handler-requires handler) op rt scope owner))
-         (missing
-          (cond ((not requires) '())
-                ((symbol? requires)
-                 (if (scope-has? scope requires) '() (list requires)))
-                ((list? requires)
-                 (filter (lambda (name) (not (scope-has? scope name)))
-                         requires))
-                (else
-                 (error
-                  'plugin
-                  (format
-                   "bad requirements for ~s: ~s"
-                   op requires))))))
+         (required ((handler-requires handler) op rt scope owner))
+         (required (cond ((not required) '())
+                         ((symbol? required) (list required))
+                         ((list? required) required)
+                         (else
+                          (error 'plugin
+                                 (format "bad requirements for ~s: ~s"
+                                         op required)))))
+         (missing (filter (lambda (name) (not (scope-has? scope name)))
+                          required)))
     (when (pair? missing)
-      (error
-       'plugin
-       (format
-        "~a is missing required bindings for ~s: ~s"
-        owner op missing)))
-    (let ((prepared ((handler-prepare handler) op rt scope owner)))
-      (list 'prepared owner op source prepared
-            (handler-undo-kind handler)))))
+      (error 'plugin
+             (format "~a is missing required bindings for ~s: ~s"
+                     owner op missing)))
+    (list 'prepared owner op
+          ((handler-prepare handler) op rt scope owner)
+          (handler-undo handler))))
 
+(define (prepared-owner p) (list-ref p 1))
+(define (prepared-op p) (list-ref p 2))
+(define (prepared-value p) (list-ref p 3))
+(define (prepared-undo p) (list-ref p 4))
+
+;; (frame OP PREPARED HANDLE)
 (define (apply-prepared! rt scope prepared)
-  (let* ((owner (list-ref prepared 1))
-         (op (list-ref prepared 2))
-         (source (list-ref prepared 3))
-         (pre (list-ref prepared 4))
-         (undo-kind (list-ref prepared 5))
-         (handler (runtime-op-handler rt op))
-         (handle ((handler-apply handler) op rt scope owner pre)))
-    (list 'frame owner op source pre handle undo-kind 'applied)))
+  (let* ((op (prepared-op prepared))
+         (handler (runtime-op-handler rt op)))
+    (list 'frame op (prepared-value prepared)
+          ((handler-apply handler)
+           op rt scope (prepared-owner prepared)
+           (prepared-value prepared)))))
 
-(define (rollback-frame! rt scope frame)
+(define (frame-op f) (list-ref f 1))
+(define (frame-prepared f) (list-ref f 2))
+(define (frame-handle f) (list-ref f 3))
+
+(define (rollback-frame! rt scope owner frame)
   (let* ((op (frame-op frame))
          (handler (runtime-op-handler rt op)))
     ((handler-rollback handler)
-     op rt scope (frame-owner frame)
+     op rt scope owner
      (frame-prepared frame) (frame-handle frame))
     #t))
 
@@ -187,7 +147,7 @@
   (op-show rt (frame-op frame)))
 
 ;;----------------------------------------------------------------------------
-;; core ops
+;; Built-in ops
 ;;----------------------------------------------------------------------------
 
 (define (op-define name value) (list 'op-define name value))
@@ -202,405 +162,316 @@
   (op-register-renderer 'widget (cons placement key) renderer))
 
 (define (install-core-op-handlers! rt)
+  (define (none op rt scope owner) #f)
+  (define (remove op rt scope owner prepared handle)
+    (runtime-remove-capability! rt handle))
   (runtime-register-op-handler!
-   rt 'core 'op-define 'scope
-   (lambda (op rt scope owner) #f)
-   (lambda (op rt scope owner)
-     (match op
-       [(op-define ,name ,value)
-        (if (scope-local? scope name) (scope-value scope name) 'absent)]))
-   (lambda (op rt scope owner pre)
-     (match op
-       [(op-define ,name ,value) (scope-define! scope name value) 'scope]))
-   (lambda (op rt scope owner pre handle) #t))
-
+   rt 'core 'op-define 'scope none none
+   (lambda (op rt scope owner prepared)
+     (match op [(op-define ,name ,value)
+                (scope-define! scope name value)]))
+   (lambda args #t))
   (runtime-register-op-handler!
-   rt 'core 'op-register-hook 'registry
-   (lambda (op rt scope owner) #f)
-   (lambda (op rt scope owner) #f)
-   (lambda (op rt scope owner pre)
-     (match op
-       [(op-register-hook ,stage ,proc)
-        (runtime-register-hook! rt owner stage proc)]))
-   (lambda (op rt scope owner pre handle)
-     (runtime-unregister-hook! rt handle)))
-
+   rt 'core 'op-register-hook 'registry none none
+   (lambda (op rt scope owner prepared)
+     (match op [(op-register-hook ,stage ,proc)
+                (runtime-register-hook! rt owner stage proc)]))
+   remove)
   (runtime-register-op-handler!
-   rt 'core 'op-register-tool 'registry
-   (lambda (op rt scope owner) #f)
-   (lambda (op rt scope owner)
+   rt 'core 'op-register-tool 'registry none none
+   (lambda (op rt scope owner prepared)
      (match op
        [(op-register-tool ,name ,description ,parameters ,handler)
-        (runtime-find-tool-cell rt name)]))
-   (lambda (op rt scope owner pre)
-     (match op
-       [(op-register-tool ,name ,description ,parameters ,handler)
-        (runtime-register-tool! rt owner name description parameters handler)]))
-   (lambda (op rt scope owner pre handle)
-     (match op
-       [(op-register-tool ,name ,description ,parameters ,handler)
-        (runtime-unregister-owned-tool! rt owner name)])))
-
+        (runtime-register-tool!
+         rt owner name description parameters handler)]))
+   remove)
   (runtime-register-op-handler!
-   rt 'core 'op-register-command 'registry
-   (lambda (op rt scope owner) #f)
-   (lambda (op rt scope owner)
-     (match op
-       [(op-register-command ,name ,description ,handler)
-        (runtime-find-command-cell rt name)]))
-   (lambda (op rt scope owner pre)
-     (match op
-       [(op-register-command ,name ,description ,handler)
-        (runtime-register-command! rt owner name description handler)]))
-   (lambda (op rt scope owner pre handle)
-     (match op
-       [(op-register-command ,name ,description ,handler)
-        (runtime-unregister-owned-command! rt owner name)])))
-
+   rt 'core 'op-register-command 'registry none none
+   (lambda (op rt scope owner prepared)
+     (match op [(op-register-command ,name ,description ,handler)
+                (runtime-register-command!
+                 rt owner name description handler)]))
+   remove)
   (runtime-register-op-handler!
-   rt 'core 'op-register-renderer 'registry
-   (lambda (op rt scope owner) #f)
-   (lambda (op rt scope owner) #f)
-   (lambda (op rt scope owner pre)
-     (match op
-       [(op-register-renderer ,target ,key ,renderer)
-        (runtime-register-renderer!
-         rt owner target key renderer)]))
-   (lambda (op rt scope owner pre handle)
-     (match op
-       [(op-register-renderer ,target ,key ,renderer)
-        (runtime-renderers-set!
-         rt
-         (registry-remove-first
-          (runtime-renderers rt)
-           (lambda (item)
-             (and (equal? (renderer-owner item) owner)
-                  (eq? (renderer-target item) target)
-                 (equal? (renderer-key item) key)))))])))
+   rt 'core 'op-register-renderer 'registry none none
+   (lambda (op rt scope owner prepared)
+     (match op [(op-register-renderer ,target ,key ,renderer)
+                (runtime-register-renderer!
+                 rt owner target key renderer)]))
+   remove)
   rt)
 
 ;;----------------------------------------------------------------------------
-;; graph resolution and lexical projection
+;; Linking
 ;;----------------------------------------------------------------------------
 
-(define (runtime-plugin-exports rt name)
-  (let ((plugin (runtime-plugin rt name))
-        (mount (runtime-mount rt name)))
-    (if (and plugin mount (mount-scope mount))
-        (filter (lambda (export)
-                  (scope-local? (mount-scope mount) export))
-                (plugin-declared-exports plugin))
+;; (link SLOT SCOPE OPS)
+(define (link-slot link) (list-ref link 1))
+(define (link-scope link) (list-ref link 2))
+(define (link-ops link) (list-ref link 3))
+
+(define (link-for links name)
+  (find (lambda (link)
+          (eq? (plugin-slot-name (link-slot link)) name))
+        links))
+
+(define (plugin-scope rt links name)
+  (let ((link (link-for links name)))
+    (if link
+        (link-scope link)
+        (let ((slot (runtime-plugin-slot rt name)))
+          (and (plugin-slot-active? slot)
+               (plugin-slot-scope slot))))))
+
+(define (plugin-exports-in rt links name)
+  (let ((slot (runtime-plugin-slot rt name))
+        (scope (plugin-scope rt links name)))
+    (if (and slot scope)
+        (filter (lambda (export) (scope-local? scope export))
+                (plugin-declared-exports
+                 (plugin-slot-definition slot)))
         '())))
 
-(define (plugin-conflicts rt imports)
-  (let loop ((imports imports) (seen '()) (conflicts '()))
+(define (plugin-import-parent rt links imports)
+  (let loop ((imports imports)
+             (parent (runtime-root-scope rt))
+             (seen '()))
     (if (null? imports)
-        (dedupe conflicts)
-        (let ((exports (runtime-plugin-exports rt (car imports))))
-          (loop (cdr imports)
-                (append exports seen)
-                (append
-                 (filter (lambda (name) (memq name seen)) exports)
-                 conflicts))))))
-
-(define (plugin-import-scope rt imports)
-  (fold-left
-   (lambda (parent import)
-     (let ((scope (mount-scope (runtime-mount rt import))))
-       (scope-import
-        parent import
-        (map (lambda (name) (cons name (scope-value scope name)))
-             (runtime-plugin-exports rt import)))))
-   (runtime-root-scope rt)
-   imports))
-
-(define (runtime-link-plugin! rt name)
-  (let ((mount (runtime-mount rt name))
-        (plugin (runtime-plugin rt name)))
-    (cond
-      ((not plugin)
-       (error 'plugin (format "not defined: ~a" name)))
-      ((memq (mount-state mount) '(linked mounted)) mount)
-      ((eq? (mount-state mount) 'linking)
-       (error 'plugin (format "import cycle through ~a" name)))
-      ((memq (mount-state mount) '(committing disposing transaction-failed dispose-failed))
-       (error
-        'plugin
-        (format
-         "~a is in incomplete state ~a"
-         name (mount-state mount))))
-      (else
-       (let ((before mount))
-         (guard (e (#t (runtime-set-mount! rt name before) (raise e)))
-           (runtime-set-mount! rt name
-                               (list 'mount name 'linking #f '() '()))
-           (for-each
-            (lambda (import)
-              (unless (runtime-plugin rt import)
-                (error
-                 'plugin
-                 (format
-                  "~a imports missing plugin ~a"
-                  name import)))
-              (runtime-link-plugin! rt import))
-            (plugin-imports plugin))
-           (let ((conflicts (plugin-conflicts rt (plugin-imports plugin))))
-             (when (pair? conflicts)
-               (error
-                'plugin
-                (format
-                 "~a imports duplicate exports: ~s"
-                 name conflicts))))
-           (let ((scope
-                  (scope-layer
-                   (plugin-import-scope rt (plugin-imports plugin))
-                   'plugin name))
-                 (pairs '())
-                 (frames '()))
-             ;; Definition ops are applied while reading the body so later forms
-             ;; can refer to earlier local bindings. They affect only this new
-             ;; scope, so dropping it is complete rollback.
-             (for-each
-              (lambda (source)
-                (let* ((op (scope-eval scope source))
-                       (handler (runtime-op-handler rt op))
-                       (pair (cons source op)))
-                  (set! pairs (cons pair pairs))
-                  (when (eq? (handler-undo-kind handler) 'scope)
-                    (let* ((prepared (prepare-op rt name scope source op))
-                           (frame (apply-prepared! rt scope prepared)))
-                      (set! frames (cons frame frames))))))
-              (plugin-body plugin))
-             (let ((missing
-                    (filter
-                     (lambda (export) (not (scope-local? scope export)))
-                     (plugin-declared-exports plugin))))
-               (when (pair? missing)
-                 (error
-                  'plugin
-                  (format
-                   "~a declares undefined exports: ~s"
-                   name missing))))
-             (let ((linked
-                    (list 'mount name 'linked scope
-                          (reverse pairs) frames)))
-               (runtime-set-mount! rt name linked)
-               linked))))))))
-
-;;----------------------------------------------------------------------------
-;; transaction
-;;----------------------------------------------------------------------------
-
-(define (effect-op-pairs rt mount)
-  (filter
-   (lambda (pair)
-     (not (eq? (handler-undo-kind
-                (runtime-op-handler rt (cdr pair)))
-               'scope)))
-   (mount-ops mount)))
+        parent
+        (let* ((name (car imports))
+               (scope (plugin-scope rt links name))
+               (exports (plugin-exports-in rt links name))
+               (conflicts
+                (filter (lambda (export) (memq export seen)) exports)))
+          (unless scope
+            (error 'plugin (format "dependency ~a is not linked" name)))
+          (when (pair? conflicts)
+            (error 'plugin
+                   (format "imports duplicate exports: ~s" conflicts)))
+          (loop
+           (cdr imports)
+           (scope-import
+            parent name
+            (map (lambda (export)
+                   (cons export (scope-value scope export)))
+                 exports))
+           (append exports seen))))))
 
 (define (activation-order rt root)
-  (let ((seen '()) (order '()))
+  (let ((visiting '()) (visited '()) (order '()))
     (define (visit name)
-      (unless (memq name seen)
-        (set! seen (cons name seen))
-        (let ((plugin (runtime-plugin rt name)))
-          (unless plugin
-            (error 'plugin (format "not defined: ~a" name)))
-          (for-each visit (plugin-imports plugin))
-          (unless (eq? (mount-state (runtime-mount rt name)) 'mounted)
-            (set! order (cons name order))))))
+      (cond
+        ((memq name visiting)
+         (error 'plugin (format "import cycle through ~a" name)))
+        ((not (memq name visited))
+         (let ((slot (runtime-plugin-slot rt name)))
+           (unless slot
+             (error 'plugin (format "not defined: ~a" name)))
+           (set! visiting (cons name visiting))
+           (for-each visit
+                     (plugin-imports
+                      (plugin-slot-definition slot)))
+           (set! visiting (remq name visiting))
+           (set! visited (cons name visited))
+           (unless (plugin-slot-active? slot)
+             (set! order (cons name order)))))))
     (visit root)
     (reverse order)))
 
+(define (link-plugin rt links name)
+  (let* ((slot (runtime-plugin-slot rt name))
+         (definition (plugin-slot-definition slot))
+         (scope
+          (scope-layer
+           (plugin-import-parent rt links
+                                 (plugin-imports definition))
+           'plugin name))
+         (ops
+          (map (lambda (source)
+                 (let* ((op (scope-eval scope source))
+                        (prepared (prepare-op rt name scope op)))
+                   (when (eq? (prepared-undo prepared) 'scope)
+                     (apply-prepared! rt scope prepared))
+                   (cons source op)))
+               (plugin-body definition)))
+         (missing
+          (filter (lambda (export) (not (scope-local? scope export)))
+                  (plugin-declared-exports definition))))
+    (when (pair? missing)
+      (error 'plugin
+             (format "~a declares undefined exports: ~s"
+                     name missing)))
+    (list 'link slot scope ops)))
+
+(define (build-links rt order)
+  (fold-left
+   (lambda (links name)
+     (append links (list (link-plugin rt links name))))
+   '() order))
+
+(define (effect-op? rt pair)
+  (not (eq? (handler-undo
+             (runtime-op-handler rt (cdr pair)))
+            'scope)))
+
+(define (prepare-effects rt links)
+  (apply
+   append
+   (map
+    (lambda (link)
+      (let ((slot (link-slot link))
+            (scope (link-scope link)))
+        (map (lambda (pair)
+               (list slot scope
+                     (prepare-op rt
+                                 (plugin-slot-name slot)
+                                 scope (cdr pair))))
+             (filter (lambda (pair) (effect-op? rt pair))
+                     (link-ops link)))))
+    links)))
+
+;;----------------------------------------------------------------------------
+;; Transaction and lifecycle
+;;----------------------------------------------------------------------------
+
+;; Applied items are newest first: (SLOT SCOPE FRAME).
 (define (rollback-applied! rt applied)
-  ;; APPLIED is newest-first. Stop at the first rollback failure: the failed
-  ;; frame and every older frame remain a valid retry stack.
   (let loop ((remaining applied))
     (if (null? remaining)
         (values '() #f)
         (let* ((item (car remaining))
-               (name (car item))
-               (scope (cadr item))
-               (frame (caddr item)))
-          (guard (e (#t (values remaining e)))
-            (rollback-frame! rt scope frame)
+               (slot (list-ref item 0)))
+          (guard
+            (error (#t (values remaining error)))
+            (rollback-frame!
+             rt (list-ref item 1)
+             (plugin-slot-name slot)
+             (list-ref item 2))
             (loop (cdr remaining)))))))
 
-(define (preserve-transaction-failure! rt mounts-at-failure remaining)
-  (let ((names (dedupe (map car remaining))))
-    (for-each
-     (lambda (name)
-       (let* ((old (let ((item (assq name mounts-at-failure)))
-                     (and item (cdr item))))
-              (frames
-               (map caddr
-                    (filter (lambda (item) (eq? (car item) name))
-                            remaining)))
-              (layer-frames
-               (filter (lambda (frame)
-                         (eq? (frame-undo-kind frame) 'scope))
-                       (mount-frames old))))
-         (runtime-set-mount!
-          rt name
-          (list 'mount name 'transaction-failed
-                (mount-scope old) (mount-ops old)
-                (append frames layer-frames)))))
-     names)))
+(define (frames-for applied slot)
+  (map (lambda (item) (list-ref item 2))
+       (filter (lambda (item) (eq? (car item) slot))
+               applied)))
+
+(define (publish-links! links applied state)
+  (for-each
+   (lambda (link)
+     (let ((slot (link-slot link))
+           (frames (frames-for applied (link-slot link))))
+       (when (or (eq? state 'mounted) (pair? frames))
+         (plugin-slot-state-set! slot state)
+         (plugin-slot-scope-set! slot (link-scope link))
+         (plugin-slot-ops-set! slot (link-ops link))
+         (plugin-slot-frames-set! slot frames))))
+   links))
 
 (define (runtime-mount-plugin! rt name)
-  (let ((snapshot (runtime-mounts rt))
-        (applied '()))
-    (guard
-      (mount-error
-       (#t
-        (let ((failed-mounts (runtime-mounts rt)))
-          (let-values (((remaining rollback-error)
-                        (rollback-applied! rt applied)))
-            (runtime-mounts-set! rt snapshot)
-            (when rollback-error
-              (preserve-transaction-failure!
-               rt failed-mounts remaining)
-              (runtime-emit!
-               rt `(ev plugin-rollback-failed ,name
-                       ,(err->string mount-error)
-                       ,(err->string rollback-error))))
-            (if rollback-error
-                (error 'plugin
-                       "mount ~a failed (~a); rollback also failed (~a)"
-                       name (err->string mount-error)
-                       (err->string rollback-error))
-                (raise mount-error))))))
-      (runtime-link-plugin! rt name)
-      (let* ((order (activation-order rt name))
-             ;; A plan item is (PLUGIN SCOPE SOURCE+OP PREPARED). Building the
-             ;; complete plan must not perform an external effect.
-             (plan
-              (apply
-               append
-               (map
-                (lambda (plugin-name)
-                  (let* ((mount (runtime-mount rt plugin-name))
-                         (scope (mount-scope mount)))
-                    (map
-                     (lambda (pair)
-                       (list
-                        plugin-name scope pair
-                        (prepare-op
-                         rt plugin-name scope
-                         (car pair) (cdr pair))))
-                     (effect-op-pairs rt mount))))
-                order))))
-        ;; Commit starts only after every op in the dependency subgraph has
-        ;; resolved its requirements and prepared its rollback state.
-        (for-each
-         (lambda (plugin-name)
-           (let ((mount (runtime-mount rt plugin-name)))
-             (runtime-set-mount!
-              rt plugin-name
-              (list 'mount plugin-name 'committing
-                    (mount-scope mount)
-                    (mount-ops mount)
-                    (mount-frames mount)))))
-         order)
-        (for-each
-         (lambda (item)
-           (let* ((plugin-name (list-ref item 0))
-                  (scope (list-ref item 1))
-                  (prepared (list-ref item 3))
-                  (frame (apply-prepared! rt scope prepared)))
-             (set! applied
-                   (cons (list plugin-name scope frame) applied))))
-         plan)
-        (for-each
-         (lambda (plugin-name)
-           (let* ((mount (runtime-mount rt plugin-name))
-                  (effect-frames
-                   (map caddr
-                        (filter
-                         (lambda (item)
-                           (eq? (car item) plugin-name))
-                         applied))))
-             (runtime-set-mount!
-              rt plugin-name
-              (list 'mount plugin-name 'mounted
-                    (mount-scope mount)
-                    (mount-ops mount)
-                    (append effect-frames
-                            (mount-frames mount))))))
-         order)
-        ;; Observers only see events after the whole transaction commits.
-        (for-each
-         (lambda (plugin-name)
-           (let ((mount (runtime-mount rt plugin-name)))
-             (for-each
-              (lambda (pair)
-                (runtime-emit!
-                 rt `(ev plugin-op ,plugin-name
-                         ,(op-kind (cdr pair))
-                         ,(op-show rt (cdr pair)))))
-              (effect-op-pairs rt mount))
-             (runtime-emit!
-              rt `(ev plugin-mount ,plugin-name))))
-         order)
-        (runtime-mount rt name)))))
+  (let ((root (runtime-plugin-slot rt name)))
+    (unless root (error 'plugin (format "not defined: ~a" name)))
+    (let ((order (activation-order rt name)))
+      (if (null? order)
+          root
+          (let* ((links (build-links rt order))
+                 (plan (prepare-effects rt links))
+                 (applied '()))
+            (guard
+              (mount-error
+               (#t
+                (let-values (((remaining rollback-error)
+                              (rollback-applied! rt applied)))
+                  (when rollback-error
+                    (publish-links!
+                     links remaining 'transaction-failed)
+                    (runtime-emit!
+                     rt `(ev plugin-rollback-failed
+                             ,name
+                             ,(err->string mount-error)
+                             ,(err->string rollback-error))))
+                  (if rollback-error
+                      (error 'plugin
+                             "mount ~a failed (~a); rollback also failed (~a)"
+                             name (err->string mount-error)
+                             (err->string rollback-error))
+                      (raise mount-error)))))
+              (for-each
+               (lambda (item)
+                 (set! applied
+                       (cons
+                        (list (list-ref item 0)
+                              (list-ref item 1)
+                              (apply-prepared!
+                               rt (list-ref item 1)
+                               (list-ref item 2)))
+                        applied)))
+               plan)
+              (publish-links! links applied 'mounted)
+              (for-each
+               (lambda (link)
+                 (let ((plugin-name
+                        (plugin-slot-name (link-slot link))))
+                   (for-each
+                    (lambda (pair)
+                      (when (effect-op? rt pair)
+                        (runtime-emit!
+                         rt `(ev plugin-op
+                                 ,plugin-name
+                                 ,(op-kind (cdr pair))
+                                 ,(op-show rt (cdr pair))))))
+                    (link-ops link))
+                   (runtime-emit!
+                    rt `(ev plugin-mount ,plugin-name))))
+               links)
+              root))))))
 
-(define (dispose-frame-stack! rt name scope frames)
-  (let loop ((remaining frames))
-    (cond
-      ((null? remaining) (values '() #f))
-      ((eq? (frame-undo-kind (car remaining)) 'scope)
-       (loop (cdr remaining)))
-      (else
-       (guard (e (#t (values remaining e)))
-         (rollback-frame! rt scope (car remaining))
-         (runtime-emit!
-          rt `(ev plugin-undo ,name
-                  ,(op-kind (frame-op (car remaining)))
-                  ,(frame-show rt (car remaining))))
-         (loop (cdr remaining)))))))
+(define (dispose-frames! rt slot)
+  (let loop ((frames (plugin-slot-frames slot)))
+    (if (null? frames)
+        (values '() #f)
+        (guard
+          (error (#t (values frames error)))
+          (rollback-frame!
+           rt (plugin-slot-scope slot)
+           (plugin-slot-name slot) (car frames))
+          (runtime-emit!
+           rt `(ev plugin-undo
+                   ,(plugin-slot-name slot)
+                   ,(op-kind (frame-op (car frames)))
+                   ,(frame-show rt (car frames))))
+          (loop (cdr frames))))))
+
+(define (runtime-plugin-dependents rt name)
+  (filter
+   (lambda (slot)
+     (and (plugin-slot-active? slot)
+          (memq name
+                (plugin-imports
+                 (plugin-slot-definition slot)))))
+   (runtime-plugins rt)))
 
 (define (runtime-dispose-plugin! rt name)
   (for-each
-   (lambda (item)
-     (let* ((dependent (car item))
-            (plugin (runtime-plugin rt dependent)))
-       (when (and plugin (memq name (plugin-imports plugin)))
-         (runtime-dispose-plugin! rt dependent))))
-   (runtime-mounts rt))
-  (let ((mount (runtime-mount rt name)))
-    (when (and mount
-               (memq (mount-state mount)
-                     '(mounted transaction-failed dispose-failed)))
-      (let ((scope (mount-scope mount))
-            (ops (mount-ops mount))
-            (frames (mount-frames mount)))
-        (runtime-set-mount!
-         rt name (list 'mount name 'disposing scope ops frames))
-        (let-values (((remaining failure)
-                      (dispose-frame-stack! rt name scope frames)))
-          (if failure
-              (begin
-                (runtime-set-mount!
-                 rt name
-                 (list 'mount name 'dispose-failed scope ops remaining))
-                (runtime-emit!
-                 rt `(ev plugin-dispose-failed ,name
-                         ,(frame-show rt (car remaining))
-                         ,(err->string failure)))
-                (raise failure))
-              (begin
-                (runtime-set-mount!
-                 rt name (list 'mount name 'defined #f '() '()))
-                (runtime-emit! rt `(ev plugin-dispose ,name))))))))
+   (lambda (slot)
+     (runtime-dispose-plugin! rt (plugin-slot-name slot)))
+   (runtime-plugin-dependents rt name))
+  (let ((slot (runtime-plugin-slot rt name)))
+    (when (plugin-slot-active? slot)
+      (let-values (((remaining failure)
+                    (dispose-frames! rt slot)))
+        (if failure
+            (begin
+              (plugin-slot-state-set! slot 'dispose-failed)
+              (plugin-slot-frames-set! slot remaining)
+              (runtime-emit!
+               rt `(ev plugin-dispose-failed
+                       ,name
+                       ,(frame-show rt (car remaining))
+                       ,(err->string failure)))
+              (raise failure))
+            (begin
+              (plugin-slot-reset! slot)
+              (runtime-emit! rt `(ev plugin-dispose ,name)))))))
   #t)
-
-(define (runtime-active-plugin? rt name)
-  (let ((mount (runtime-mount rt name)))
-    (and mount
-         (memq (mount-state mount)
-               '(mounted transaction-failed dispose-failed))
-         #t)))
 
 (define (runtime-plugin-dependent-closure rt name)
   (let ((seen '()))
@@ -608,92 +479,72 @@
       (unless (memq current seen)
         (set! seen (append seen (list current)))
         (for-each
-         (lambda (entry)
-           (let* ((candidate
-                   (plugin-name
-                    (plugin-entry-plugin entry)))
-                  (plugin
-                   (plugin-entry-plugin entry)))
-             (when (and (runtime-active-plugin?
-                         rt candidate)
-                        (memq current
-                              (plugin-imports plugin)))
-               (visit candidate))))
-         (reverse (runtime-plugins rt)))))
+         (lambda (slot) (visit (plugin-slot-name slot)))
+         (runtime-plugin-dependents rt current))))
     (visit name)
     seen))
 
 (define (runtime-restart-plugin! rt name)
-  (unless (runtime-plugin rt name)
+  (unless (runtime-plugin-slot rt name)
     (error 'plugin (format "not defined: ~a" name)))
   (let ((active
          (filter
           (lambda (candidate)
-            (runtime-active-plugin? rt candidate))
+            (plugin-slot-active?
+             (runtime-plugin-slot rt candidate)))
           (runtime-plugin-dependent-closure rt name))))
     (runtime-dispose-plugin! rt name)
-    (for-each
-     (lambda (candidate)
-       (runtime-mount-plugin! rt candidate))
-     (if (null? active) (list name) active))
-    (runtime-emit!
-     rt `(ev plugin-restart ,name ,active))
-    (runtime-mount rt name)))
+    (for-each (lambda (candidate)
+                (runtime-mount-plugin! rt candidate))
+              (if (null? active) (list name) active))
+    (runtime-emit! rt `(ev plugin-restart ,name ,active))
+    (runtime-plugin-slot rt name)))
 
 (define (runtime-mount-all-plugins! rt)
   (for-each
-   (lambda (item)
-     (when (eq? (mount-state (cdr item)) 'defined)
-       (runtime-mount-plugin! rt (car item))))
-   (reverse (runtime-mounts rt)))
+   (lambda (slot)
+     (when (eq? (plugin-slot-state slot) 'defined)
+       (runtime-mount-plugin! rt (plugin-slot-name slot))))
+   (reverse (runtime-plugins rt)))
   rt)
 
 (define (runtime-dispose-all-plugins! rt)
   (for-each
-   (lambda (item)
-     (when (memq (mount-state (cdr item))
-                 '(mounted transaction-failed dispose-failed))
-       (runtime-dispose-plugin! rt (car item))))
-   (reverse (runtime-mounts rt)))
+   (lambda (slot)
+     (when (plugin-slot-active? slot)
+       (runtime-dispose-plugin! rt (plugin-slot-name slot))))
+   (reverse (runtime-plugins rt)))
   (runtime-plugins-set! rt '())
-  (runtime-mounts-set! rt '())
   rt)
 
 (define (runtime-remove-plugin-owner! rt owner)
-  (let ((names
-         (map
-          (lambda (entry)
-            (plugin-name (plugin-entry-plugin entry)))
-          (filter
-           (lambda (entry)
-             (equal? (plugin-entry-owner entry) owner))
-           (runtime-plugins rt)))))
+  (let ((owned (filter
+                (lambda (slot)
+                  (equal? (plugin-slot-owner slot) owner))
+                (runtime-plugins rt))))
     (for-each
-     (lambda (name)
-       (let ((mount (runtime-mount rt name)))
-         (when (and mount
-                    (memq (mount-state mount)
-                          '(mounted transaction-failed dispose-failed)))
-           (runtime-dispose-plugin! rt name))))
-     names)
+     (lambda (slot)
+       (when (plugin-slot-active? slot)
+         (runtime-dispose-plugin! rt (plugin-slot-name slot))))
+     owned)
     (runtime-plugins-set!
-     rt (filter
-         (lambda (entry)
-           (not (equal? (plugin-entry-owner entry) owner)))
-         (runtime-plugins rt)))
-    (runtime-mounts-set!
-     rt (filter
-         (lambda (item) (not (memq (car item) names)))
-         (runtime-mounts rt))))
+     rt
+     (filter (lambda (slot)
+               (not (equal? (plugin-slot-owner slot) owner)))
+             (runtime-plugins rt))))
   #t)
 
-;; Extension-boundary API.
-(define (op-register-handler! kind undo-kind requires prepare apply rollback . show)
+;;----------------------------------------------------------------------------
+;; Extension boundary
+;;----------------------------------------------------------------------------
+
+(define (op-register-handler!
+         kind undo requires prepare apply rollback . show)
   (apply runtime-register-op-handler!
          (require-runtime) (current-owner)
-         kind undo-kind requires prepare apply rollback show))
-(define (plugin-define! plugin)
-  (runtime-define-plugin! (require-runtime) plugin))
+         kind undo requires prepare apply rollback show))
+(define (plugin-define! definition)
+  (runtime-define-plugin! (require-runtime) definition))
 (define (plugin-mount! name)
   (runtime-mount-plugin! (require-runtime) name))
 (define (plugin-dispose! name)
@@ -704,20 +555,25 @@
   (runtime-mount-all-plugins! (require-runtime)))
 (define (plugin-dispose-all!)
   (runtime-dispose-all-plugins! (require-runtime)))
-(define (plugin-list) (runtime-plugin-list (require-runtime)))
+(define (plugin-list)
+  (runtime-plugin-list (require-runtime)))
 (define (plugin-env name)
-  (let ((mount (runtime-mount (require-runtime) name)))
-    (and mount (mount-scope mount))))
+  (let ((slot (runtime-plugin-slot (require-runtime) name)))
+    (and slot (plugin-slot-scope slot))))
 (define (plugin-exports name)
   (runtime-plugin-exports (require-runtime) name))
+(define (runtime-plugin-exports rt name)
+  (plugin-exports-in rt '() name))
 (define (plugin-frames name)
-  (let ((mount (runtime-mount (require-runtime) name))
-        (rt (require-runtime)))
-    (and mount (map (lambda (frame) (frame-show rt frame))
-                    (mount-frames mount)))))
+  (let* ((rt (require-runtime))
+         (slot (runtime-plugin-slot rt name)))
+    (and slot
+         (map (lambda (frame) (frame-show rt frame))
+              (plugin-slot-frames slot)))))
 
 (define-syntax plugin
   (syntax-rules (imports exports)
     [(_ name (imports import ...) (exports export ...) body ...)
      (plugin-define!
-      (list 'plugin 'name '(import ...) '(export ...) '(body ...)))]))
+      (list 'plugin 'name
+            '(import ...) '(export ...) '(body ...)))]))

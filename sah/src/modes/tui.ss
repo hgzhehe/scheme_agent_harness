@@ -1,7 +1,7 @@
 ;;; tui.ss -- fullscreen event-driven terminal mode.
 
 (define-record-type tui-app
-  (fields host terminal editor
+  (fields rt terminal editor
           (mutable streaming)
           (mutable thinking)
           (mutable thinking-entry)
@@ -12,8 +12,8 @@
           (mutable running?)
           (mutable subscriber)))
 
-(define (make-tui-app* host terminal)
-  (make-tui-app host terminal (make-editor)
+(define (make-tui-app* rt terminal)
+  (make-tui-app rt terminal (make-editor)
                 "" "" #f 'idle #f #f #f #t #f))
 
 (define (tui-request-render! app)
@@ -53,8 +53,8 @@
              (tui-app-thinking app)))
        (log-leaf
         (session-log
-         (session-host-session
-          (tui-app-host app))))))]
+         (runtime-session
+          (tui-app-rt app))))))]
     [(ev tool-start ,id ,name ,args)
      (tui-app-status-set! app (cons 'tool name))]
     [(ev tool-end ,id ,name ,error? ,output)
@@ -97,9 +97,9 @@
       (else (format "~a" status)))))
 
 (define (tui-header-lines app width)
-  (let* ((host (tui-app-host app))
-         (session (session-host-session host))
-         (config (session-host-config host))
+  (let* ((rt (tui-app-rt app))
+         (session (runtime-session rt))
+         (config (runtime-config rt))
          (name (log-session-name (session-log session)))
          (left
           (string-append
@@ -118,14 +118,13 @@
                    (string-display-width right)))
            #\space)))
     (list
-     (fit-component-line
+     (fit-render-line
       (string-append left space (ansi-dim right))
       width))))
 
 (define (tui-transcript-lines app width)
-  (let* ((host (tui-app-host app))
-         (rt (session-host-rt host))
-         (session (session-host-session host))
+  (let* ((rt (tui-app-rt app))
+         (session (runtime-session rt))
          (entries
           (session-renderable-entries session))
          (thinking
@@ -185,7 +184,7 @@
       (map
        (lambda (line)
          (ansi-yellow
-          (fit-component-line
+          (fit-render-line
            (string-append "! " line)
            width)))
        (take-list
@@ -195,8 +194,8 @@
       '()))
 
 (define (tui-footer-lines app width)
-  (let* ((host (tui-app-host app))
-         (session (session-host-session host))
+  (let* ((rt (tui-app-rt app))
+         (session (runtime-session rt))
          (text
           (format "~a entries  ~a tokens  ~a  ~a"
                   (session-count session)
@@ -204,18 +203,33 @@
                   (session-health-description session)
                   (session-cwd session))))
     (list
-     (ansi-dim (fit-component-line text width)))))
+     (ansi-dim (fit-render-line text width)))))
 
 (define (last-lines lines count)
   (let ((length (length lines)))
     (drop-list (max 0 (- length count)) lines)))
 
-(define (tui-normal-frame app width height)
-  (let* ((host (tui-app-host app))
-         (rt (session-host-rt host))
+(define (editor-window editor width limit)
+  (let-values (((lines row column)
+                (editor-render editor width)))
+    (let* ((start
+            (max
+             0
+             (min
+              (max 0 (- (length lines) limit))
+              (max 0 (- row limit -1)))))
+           (visible
+            (take-list limit (drop-list start lines))))
+      (values visible (- row start) column))))
+
+(define (tui-frame app width . maybe-height)
+  (let* ((rt (tui-app-rt app))
+         (height
+          (and (pair? maybe-height)
+               (max 1 (car maybe-height))))
          (context
-          `((host . ,host)
-            (session . ,(session-host-session host))
+          `((runtime . ,rt)
+            (session . ,(runtime-session rt))
             (status . ,(tui-app-status app))))
          (header
           (take-list
@@ -237,10 +251,9 @@
             (runtime-widget-lines
              rt 'footer context 'ansi width)
             (tui-footer-lines app width))
-           2)))
-    (let-values (((editor-lines editor-row editor-column)
-                  (editor-render (tui-app-editor app) width)))
-      (let* ((editor-limit
+           2))
+         (editor-limit
+          (if height
               (max
                1
                (min
@@ -248,115 +261,42 @@
                 (- height
                    (length header)
                    (length footer)
-                   1))))
-             (editor-start
-              (max
-               0
-               (min
-                (max 0
-                     (- (length editor-lines)
-                        editor-limit))
-                (max 0
-                     (- editor-row
-                        editor-limit
-                        -1)))))
-             (editor-lines
-              (take-list
-               editor-limit
-               (drop-list editor-start editor-lines)))
-             (editor-row (- editor-row editor-start))
-             (base-fixed
+                   1)))
+              6)))
+    (let-values (((editor-lines editor-row editor-column)
+                  (editor-window
+                   (tui-app-editor app) width editor-limit)))
+      (let* ((fixed
               (+ (length header)
                  (length editor-lines)
                  (length footer)
                  1))
-             (free (max 0 (- height base-fixed)))
+             (free0
+              (and height (max 0 (- height fixed))))
              (notice
-              (take-list (min 2 free) notice-all))
-             (free (- free (length notice)))
+              (if height
+                  (take-list (min 2 free0) notice-all)
+                  notice-all))
+             (free1
+              (and height (- free0 (length notice))))
              (above
-              (take-list (min 2 free) above-all))
-             (free (- free (length above)))
-             (below
-              (take-list (min 2 free) below-all))
-             (free (- free (length below)))
-             (transcript
-              (last-lines
-               (tui-transcript-lines app width)
-               free))
-             (lines
-              (append
-               header
-               notice
-               transcript
-               (list (ansi-bright-black
-                      (make-string width #\-)))
-               above
-               editor-lines
-               below
-               footer))
-             (cursor-row
-              (+ (length header)
-                 (length notice)
-                 (length transcript)
-                 1
-                 (length above)
-                 editor-row)))
-        (values lines cursor-row editor-column)))))
-
-(define (tui-main-frame app width)
-  (let* ((host (tui-app-host app))
-         (rt (session-host-rt host))
-         (context
-          `((host . ,host)
-            (session . ,(session-host-session host))
-            (status . ,(tui-app-status app))))
-         (header
-          (take-list
-           2
-           (append
-            (tui-header-lines app width)
-            (runtime-widget-lines
-             rt 'header context 'ansi width))))
-         (notice (tui-notice-lines app width))
-         (above
-          (take-list
-           2
-           (runtime-widget-lines
-            rt 'above-editor context 'ansi width)))
-         (below
-          (take-list
-           2
-           (runtime-widget-lines
-            rt 'below-editor context 'ansi width)))
-         (transcript (tui-transcript-lines app width))
-         (footer
-          (last-lines
-           (append
-            (runtime-widget-lines
-             rt 'footer context 'ansi width)
-            (tui-footer-lines app width))
-           2)))
-    (let-values (((editor-lines editor-row editor-column)
-                  (editor-render
-                   (tui-app-editor app) width)))
-      (let* ((editor-limit 6)
-             (editor-start
-              (max
-               0
-               (min
-                (max 0
-                     (- (length editor-lines)
-                        editor-limit))
-                (max 0
-                     (- editor-row
-                        editor-limit
-                        -1)))))
-             (editor-lines
               (take-list
-               editor-limit
-               (drop-list editor-start editor-lines)))
-             (editor-row (- editor-row editor-start))
+               (if height (min 2 free1) 2)
+               above-all))
+             (free2
+              (and height (- free1 (length above))))
+             (below
+              (take-list
+               (if height (min 2 free2) 2)
+               below-all))
+             (free3
+              (and height (- free2 (length below))))
+             (transcript
+              (if height
+                  (last-lines
+                   (tui-transcript-lines app width)
+                   free3)
+                  (tui-transcript-lines app width)))
              (lines
               (append
                header
@@ -391,7 +331,7 @@
              (max 0 (- (length lines) 1))
              0))
           (let-values (((lines cursor-row cursor-column)
-                        (tui-main-frame app width)))
+                        (tui-frame app width)))
             (terminal-render!
              terminal
              lines
@@ -426,10 +366,9 @@
    (log-tree-walk (session-log session))))
 
 (define (tui-apply-tree-selection! app target)
-  (let* ((host (tui-app-host app))
-         (rt (session-host-rt host))
-         (session (session-host-session host))
-         (config (session-host-config host))
+  (let* ((rt (tui-app-rt app))
+         (session (runtime-session rt))
+         (config (runtime-config rt))
          (current (log-leaf (session-log session)))
          (veto
           (runtime-veto-reason
@@ -480,7 +419,7 @@
 
 (define (tui-open-tree! app)
   (let* ((session
-          (session-host-session (tui-app-host app)))
+          (runtime-session (tui-app-rt app)))
          (items (tui-tree-items session)))
     (if (null? items)
         (tui-set-notice! app "The session is empty.")
@@ -490,7 +429,7 @@
            (tui-apply-tree-selection! app target))))))
 
 (define (tui-open-resume! app)
-  (let* ((host (tui-app-host app))
+  (let* ((rt (tui-app-rt app))
          (items
           (map
            (lambda (item)
@@ -501,40 +440,38 @@
                       (clip (assq-ref item 'preview) 58))
               (assq-ref item 'file)))
            (session-list-for-cwd
-            (session-host-cwd host)))))
+            (runtime-cwd rt)))))
     (if (null? items)
         (tui-set-notice! app
                          "No saved sessions for this directory.")
         (tui-open-selector!
          app "Resume session" items
          (lambda (path)
-           (when (session-host-resume! host path)
+           (when (runtime-resume-session! rt path)
              (tui-set-notice!
               app
               (format "Resumed session ~a"
-                      (session-id
-                       (session-host-session host))))))))))
+                      (session-id (runtime-session rt))))))))))
 
-(define (tui-capture-command app text)
+(define (tui-run-input! app text)
   (let ((port (open-output-string))
-        (host (tui-app-host app)))
+        (rt (tui-app-rt app)))
     (guard
       (error
        (#t
         (tui-set-notice!
          app (string-append "error: " (err->string error)))
         'handled))
-      (let ((result
-             (parameterize ((current-output-port port))
-               (session-host-process-input host text))))
-        (let ((output (get-output-string port)))
-          (when (not (string=? (string-trim output) ""))
-            (tui-set-notice! app output)))
-        result))))
+      (parameterize ((current-output-port port))
+        (runtime-submit! rt text))
+      (let ((output (get-output-string port)))
+        (when (not (string=? (string-trim output) ""))
+          (tui-set-notice! app output)))
+      'handled)))
 
 (define (tui-submit! app text)
   (let ((trimmed (string-trim text))
-        (host (tui-app-host app)))
+        (rt (tui-app-rt app)))
     (cond
       ((string=? trimmed "") #f)
       ((string=? trimmed "/tree") (tui-open-tree! app))
@@ -550,25 +487,13 @@
                   (>= target 0)
                   (< target
                      (session-count
-                      (session-host-session host))))
+                      (runtime-session rt))))
              (tui-apply-tree-selection! app target)
              (tui-set-notice!
               app "usage: /tree [entry-id]"))))
       ((string=? trimmed "/resume") (tui-open-resume! app))
       (else
-       (let ((result
-              (if (char=? (string-ref trimmed 0) #\/)
-                  (tui-capture-command app text)
-                  (session-host-process-input host text))))
-         (when (string? result)
-           (guard
-             (error
-              (#t
-               (tui-set-notice!
-                app
-                (string-append "error: "
-                               (err->string error)))))
-             (session-host-run-agent! host result))))))))
+       (tui-run-input! app text)))))
 
 (define (tui-handle-selector-key! app key)
   (let ((result
@@ -600,12 +525,11 @@
        (tui-request-render! app))
       (else #f))))
 
-(define (run-tui host . maybe-prompt)
+(define (run-tui rt . maybe-prompt)
   (let ((terminal (make-terminal)))
     (if (not (tui-terminal-interactive? terminal))
-        (repl host)
-        (let* ((app (make-tui-app* host terminal))
-               (rt (session-host-rt host))
+        (repl rt)
+        (let* ((app (make-tui-app* rt terminal))
                (subscriber
                 (runtime-subscribe!
                  rt

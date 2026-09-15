@@ -309,7 +309,9 @@
                 exe status))))
 
 (define build-dir (path-join root "build"))
-(define dist-dir (path-join root "dist"))
+(define dist-dir
+  (or (getenv "SAH_DIST_DIR")
+      (path-join root "dist")))
 ;; Chez derives the boot name from the executable name, so `sah.exe` and `sah`
 ;; both load `sah.boot`.
 (define exe-name (string-append "sah" (assq-ref platform 'exe-suffix)))

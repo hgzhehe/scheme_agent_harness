@@ -1,105 +1,134 @@
-# sah 系统开发文档
+# sah 系统开发手册
 
-> 日期：2026-09-14
-> 机制规范见 [CORE-MECHANISMS.md](CORE-MECHANISMS.md)，剩余工作见
-> [GAP-IMPLEMENTATION.md](GAP-IMPLEMENTATION.md)。
+> 日期：2026-09-15
+> 本文描述如何修改当前实现，不保存旧 API 的迁移说明。
 
-## 1. 开发原则
+## 1. 修改纪律
 
-sah 的目标是保持一个能被完整理解的小内核。新增代码应优先维护以下性质：
+开始编码前先回答三个问题：
 
-- 数据形状集中；
-- runtime ownership 显式；
-- machine 控制与 effect 执行分开；
-- session journal append-only；
-- plugin effect 可 prepare、apply、rollback；
-- scope 可由当前 journal path 重建；
-- mode 只处理交互；
-- 测试围绕架构不变量，而不是内部实现行数。
+1. 这个事实由谁拥有？
+2. 它是 durable fact、纯控制 datum、动态 capability，还是 UI 瞬时状态？
+3. 新实现接管后，哪段旧 representation 会被删除？
 
-不要通过新增 process-global list、隐藏 snapshot、匿名 disposer 链或新的递归 agent loop
-绕开现有机制。
+如果答案需要“两个地方都更新”，设计还没有完成。
 
-## 2. 源码边界
+禁止用以下方式完成重构：
 
-| 路径 | 职责 |
+- 保留旧 API 的 adapter；
+- 新建 `v2` manager 与旧 manager 并存；
+- 用 snapshot 修补重复 registry；
+- 为每种 capability 再写一套 owner cleanup；
+- mode 自行拼 agent 或 session 生命周期；
+- 只移动文件，不重建责任边界。
+
+## 2. 源码地图
+
+| 路径 | 责任 |
 |---|---|
-| `src/vendor/` | vendored dependency |
-| `src/fp/` | measured persistent vector |
-| `src/util/` | 字符串、路径、JSON、平台和小工具 |
-| `src/core/data.ss` | canonical message 与 entry datum |
-| `src/core/scope.ss` | runtime/plugin/session lexical scope |
-| `src/core/runtime.ss` | runtime record、events、hooks |
-| `src/core/capability.ss` | tools、commands、input handlers、owner cleanup |
-| `src/core/plugin.ss` | plugin graph、op algebra、mount/dispose transaction |
-| `src/core/render.ss` | canonical projection、renderer、widget、导出格式 |
-| `src/core/config.ss` | config 和 system prompt |
-| `src/core/transport.ss` | curl transport |
-| `src/extend/` | extension、skill、prompt 和 builtin commands |
-| `src/ai/` | provider codec 与 dispatch |
-| `src/session/manager.ss` | SexprL persistence、恢复、repair、会话元数据 |
-| `src/session/host.ss` | active session 生命周期和所有 mode 共用的控制入口 |
-| `src/session/` 其余文件 | log、discovery、pi format |
-| `src/tools/` | 内置工具 datum |
-| `src/agent/machine.ss` | 纯控制状态转换 |
-| `src/agent/agent.ss` | effect interpreter 与 driver |
-| `src/agent/` 其余文件 | context、compaction、branch |
-| `src/tui/` | terminal adapter、editor、selector/component |
-| `src/modes/` | CLI、TUI、REPL、print、JSONL RPC、one-shot |
-| `src/main.ss` | bootstrap 与生命周期 |
+| `core/data.ss` | canonical message、call、entry |
+| `core/runtime.ss` | Runtime、capability cells、event、hook |
+| `core/capability.ss` | tool、command、input 领域 API |
+| `core/scope.ss` | Scheme scope 与 import facade |
+| `core/plugin.ss` | plugin program、link、transaction、dispose |
+| `render/` | text、JSON、dispatch、session export |
+| `session/log.ss` | 不可变 journal tree |
+| `session/manager.ss` | persistence、recovery、scope replay |
+| `session/control.ss` | Runtime 的活动会话生命周期 |
+| `agent/machine.ss` | 纯 defunctionalized CPS control |
+| `agent/agent.ss` | effect interpreter 与 driver |
+| `agent/context.ss` | provider context projection |
+| `agent/compaction.ss` | compaction policy 与 summary |
+| `extend/` | extension、skills、prompts、commands |
+| `tools/` | 内置 tool datum |
+| `tui/` | terminal、editor、selector |
+| `modes/` | TUI、REPL、print、RPC |
+| `main.ss` | bootstrap 与最终清理 |
 
-`manifest.ss` 是 source、tests、bench 和 build 共用的唯一源码列表。新增文件时先确定它
-位于哪一层，再把它放到首次引用之前。
+`manifest.ss` 是唯一源码清单。新增文件必须放在首次运行时调用之前。
 
-## 3. Bootstrap 规则
+## 3. Bootstrap
 
-源码加载阶段只允许：
+源码加载阶段只允许定义 record、函数、syntax、常量和纯 datum。
 
-- 定义 record、函数、syntax；
-- 构造纯 tool datum；
-- 定义常量。
-
-源码加载阶段不允许注册工具、hook、command、plugin mount 或 event subscriber。
-
-runtime 初始化统一写在 bootstrap：
+显式安装顺序：
 
 ```scheme
-(define rt (runtime-new raw-config))
+(define rt (runtime-new cwd raw-config))
 (install-core-op-handlers! rt)
 (install-core-tools! rt)
 (install-resource-input-handlers! rt)
+(runtime-config-set!
+ rt (finalize-config rt raw-config cwd))
 ```
 
-随后 finalize config、加载动态资源、创建 session 和 `session-host`。mode 不得直接关闭、
-替换或重放 session；这些操作全部通过 host。
-
-## 4. Runtime API 约定
-
-核心函数接受显式 `rt`：
+之后加载资源、创建 Session、写入 Runtime，再启动：
 
 ```scheme
-(run-agent rt session config prompt)
-(llm-chat rt config messages tools)
-(session-load rt path)
-(runtime-call-tool rt session name args)
+(runtime-session-set! rt session)
+(runtime-start-session! rt 'initial #f)
+```
+
+退出时：
+
+```scheme
+(runtime-stop-session! rt 'exit #f)
+(runtime-dispose-all-plugins! rt)
+```
+
+## 4. Runtime API
+
+核心调用显式传递 `rt`：
+
+```scheme
+(runtime-call-tool rt name args)
+(runtime-active-tools rt)
+(runtime-process-input rt text)
+(runtime-submit! rt text)
+(run-agent! rt prompt)
 (runtime-mount-plugin! rt name)
-(runtime-restart-plugin! rt name)
-(session-host-switch! host next reason)
-(session-host-run-agent! host prompt)
+(runtime-switch-session! rt session reason)
 ```
 
-扩展边界可以使用：
+extension/tool 边界可以使用：
 
 ```scheme
-(current-runtime)
-(current-session)
+(require-runtime)
+(require-session)
 (current-owner)
 ```
 
-不要在核心函数内部为了省参数而读取 parameter。parameter 的目的只是让加载的 Scheme
-扩展和 tool handler 获得边界上下文。
+不要在核心函数里为了省参数读取 parameter。
 
-## 5. 新增内置工具
+## 5. 新增 Capability
+
+先判断现有 kind 能否表达。大多数扩展能力应落在：
+
+```text
+tool command input-handler hook subscriber op-handler renderer
+```
+
+底层注册：
+
+```scheme
+(runtime-add-capability! rt owner kind key value)
+```
+
+注册返回 token。精确撤销使用 token：
+
+```scheme
+(runtime-remove-capability! rt token)
+```
+
+整个扩展、会话或动态层撤销使用：
+
+```scheme
+(runtime-remove-owner! rt owner)
+```
+
+不要新增 kind-specific cleanup。
+
+## 6. 新增 Tool
 
 工具文件只定义 datum：
 
@@ -107,39 +136,43 @@ runtime 初始化统一写在 bootstrap：
 (define inspect-tool
   (make-tool-datum
    'inspect
-   "Inspect something."
-   (schema '((path "string" "Target path")))
+   "Inspect one value."
+   (schema '((name "string" "Value name")))
    (lambda (args)
      ...)))
 ```
 
 然后：
 
-1. 在 `manifest.ss` 加载该文件；
-2. 在 `install-core-tools!` 的列表中加入 datum；
-3. 增加 handler 契约测试；
-4. 确认 generated system prompt 会列出它；
-5. 确认工具返回 string，异常由 `runtime-call-tool` 转为 error result。
+1. 在 `manifest.ss` 加载工具文件；
+2. 加入 `install-core-tools!`；
+3. handler 返回 string 或可被 `format` 的值；
+4. 需要上下文时使用 `require-runtime` / `require-session`；
+5. 增加成功、参数失败和 handler 异常测试。
 
-需要 session 或 runtime 时使用 `require-session` / `require-runtime`。不要给工具建立
-自己的全局状态。
+工具不得建立自己的 process-global session 或 config。
 
-## 6. 新增 hook stage
+## 7. 新增 Hook Stage
 
-先在 `hook-specs` 声明：
+先在 `core/runtime.ss` 的 `hook-specs` 定义：
 
 ```scheme
-(stage kind failure-policy)
+(STAGE KIND FAILURE-POLICY)
 ```
 
-`kind` 应明确是：
+`KIND`：
 
-- `effect`；
-- `transform`；
-- `guard`；
-- `veto`。
+- `effect`
+- `transform`
+- `guard`
+- `veto`
 
-失败策略只选 `fail-open` 或 `fail-closed`。然后使用统一的：
+`FAILURE-POLICY`：
+
+- `fail-open`
+- `fail-closed`
+
+调用点使用统一函数：
 
 ```scheme
 runtime-invoke-hook
@@ -148,20 +181,18 @@ runtime-run-hook-effects
 runtime-veto-reason
 ```
 
-不要在调用点单独写一套 guard 和默认值。
+不要在调用点自建 guard policy。
 
-## 7. 新增 plugin op
+## 8. 新增 Plugin Op
 
-### 7.1 构造子
+构造子只产生 datum：
 
 ```scheme
 (define (op-register-index name handler)
   (list 'op-register-index name handler))
 ```
 
-### 7.2 Handler
-
-扩展侧 API：
+handler：
 
 ```scheme
 (op-register-handler!
@@ -174,7 +205,7 @@ runtime-veto-reason
  optional-show)
 ```
 
-所有函数都接收显式上下文：
+函数签名：
 
 ```scheme
 (requires op rt scope owner)
@@ -183,225 +214,205 @@ runtime-veto-reason
 (rollback op rt scope owner prepared handle)
 ```
 
-要求：
+硬规则：
 
-- `prepare` 不产生外部 effect；
-- rollback 所需信息在 apply 前取得；
-- `apply` 成功后返回足够的 handle；
-- `rollback` 可重复调用时应尽量保持幂等；
-- op kind 在一个 runtime 中唯一，重复注册直接失败；
-- handler 由 extension owner 持有，reload 时清理。
+1. `prepare` 不产生外部作用；
+2. rollback 所需信息必须在 apply 前取得；
+3. `apply` 返回足够的 handle；
+4. registry op 优先直接返回 capability token；
+5. scope op 使用 `scope` undo kind；
+6. 无法可信撤销的作用不得伪装成可卸载 op。
 
-### 7.3 Undo kind
+## 9. 修改 Machine
 
-- `scope`：effect 只改变新建 plugin scope，撤销方式是丢弃 scope；
-- `registry`：effect 改变 runtime registry，必须提供 rollback。
+控制决策只写在 `agent/machine.ss`。
 
-如果 effect 无法给出可信 rollback，不应伪装成可卸载 plugin op。可以保留为明确的
-host escape hatch，并在文档中写清不可撤销。
+新增控制步骤时：
 
-## 8. Session 与 eval
+1. 增加纯 state datum；
+2. 从 `machine-step` 返回 effect 与数据 continuation；
+3. 在 `machine-resume` 处理 effect result；
+4. 在 `agent/agent.ss` 实现 effect；
+5. 测试 state、effect、continuation、success、failure；
+6. 确认 lifecycle finalizer 仍只有一个。
 
-新增 entry kind 时必须同步检查：
+Machine 中禁止放：
 
-1. `core/data.ss` 的 canonical shape；
-2. `entry-*` accessor；
-3. `entry->context-messages`；
-4. token measure；
-5. `session/log.ss` append constructor；
-6. `session/manager.ss` migration 和 retarget；
-7. `session/pi-format.ss`；
-8. branch、fork、compaction；
-9. tests。
+- Runtime 或 Session；
+- config alist；
+- port；
+- procedure；
+- TUI object。
 
-会改变 lexical state 的 eval form 必须通过：
+## 10. 修改 Session
+
+新增 entry kind 时同步检查：
+
+1. `core/data.ss` shape/accessor/token measure；
+2. `session/log.ss` constructor 与 path projection；
+3. `session/manager.ss` migration、retarget、recovery；
+4. `agent/context.ss`；
+5. compaction 与 branch；
+6. `session/pi-format.ss`；
+7. `render/json.ss` 与文本渲染；
+8. tests。
+
+改变 lexical state 的表单必须通过：
 
 ```scheme
 (session-eval-form! rt session form)
 ```
 
-不要先直接 `scope-eval` 再自行追加日志。这个 helper 保证失败时从 durable path 重建
-scope。
-
 移动 cursor 必须通过：
 
 ```scheme
-(session-branch! rt session entry-id)
+(session-branch! rt session id)
 (session-branch-summary! rt session target from summary)
 ```
 
-它们会同步重建 lexical scope。
+不要直接改 log cursor 后忘记重建 scope。
 
-从文件恢复时有两种不同失败：
+## 11. 修改 Session Lifecycle
 
-- 最后一行是不完整 datum：恢复完整前缀，session 标记为 recovered/read-only；
-- 中间行或完整行语法损坏：拒绝加载，不能当成正常 EOF。
+所有活动会话操作都在 `session/control.ss`。
 
-read-only recovered session 必须先调用 `session-repair!`。repair 先保存原文件字节备份，
-再重写完整 journal，成功后才恢复可写。不要在读取路径中静默修复用户文件。
-
-## 9. Renderer、Widget 与前端
-
-新增格式或显示行为时，优先扩展 `core/render.ss`，不要在 mode 中复制 message/event
-分支。注册入口：
+mode 和 command 只能调用：
 
 ```scheme
-(register-message-renderer! 'assistant renderer)
-(register-entry-renderer! 'message renderer)
-(register-event-renderer! 'tool-start renderer)
-(register-widget! 'footer 'build-status widget)
+runtime-new-session!
+runtime-resume-session!
+runtime-fork-session!
+runtime-clone-session!
+runtime-set-model!
+runtime-set-thinking!
 ```
 
-renderer 接收 canonical datum、format 和 width 等上下文，返回字符串或行。它必须：
+不要直接 close 当前 Session 后替换 Runtime.session。必须保留 veto、hook、owner cleanup、
+metadata projection 和 start event 的完整顺序。
 
-- 不修改 session、runtime 或 config；
-- 输出宽度受调用方约束；
-- 对不认识的 datum 返回 `#f`，让内置 renderer 接管；
-- 允许失败回退，不能依赖异常控制核心流程。
-
-plugin 中使用 `op-register-renderer` / `op-register-widget`，让注册动作进入 frame 和
-rollback。普通 extension 可直接调用注册 API，由 extension owner 清理。
-
-TUI 组件只处理局部交互状态。提交 prompt、执行 slash command、切换 session、修改
-model/thinking 都调用 `session-host`。RPC 也遵循相同规则，stdout 只写 JSONL；调试输出
-写 stderr。
-
-## 10. 修改 agent 控制
-
-控制决策写在 `agent/machine.ss`，effect 写在 `agent/agent.ss`。
-
-新增步骤时：
-
-1. 增加 machine phase；
-2. 定义 effect datum；
-3. 定义 continuation tag；
-4. 在 `machine-resume` 处理 success/error；
-5. 在 interpreter 实现 effect；
-6. 测试 transition datum；
-7. 测试成功、失败和 lifecycle event。
-
-不要在 `machine-transition` 或 `machine-resume` 中执行 IO。也不要在 interpreter 中
-复制控制分支，控制选择应回到 machine。
-
-## 11. Provider 开发
+## 12. Provider
 
 provider adapter 负责：
 
 - config 到 request；
 - canonical message/tool 到协议 JSON；
 - response/stream 到 canonical assistant message；
-- provider continuation data 的保存和重放；
+- usage 与 provider continuation data；
 - delta event。
 
-provider adapter 不负责：
+provider 不负责：
 
-- session append；
+- journal append；
 - tool execution；
 - agent step；
 - compaction policy；
-- UI rendering。
+- TUI rendering。
 
-网络错误应保留足够诊断。context overflow 必须能被 `context-overflow?` 归类，让 machine
-决定一次 compact-and-retry。
+context overflow 异常必须能被 `context-overflow?` 分类，由 Machine 决定一次 compact/retry。
 
-## 12. Extension loader 与 reload
+## 13. Renderer
 
-每个 extension 文件的 owner 是其绝对路径。加载失败时必须删除该 owner 的：
+修改位置：
 
-- tool；
-- command；
-- hook；
-- input handler；
-- op handler；
-- plugin definition 和 mount；
-- renderer 和 widget。
+| 需求 | 文件 |
+|---|---|
+| display width、ANSI、plain/Markdown/HTML | `render/text.ss` |
+| stable JSON shape | `render/json.ss` |
+| plugin renderer、widget、event sink | `render/dispatch.ss` |
+| whole-session export | `render/session.ss` |
 
-reload 顺序：
+注册入口：
+
+```scheme
+(register-message-renderer! role proc)
+(register-entry-renderer! kind proc)
+(register-event-renderer! kind proc)
+(register-widget! placement key proc)
+```
+
+renderer 必须纯观察，失败时允许回退。JSON 是协议投影；不要把主题逻辑放进 JSON。
+
+## 14. TUI
+
+TUI 局部状态可以 mutable，但不得复制核心事实。
+
+布局只通过：
+
+```scheme
+(tui-frame app width)
+(tui-frame app width height)
+```
+
+新增交互时：
+
+1. key decoding 留在 `tui/terminal.ss`；
+2. editor 行为留在 `tui/editor.ss`；
+3. selector 行为留在 `tui/selector.ss`；
+4. Runtime/session 操作留在核心 protocol；
+5. TUI 只解释 key 并调用 protocol。
+
+不要重新引入通用 component framework，除非至少两个独立组件确实共享生命周期协议。
+
+## 15. Extension Reload
+
+每个 extension 文件 owner 是规范化绝对路径。
+
+加载失败：
 
 ```text
-dispose plugins
-  -> clear non-core capabilities and op handlers
-  -> clear skills/prompts/extensions
-  -> reload
-  -> mount
-  -> refresh generated system prompt
-  -> register session commands again
+remove owned plugin slots
+  -> remove owner capabilities
+  -> report stderr
 ```
 
-本机 provider、代理、密钥和调试配置不得写入 tracked 源码或示例配置。
+reload 不保存 registry baseline，也不按 kind 重置。删除动态 owner 后，被遮蔽的核心
+capability 自动恢复。
 
-## 13. 测试策略
+本机 provider、代理 URL、API key 和调试配置禁止进入 tracked 文件。
 
-运行：
+## 16. 测试与构建
 
-```bash
-cd sah
-scheme --script tests/run-tests.ss
+离线契约测试：
+
+```powershell
+C:\chezscheme\ta6nt\bin\ta6nt\scheme.exe --script sah\tests\run-tests.ss
 ```
 
-当前测试集中验证以下契约：
+当前基线为 96 个测试。每个测试应对应跨模块不变量或真实故障，不以数量代替设计。
 
-- codec 与 canonical datum；
-- persistent vector 与 journal tree；
-- runtime 隔离；
-- owner shadow/unshadow；
-- hook failure policy；
-- session scope replay 和 branch；
-- durable eval 原子性；
-- session 尾部恢复、只读保护与 repair 备份；
-- session host start/stop/switch 和 model/thinking 恢复；
-- machine effect/kont 与失败生命周期；
-- context overflow retry；
-- plugin export facade；
-- prepare-before-commit；
-- commit rollback；
-- rollback failure residual state；
-- renderer/widget owner cleanup、失败回退和 dependency restart；
-- plain/Markdown/HTML/JSON projection；
-- editor、selector、小终端 layout、Windows 控制台就绪保护和主屏 scrollback；
-- provider reasoning delta 到 TUI 临时显示区的事件链；
-- extension load cleanup；
-- source manifest。
-
-当前离线套件有 96 个契约测试。测试数量不是目标；每个测试都应对应一个跨模块不变量
-或已经发生过的故障。
-
-## 14. 构建
+构建：
 
 ```powershell
 $env:SAH_RUNTIME_EXE='C:\path\to\scheme.exe'
-scheme --script build.scm
+scheme --script sah\build.scm
 ```
 
-产物位于 `sah/dist/`。Windows bundle 包含：
+Windows 上旧 `dist/sah.exe` 仍在运行时，可把验证产物写到独立目录：
 
-- `sah.exe`；
-- `sah.boot`；
-- Chez runtime 需要的本地 DLL。
+```powershell
+$env:SAH_DIST_DIR='C:\path\to\sah\build\dist-check'
+scheme --script sah\build.scm
+```
 
-build 会执行：
+提交前：
 
 ```text
-dist/sah.exe --usage
+tests 96/96
+source usage smoke
+standalone build smoke
+git diff --check
+no old representation references
+no local proxy/token/config in diff
 ```
 
-作为 smoke check。
+## 17. 重构验收
 
-构建脚本会把源码定义装入 interaction environment，供 plugin program 使用。session
-`eval` 使用独立的 Chez root，不依赖该环境。
+纯重构必须同时满足：
 
-## 15. 提交前检查
-
-```bash
-scheme --script tests/run-tests.ss
-scheme --script sah.ss --usage
-scheme --script build.scm
-```
-
-另外检查：
-
-- 没有被删除的旧模块引用；
-- 没有新增 process-global registry；
-- 没有 proxy、token、API key 或本机绝对配置进入 diff；
-- generated build 文件是否应被忽略；
-- 文档描述的是当前实现，不把目标能力写成已完成。
+- 行为测试不退化；
+- 旧 representation 实际删除；
+- mutable owner 数量不增加；
+- 没有 adapter 或第二状态表；
+- 源码规模不以测试或文档为借口膨胀；
+- 新边界能用一句话说明；
+- 文档只描述当前实现。

@@ -77,14 +77,14 @@
 ;; Called once at startup; extensions are loaded first so they could register
 ;; additional skill directories later if they want to.
 (define (load-skills! rt cwd)
-  (runtime-skills-set!
-   rt (dedupe-by skill-name (discover-skills (skill-dirs cwd))))
-  (runtime-skills rt))
+  (runtime-resource-set!
+   rt 'skills
+   (dedupe-by skill-name (discover-skills (skill-dirs cwd)))))
 
-(define (all-skills rt) (runtime-skills rt))
+(define (all-skills rt) (runtime-resource rt 'skills))
 
 (define (find-skill rt name)
-  (let loop ((l (runtime-skills rt)))
+  (let loop ((l (all-skills rt)))
     (cond ((null? l) #f)
           ((name= (skill-name (car l)) name) (car l))
           (else (loop (cdr l))))))
@@ -95,7 +95,7 @@
 
 ;; Only name + description + path: the body stays out of context until needed.
 (define (skills-block rt)
-  (if (null? (runtime-skills rt))
+  (if (null? (all-skills rt))
       ""
       (string-append
        "\n<skills>\n"
@@ -108,7 +108,7 @@
                               "    <description>" (skill-description s) "</description>\n"
                               "    <path>" (skill-path s) "</path>\n"
                               "  </skill>"))
-             (runtime-skills rt))
+             (all-skills rt))
         "\n")
        "\n</skills>\n")))
 

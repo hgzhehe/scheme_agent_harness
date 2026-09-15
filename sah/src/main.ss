@@ -1,4 +1,4 @@
-;;; main.ss -- deterministic bootstrap and one shared session host.
+;;; main.ss -- deterministic bootstrap around one Runtime.
 
 (define valid-modes '(tui repl print json rpc))
 (define valid-formats '(plain ansi markdown md html json))
@@ -54,10 +54,9 @@
       (or (resolve-session rt opts cwd)
           (session-new rt cwd (assq-ref config 'model)))))
 
-(define (print-startup-summary host)
-  (let* ((session (session-host-session host))
-         (config (session-host-config host))
-         (rt (session-host-rt host)))
+(define (print-startup-summary rt)
+  (let ((session (runtime-session rt))
+        (config (runtime-config rt)))
     (printf "[sah] session=~a model=~a~%"
             (session-id session)
             (assq-ref config 'model))
@@ -67,20 +66,20 @@
       (printf "[sah] extensions: ~a~%"
               (string-join (all-extensions rt) " ")))))
 
-(define (run-selected-mode mode host prompt)
+(define (run-selected-mode mode rt prompt)
   (case mode
-    ((tui) (run-tui host prompt))
-    ((repl) (repl host))
+    ((tui) (run-tui rt prompt))
+    ((repl) (repl rt))
     ((rpc)
      (when (not (string=? (string-trim prompt) ""))
        (parameterize
-           ((current-output-port (current-error-port)))
-         (run-print host prompt)))
-     (run-rpc host))
+         ((current-output-port (current-error-port)))
+         (run-print rt prompt)))
+     (run-rpc rt))
     (else
      (when (string=? (string-trim prompt) "")
        (error 'cli "print mode requires a prompt or piped stdin"))
-     (run-print host prompt))))
+     (run-print rt prompt))))
 
 (define (main args)
   (guard
@@ -96,7 +95,7 @@
            (raw-config (apply-cli (load-config cwd) opts)))
       (if (assq-ref opts 'help)
           (begin (print-usage) (exit 0))
-          (let ((rt (runtime-new raw-config)))
+          (let ((rt (runtime-new cwd raw-config)))
             (install-core-op-handlers! rt)
             (install-core-tools! rt)
             (install-resource-input-handlers! rt)
@@ -140,9 +139,6 @@
                                ((current-output-port diagnostics))
                              (make-selected-session
                               rt opts cwd config)))
-                          (host
-                           (make-session-host*
-                            rt cwd config session))
                           (prompt
                            (stdin-prompt raw-prompt mode))
                           (subscriber
@@ -160,17 +156,18 @@
                                       "")))
                        (session-add-name!
                         session (assq-ref opts 'name)))
+                     (runtime-session-set! rt session)
                      (dynamic-wind
                        (lambda ()
                          (parameterize
                              ((current-output-port diagnostics))
-                           (session-host-start!
-                            host 'initial #f)
+                           (runtime-start-session!
+                            rt 'initial #f)
                            (unless
                                (diagnostic-format?
                                 mode format)
                              (unless (eq? mode 'tui)
-                               (print-startup-summary host)))))
+                               (print-startup-summary rt)))))
                        (lambda ()
                          (guard
                            (error
@@ -182,17 +179,17 @@
                              (set! status 1)))
                            (if (eq? mode 'rpc)
                                (run-selected-mode
-                                mode host prompt)
+                                mode rt prompt)
                                (parameterize
                                    ((current-output-port
                                      diagnostics))
                                  (run-selected-mode
-                                  mode host prompt)))))
+                                  mode rt prompt)))))
                        (lambda ()
                          (parameterize
                              ((current-output-port diagnostics))
-                           (session-host-stop!
-                            host 'exit #f)
+                           (runtime-stop-session!
+                            rt 'exit #f)
                            (guard
                              (dispose-error
                               (#t
@@ -210,7 +207,7 @@
                          (or (diagnostic-format? mode format)
                              (not
                               (session-file
-                               (session-host-session host))))
+                               (runtime-session rt))))
                        (print-resume-hint
-                        (session-host-session host)))
+                        (runtime-session rt)))
                      (exit status)))))))))))

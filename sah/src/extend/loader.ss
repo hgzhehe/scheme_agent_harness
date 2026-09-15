@@ -17,27 +17,29 @@
               (extension-dirs cwd))))
 
 (define (all-extensions rt)
-  (runtime-extensions rt))
+  (runtime-resource rt 'extensions))
 
 (define (load-extensions! rt cwd)
-  (runtime-extensions-set! rt '())
-  (for-each
-   (lambda (path)
-     (guard
-       (e (#t
+  (let ((loaded '()))
+    (for-each
+     (lambda (path)
+       (guard
+         (error
+          (#t
            (runtime-remove-plugin-owner! rt path)
-           (runtime-remove-capability-owner! rt path)
-           (printf "[sah] extension ~a failed to load: ~a~%"
-                   path (err->string e))))
-       (parameterize ((current-runtime rt)
-                      (current-owner path))
-         (load path))
-       (runtime-extensions-set!
-        rt (cons path (runtime-extensions rt)))))
-   (extension-files cwd))
-  (runtime-extensions-set! rt (reverse (runtime-extensions rt)))
+           (runtime-remove-owner! rt path)
+           (fprintf
+            (current-error-port)
+            "[sah] extension ~a failed to load: ~a~%"
+            path (err->string error))))
+         (parameterize ((current-runtime rt)
+                        (current-owner path))
+           (load path))
+         (set! loaded (cons path loaded))))
+     (extension-files cwd))
+    (runtime-resource-set! rt 'extensions (reverse loaded)))
   (runtime-mount-all-plugins! rt)
-  (runtime-extensions rt))
+  (all-extensions rt))
 
 (define (system-with-skills rt config)
   (let ((base (or (assq-ref config 'base-system)
@@ -81,10 +83,12 @@
 
 (define (reload-resources! rt config cwd)
   (runtime-dispose-all-plugins! rt)
-  (runtime-clear-dynamic-capabilities! rt)
-  (runtime-skills-set! rt '())
-  (runtime-prompts-set! rt '())
-  (runtime-extensions-set! rt '())
+  (for-each
+   (lambda (owner) (runtime-remove-owner! rt owner))
+   (all-extensions rt))
+  (runtime-resource-set! rt 'skills '())
+  (runtime-resource-set! rt 'prompts '())
+  (runtime-resource-set! rt 'extensions '())
   (let ((next (load-resources rt config cwd)))
     (replace-config-slot! config next 'base-system)
     (replace-config-slot! config next 'system)

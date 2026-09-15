@@ -1,60 +1,4 @@
-;;; component.ss -- width-bounded terminal components.
-
-(define-record-type tui-component
-  (fields render handle-input invalidate))
-
-(define (component-render component width)
-  ((tui-component-render component) (max 1 width)))
-
-(define (component-handle-input component key)
-  ((tui-component-handle-input component) key))
-
-(define (component-invalidate! component)
-  ((tui-component-invalidate component)))
-
-(define (fit-component-line line width)
-  (if (<= (string-display-width line) width)
-      line
-      (take-styled-display-width line width)))
-
-(define (text-component text . maybe-style)
-  (let ((style (if (pair? maybe-style)
-                   (car maybe-style)
-                   (lambda (line) line))))
-    (make-tui-component
-     (lambda (width)
-       (map
-        (lambda (line)
-          (fit-component-line (style line) width))
-        (wrap-text text width)))
-     (lambda (key) 'ignored)
-     (lambda () #t))))
-
-(define (separator-component . maybe-char)
-  (let ((char (if (pair? maybe-char) (car maybe-char) #\-)))
-    (make-tui-component
-     (lambda (width) (list (make-string width char)))
-     (lambda (key) 'ignored)
-     (lambda () #t))))
-
-(define (stack-component components)
-  (make-tui-component
-   (lambda (width)
-     (apply append
-            (map (lambda (component)
-                   (component-render component width))
-                 components)))
-   (lambda (key)
-     (let loop ((items (reverse components)))
-       (if (null? items)
-           'ignored
-           (let ((result
-                  (component-handle-input (car items) key)))
-             (if (eq? result 'ignored)
-                 (loop (cdr items))
-                 result)))))
-   (lambda ()
-     (for-each component-invalidate! components))))
+;;; selector.ss -- one modal list for TUI choices.
 
 (define-record-type tui-selector
   (fields title items (mutable index)))
@@ -117,27 +61,26 @@
     (append
      (list
       (ansi-bold
-       (fit-component-line
+       (fit-render-line
         (string-append " " (tui-selector-title selector))
         width)))
      (let loop ((rows visible) (index start) (out '()))
        (if (null? rows)
            (reverse out)
            (let* ((active? (= index selected))
-                  (prefix (if active? "> " "  "))
                   (line
-                   (fit-component-line
-                    (string-append prefix (caar rows))
+                   (fit-render-line
+                    (string-append
+                     (if active? "> " "  ")
+                     (caar rows))
                     width)))
              (loop
               (cdr rows) (+ index 1)
-              (cons
-               (if active?
-                   (ansi "7" line)
-                   line)
-               out)))))
+              (cons (if active? (ansi "7" line) line)
+                    out)))))
      (list
       (ansi-dim
-       (fit-component-line
-        (format " ~a item~a" count (if (= count 1) "" "s"))
+       (fit-render-line
+        (format " ~a item~a"
+                count (if (= count 1) "" "s"))
         width))))))

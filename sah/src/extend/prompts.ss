@@ -49,14 +49,14 @@
               dirs)))
 
 (define (load-prompts! rt cwd)
-  (runtime-prompts-set!
-   rt (dedupe-by prompt-name (discover-prompts (prompt-dirs cwd))))
-  (runtime-prompts rt))
+  (runtime-resource-set!
+   rt 'prompts
+   (dedupe-by prompt-name (discover-prompts (prompt-dirs cwd)))))
 
-(define (all-prompts rt) (runtime-prompts rt))
+(define (all-prompts rt) (runtime-resource rt 'prompts))
 
 (define (find-prompt rt name)
-  (let loop ((l (runtime-prompts rt)))
+  (let loop ((l (all-prompts rt)))
     (cond ((null? l) #f)
           ((name= (prompt-name (car l)) name) (car l))
           (else (loop (cdr l))))))

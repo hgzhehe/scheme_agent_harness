@@ -38,7 +38,7 @@ hello.scm prints 42.
   programs add import/export facades, two-phase mount, retryable rollback,
   dynamic restart, renderers, and widgets. See
   [EXTENDING.md](EXTENDING.md).
-- **Complete session lifecycle** — one `session-host` owns new, resume, switch,
+- **Complete session lifecycle** — Runtime owns new, resume, switch,
   fork, clone, and model/thinking restoration for every frontend.
 - **Multiple frontends** — a fullscreen TUI by default, plus a portable line
   REPL, one-shot print, structured JSON events, and JSONL RPC.
@@ -422,7 +422,7 @@ behind them, and how they compare with pi's.
 Data flow:
 
 ```
-main → session-host → runtime/session → machine-transition
+main → runtime/session-control → machine-step
                   ──► effect interpreter: build context
                   ──► llm-chat (ai/chat.ss → providers/openai-compatible.ss
                                → core/transport.ss → curl)

@@ -18,8 +18,8 @@ scheme --script bench/bench-fp.ss  # data-structure measurements
 
 Layout: `sah.ss` entry, `build.scm` bundler, `manifest.ss` (the one source list,
 shared by every entry point), `src/` split by what a file may know (`util/`
-knows nothing about sah, `core/` owns runtime/plugin/rendering concepts,
-`extend/` is the customization surface, then
+knows nothing about sah, `core/` owns runtime/plugin concepts, `render/` owns
+all output projections, `extend/` is the customization surface, then
 `fp/ ai/ session/ tools/ agent/ tui/ modes/`), plus `examples/`, `tests/`,
 `bench/`.
 

@@ -61,7 +61,7 @@
     (exclude-tools . #f)))
 
 (define (test-runtime)
-  (let ((rt (runtime-new base-config)))
+  (let ((rt (runtime-new test-dir base-config)))
     (install-core-op-handlers! rt)
     (install-core-tools! rt)
     (install-resource-input-handlers! rt)
@@ -87,7 +87,7 @@
 (check "chat-completions request uses canonical tool data"
        "read"
        (let* ((rt (test-runtime))
-              (tool (car (runtime-active-tools rt (runtime-config rt))))
+              (tool (car (runtime-active-tools rt)))
               (request
                (build-chat-request
                 "m" '((msg user "hi")) (list tool)))
@@ -154,7 +154,7 @@
 (check "owned registries expose the newest definition"
        "temporary shadow"
        (tool-description (runtime-find-tool rt-a 'read)))
-(runtime-remove-capability-owner! rt-a 'temporary)
+(runtime-remove-owner! rt-a 'temporary)
 (check "owner removal reveals the shadowed capability"
        core-read-description
        (tool-description (runtime-find-tool rt-a 'read)))
@@ -165,7 +165,7 @@
  (lambda (op rt scope owner) #f)
  (lambda (op rt scope owner pre) #t)
  (lambda (op rt scope owner pre handle) #t))
-(runtime-remove-capability-owner! rt-a 'temporary)
+(runtime-remove-owner! rt-a 'temporary)
 (check-error "owner removal also clears custom op handlers"
              "not in this runtime's algebra"
              (lambda () (runtime-op-handler rt-a '(op-temporary))))
@@ -201,10 +201,11 @@
 
 (define rt-scope (test-runtime))
 (define session-a (session-new rt-scope test-dir "test-model"))
+(runtime-session-set! rt-scope session-a)
 (let-values (((output error?)
-              (runtime-call-tool
-               rt-scope session-a 'eval
-               '((code . "(define answer 41)\n(+ answer 1)")))))
+               (runtime-call-tool
+                rt-scope 'eval
+                '((code . "(define answer 41)\n(+ answer 1)")))))
   (check "eval writes into the session scope"
          '(#f "42\n" 41)
          (list error? output
@@ -404,7 +405,7 @@
         (session-count recovered-session)))
 
 ;;----------------------------------------------------------------------------
-(section "session host")
+(section "session control")
 
 (define rt-host (test-runtime))
 (define host-events '())
@@ -412,23 +413,21 @@
  rt-host
  (lambda (event)
    (set! host-events (cons event host-events))))
-(define host
-  (make-session-host*
-   rt-host test-dir (runtime-config rt-host)
-   (session-memory rt-host test-dir "m")))
-(session-host-start! host 'initial #f)
+(runtime-session-set!
+ rt-host (session-memory rt-host test-dir "m"))
+(runtime-start-session! rt-host 'initial #f)
 (define first-host-id
-  (session-id (session-host-session host)))
-(check-true "starting a host installs session-owned commands"
-            (runtime-find-command rt-host 'session))
+  (session-id (runtime-session rt-host)))
+(check-true "starting a session installs session-owned commands"
+             (runtime-find-command rt-host 'session))
 (define next-host-session
   (session-memory rt-host test-dir "m"))
 (define next-host-id (session-id next-host-session))
-(session-host-switch! host next-host-session 'resume)
-(check "switching a host emits one end/start pair and replaces commands"
+(runtime-switch-session! rt-host next-host-session 'resume)
+(check "switching the active session emits one end/start pair"
        (list next-host-id #t #t)
        (list
-        (session-id (session-host-session host))
+        (session-id (runtime-session rt-host))
         (and
          (find
           (lambda (event)
@@ -447,8 +446,8 @@
               [,other #f]))
           host-events)
          #t)))
-(session-host-stop! host 'exit #f)
-(check "stopping a host removes session-owned commands"
+(runtime-stop-session! rt-host 'exit #f)
+(check "stopping a session removes session-owned commands"
        #f
        (and (runtime-find-command rt-host 'session) #t))
 
@@ -458,35 +457,28 @@
  settings-session 'test "restored-model")
 (session-add-thinking-level!
  settings-session 'high)
-(define settings-host
-  (make-session-host*
-   rt-host test-dir (runtime-config rt-host)
-   settings-session))
-(session-host-start! settings-host 'resume #f)
-(check "a host restores model and thinking state from the active path"
+(runtime-session-set! rt-host settings-session)
+(runtime-start-session! rt-host 'resume #f)
+(check "session start restores model and thinking from the active path"
        '("restored-model" test high)
        (list
-        (assq-ref
-         (session-host-config settings-host) 'model)
-        (assq-ref
-         (session-host-config settings-host) 'provider)
-        (assq-ref
-         (session-host-config settings-host)
-         'reasoning-effort)))
-(session-host-set-model!
- settings-host "next-model" 'test-next)
-(session-host-set-thinking! settings-host 'low)
+        (assq-ref (runtime-config rt-host) 'model)
+        (assq-ref (runtime-config rt-host) 'provider)
+        (assq-ref (runtime-config rt-host) 'reasoning-effort)))
+(runtime-set-model! rt-host "next-model" 'test-next)
+(runtime-set-thinking! rt-host 'low)
 (check "model controls are durable session metadata"
        '("next-model" test-next low)
        (list
         (session-active-model settings-session)
         (session-active-provider settings-session)
-        (session-active-thinking-level
-         settings-session)))
-(session-host-stop! settings-host 'exit #f)
+         (session-active-thinking-level
+          settings-session)))
+(runtime-stop-session! rt-host 'exit #f)
 
 (define boundary-rt (test-runtime))
 (define lifecycle-session-id #f)
+(define command-session-id #f)
 (runtime-register-hook!
  boundary-rt 'test 'session-start
  (lambda (session config)
@@ -496,32 +488,34 @@
  boundary-rt 'test 'current-session-id
  "Return the dynamically bound active session id."
  (lambda (args)
-   (session-id (require-session))))
-(define boundary-host
-  (make-session-host*
-   boundary-rt test-dir (runtime-config boundary-rt)
-   (session-memory boundary-rt test-dir "m")))
-(session-host-start! boundary-host 'initial #f)
-(check "lifecycle hooks and commands see the host session boundary"
+   (set! command-session-id
+         (session-id (require-session)))
+   'handled))
+(runtime-session-set!
+ boundary-rt
+ (session-memory boundary-rt test-dir "m"))
+(runtime-start-session! boundary-rt 'initial #f)
+(check "lifecycle hooks and commands see the runtime session boundary"
        (list
-        (session-id (session-host-session boundary-host))
-        (session-id (session-host-session boundary-host)))
+        (session-id (runtime-session boundary-rt))
+        (session-id (runtime-session boundary-rt)))
        (list
         lifecycle-session-id
-        (session-host-process-input
-         boundary-host "/current-session-id")))
-(session-host-set-model!
- boundary-host "normalized-model" "test-next")
-(check "host model controls normalize JSON provider names"
+        (begin
+          (runtime-submit!
+           boundary-rt "/current-session-id")
+          command-session-id)))
+(runtime-set-model!
+ boundary-rt "normalized-model" "test-next")
+(check "model controls normalize JSON provider names"
        'test-next
-       (assq-ref
-        (session-host-config boundary-host) 'provider))
+       (assq-ref (runtime-config boundary-rt) 'provider))
 (check-error "thinking controls render invalid levels"
-             "unknown thinking level: impossible"
-             (lambda ()
-               (session-host-set-thinking!
-                boundary-host 'impossible)))
-(session-host-stop! boundary-host 'exit #f)
+              "unknown thinking level: impossible"
+              (lambda ()
+                (runtime-set-thinking!
+                 boundary-rt 'impossible)))
+(runtime-stop-session! boundary-rt 'exit #f)
 
 ;;----------------------------------------------------------------------------
 (section "machine algebra")
@@ -530,13 +524,14 @@
 (define machine-session-value
   (session-new rt-machine test-dir "test-model"))
 (define initial-machine
-  (agent-machine machine-session-value (runtime-config rt-machine) "hello"))
+  (agent-machine "hello" 8))
 (check "machine exposes the first effect and continuation as data"
        '(begin began)
-       (match (machine-transition initial-machine)
+       (match (machine-step initial-machine)
          [(await (effect ,effect-tag . ,payload)
-                 (kont ,kont-tag . ,rest))
-          (list effect-tag kont-tag)]
+                 (,kont-tag . ,rest))
+          (list effect-tag
+                (if (eq? kont-tag 'next) 'began kont-tag))]
          [,other other]))
 
 (runtime-register-tool!
@@ -556,9 +551,9 @@
 (define machine-events '())
 (runtime-subscribe!
  rt-machine (lambda (event) (set! machine-events (cons event machine-events))))
+(runtime-session-set! rt-machine machine-session-value)
 (define machine-reply
-  (run-agent rt-machine machine-session-value
-             (runtime-config rt-machine) "go"))
+  (run-agent! rt-machine "go"))
 (check "driver reaches a settled reply through provider and tool effects"
        '("done" ("go" "" "tool-ok" "done"))
        (list (assistant-text machine-reply)
@@ -585,10 +580,9 @@
 (check "context overflow is one explicit compact-and-retry transition"
        '(2 "recovered")
        (list
-        (begin
-          (run-agent
-           rt-overflow overflow-session
-           (runtime-config rt-overflow) "retry")
+         (begin
+          (runtime-session-set! rt-overflow overflow-session)
+          (run-agent! rt-overflow "retry")
           overflow-calls)
         (message-text
          (car (reverse (session-messages overflow-session))))))
@@ -605,12 +599,12 @@
    (set! failed-machine-events
          (cons event failed-machine-events))))
 (check-error "terminal machine failure is surfaced"
-             "max steps"
-             (lambda ()
-               (run-agent
-                rt-failed-machine
-                (session-new rt-failed-machine test-dir "m")
-                failed-config "fail")))
+              "max steps"
+              (lambda ()
+                (runtime-session-set!
+                 rt-failed-machine
+                 (session-new rt-failed-machine test-dir "m"))
+                (run-agent! rt-failed-machine "fail")))
 (check "failure still closes the agent lifecycle"
        #t
        (and
@@ -628,14 +622,14 @@
  (lambda args
    (error 'provider "authentication failed")))
 (check-error "provider failures preserve their original reason"
-             "authentication failed"
-             (lambda ()
-               (run-agent
-                rt-provider-failure
-                (session-memory
-                 rt-provider-failure test-dir "m")
-                (runtime-config rt-provider-failure)
-                "fail cleanly")))
+              "authentication failed"
+              (lambda ()
+                (runtime-session-set!
+                 rt-provider-failure
+                 (session-memory
+                  rt-provider-failure test-dir "m"))
+                (run-agent!
+                 rt-provider-failure "fail cleanly")))
 
 ;;----------------------------------------------------------------------------
 (section "plugin program")
@@ -661,16 +655,16 @@
      (lambda (args) total))))
 
 (runtime-mount-plugin! rt-plugin 'both)
-(define both-scope (mount-scope (runtime-mount rt-plugin 'both)))
+(define both-scope
+  (plugin-slot-scope
+   (runtime-plugin-slot rt-plugin 'both)))
 (check "import graph is projected through declared exports"
        '(42 #f)
        (list (scope-value both-scope 'total)
              (scope-has? both-scope 'left-private)))
 (let-values (((output error?)
-              (runtime-call-tool
-               rt-plugin
-               (session-new rt-plugin test-dir "m")
-               'plugin-total '())))
+               (runtime-call-tool
+                rt-plugin 'plugin-total '())))
   (check "mounted plugin effect is live"
          '(#f "42") (list error? output)))
 (runtime-dispose-plugin! rt-plugin 'both)
@@ -700,7 +694,8 @@
 (check "plugin transaction restores registry and mount state"
        '(#f defined)
        (list (and (runtime-find-tool rt-plugin 'tx-tool) #t)
-             (mount-state (runtime-mount rt-plugin 'tx))))
+              (plugin-slot-state
+               (runtime-plugin-slot rt-plugin 'tx))))
 
 (define prepared-apply-count 0)
 (define (op-preflight name) (list 'op-preflight name))
@@ -729,7 +724,8 @@
        '(0 defined)
        (list
         prepared-apply-count
-        (mount-state (runtime-mount rt-plugin 'preflight))))
+        (plugin-slot-state
+         (runtime-plugin-slot rt-plugin 'preflight))))
 
 (define rollback-attempts 0)
 (define (op-unstable name) (list 'op-unstable name))
@@ -741,12 +737,11 @@
    (runtime-register-tool!
     rt owner 'unstable-tool "retryable cleanup" (schema '())
     (lambda (args) "live")))
- (lambda (op rt scope owner pre handle)
-   (set! rollback-attempts (+ rollback-attempts 1))
-   (if (= rollback-attempts 1)
-       (error 'rollback "first cleanup fails")
-       (runtime-unregister-owned-tool!
-        rt owner 'unstable-tool))))
+  (lambda (op rt scope owner pre handle)
+    (set! rollback-attempts (+ rollback-attempts 1))
+    (if (= rollback-attempts 1)
+        (error 'rollback "first cleanup fails")
+        (runtime-remove-capability! rt handle))))
 (parameterize ((current-runtime rt-plugin)
                (current-owner 'test-file))
   (plugin unstable
@@ -760,13 +755,15 @@
 (check "rollback failure preserves a retryable residual mount"
        '(transaction-failed #t)
        (list
-        (mount-state (runtime-mount rt-plugin 'unstable))
+        (plugin-slot-state
+         (runtime-plugin-slot rt-plugin 'unstable))
         (and (runtime-find-tool rt-plugin 'unstable-tool) #t)))
 (runtime-dispose-plugin! rt-plugin 'unstable)
 (check "retrying dispose clears the residual effect"
        '(defined #f 2)
        (list
-        (mount-state (runtime-mount rt-plugin 'unstable))
+        (plugin-slot-state
+         (runtime-plugin-slot rt-plugin 'unstable))
         (and (runtime-find-tool rt-plugin 'unstable-tool) #t)
         rollback-attempts))
 
@@ -820,8 +817,7 @@
                rt-plugin
                '(msg assistant "ok" () stop #f)
                'plain 80))))
-(runtime-remove-renderer-owner!
- rt-plugin 'broken-renderer)
+(runtime-remove-owner! rt-plugin 'broken-renderer)
 
 (parameterize ((current-runtime rt-plugin)
                (current-owner 'test-file))
@@ -844,10 +840,10 @@
 (check "restarting a dependency restores its active dependents"
        '(mounted mounted #t #t)
        (list
-        (mount-state
-         (runtime-mount rt-plugin 'restart-base))
-        (mount-state
-         (runtime-mount rt-plugin 'restart-dependent))
+        (plugin-slot-state
+         (runtime-plugin-slot rt-plugin 'restart-base))
+        (plugin-slot-state
+         (runtime-plugin-slot rt-plugin 'restart-dependent))
         (and
          (runtime-find-tool rt-plugin 'restart-base-tool)
          #t)
@@ -999,12 +995,10 @@
        '(selected . 2)
        (selector-handle-key! selector 'enter))
 
-(define frame-host
-  (make-session-host*
-   rt-host test-dir (runtime-config rt-host)
-   (session-memory rt-host test-dir "m")))
+(runtime-session-set!
+ rt-host (session-memory rt-host test-dir "m"))
 (define frame-app
-  (make-tui-app* frame-host (make-terminal)))
+  (make-tui-app* rt-host (make-terminal)))
 (tui-app-notice-set!
  frame-app
  "a deliberately long notice that must not push the editor away")
@@ -1012,7 +1006,7 @@
  (tui-app-editor frame-app)
  "one\ntwo\nthree\nfour\nfive\nsix")
 (let-values (((lines row column)
-              (tui-normal-frame frame-app 20 8)))
+              (tui-frame frame-app 20 8)))
   (check-true "small TUI frames keep the editor cursor on screen"
               (and
                (<= (length lines) 8)
@@ -1043,18 +1037,15 @@
  fact-session
  '(msg assistant "Scheme eval result: 120"
        () stop ((input . 1) (output . 1))))
-(define fact-frame-host
-  (make-session-host*
-   rt-host test-dir (runtime-config rt-host)
-   fact-session))
+(runtime-session-set! rt-host fact-session)
 (define fact-frame-app
-  (make-tui-app* fact-frame-host (make-terminal)))
+  (make-tui-app* rt-host (make-terminal)))
 (check-true
  "TUI renders the Scheme eval fact-5 transcript in ANSI mode"
  (guard
    (error (#t #f))
    (let-values (((lines row column)
-                 (tui-normal-frame
+                 (tui-frame
                   fact-frame-app 120 30)))
      (let ((text (string-join lines "\n")))
        (and
@@ -1175,9 +1166,9 @@
 (check-true
  "main-screen TUI keeps transcript lines beyond the viewport"
  (let-values (((main-lines main-row main-column)
-               (tui-main-frame fact-frame-app 120)))
+               (tui-frame fact-frame-app 120)))
    (let-values (((viewport-lines viewport-row viewport-column)
-                 (tui-normal-frame fact-frame-app 120 8)))
+                 (tui-frame fact-frame-app 120 8)))
      (> (length main-lines)
         (length viewport-lines)))))
 (check-true
@@ -1205,7 +1196,7 @@
 (check-true
  "TUI displays a reasoning delta when the provider supplies one"
  (let-values (((lines row column)
-               (tui-normal-frame fact-frame-app 120 30)))
+               (tui-frame fact-frame-app 120 30)))
    (let ((text (string-join lines "\n")))
      (and
       (string-contains? "Thinking" text)
@@ -1224,7 +1215,7 @@
 (check-true
  "completed reasoning stays before its assistant reply"
  (let-values (((lines row column)
-               (tui-main-frame fact-frame-app 120)))
+               (tui-frame fact-frame-app 120)))
    (let loop ((lines lines)
               (index 0)
               (thinking-index #f)
@@ -1251,7 +1242,7 @@
               answer-index))))))
 (define (fact-frame-has-reasoning?)
   (let-values (((lines row column)
-                (tui-normal-frame fact-frame-app 120 30)))
+                (tui-frame fact-frame-app 120 30)))
     (and
      (string-contains?
       "visible reasoning summary"
@@ -1290,17 +1281,17 @@
              (lambda ()
                (selected-mode
                 '((mode . unknown)) "")))
-(define rpc-test-host
-  (make-session-host*
-   rt-host test-dir
-   (alist-merge
-    (runtime-config rt-host)
-    '((provider . rpc-provider)
-      (reasoning-effort . medium)))
-   (session-memory rt-host test-dir "rpc-model")))
+(runtime-config-set!
+ rt-host
+ (alist-merge
+  (runtime-config rt-host)
+  '((provider . rpc-provider)
+    (reasoning-effort . medium))))
+(runtime-session-set!
+ rt-host (session-memory rt-host test-dir "rpc-model"))
 (check "RPC state exposes provider and thinking"
        '(rpc-provider medium)
-       (let ((state (rpc-session-state rpc-test-host)))
+       (let ((state (rpc-session-state rt-host)))
          (list
           (assq-ref state 'provider)
           (assq-ref state 'thinking))))
@@ -1311,7 +1302,7 @@
                     (open-input-string
                      "{\"type\":\"shutdown\"}\n"))
                    (current-output-port output))
-                (run-rpc rpc-test-host))
+                (run-rpc rt-host))
               (find
                (lambda (line)
                  (and
@@ -1358,7 +1349,7 @@
 (string->file
  (path-join prompt-extension-dir "prompt.ss")
  "(register-tool! 'prompt-tool \"Visible after extension loading.\" (schema '()) (lambda (args) \"ok\"))\n")
-(define rt-prompt (runtime-new base-config))
+(define rt-prompt (runtime-new prompt-extension-cwd base-config))
 (install-core-op-handlers! rt-prompt)
 (install-core-tools! rt-prompt)
 (install-resource-input-handlers! rt-prompt)

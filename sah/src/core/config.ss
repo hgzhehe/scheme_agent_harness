@@ -25,7 +25,7 @@
   (let ((i (string-index s #\.)))
     (if (and i (> i 20)) (substring s 0 (+ i 1)) s)))
 
-(define (tools-block rt config)
+(define (tools-block rt)
   (string-append
    "Tools:\n"
    (apply string-append
@@ -35,13 +35,13 @@
                     (string-append "- " (symbol->string name) ": "
                                    (first-sentence description) "\n")]
                    [,other ""]))
-               (runtime-active-tools rt config)))))
+               (runtime-active-tools rt)))))
 
 (define (builtin-system-prompt rt config)
   (string-append
    "You are sah, a coding agent running in Chez Scheme.\n"
    "\n"
-   (tools-block rt config)
+   (tools-block rt)
    "\n"
    "Act, don't narrate: inspect, change, verify. Be brief.\n"))
 
