@@ -1056,8 +1056,122 @@
    (let-values (((lines row column)
                  (tui-normal-frame
                   fact-frame-app 120 30)))
-     (string-contains?
-     "120" (string-join lines "\n")))))
+     (let ((text (string-join lines "\n")))
+       (and
+        (string-contains? "120" text)
+        (string-contains? "Tool call  eval" text)
+        (string-contains?
+         "(let fact ([n 5])" text))))))
+(check-true
+ "ANSI tool calls render generic arguments"
+ (let ((text
+        (string-join
+         (render-message-lines
+          rt-host
+          '(msg assistant ""
+                ((call "read-call" read
+                       ((path . "src/main.ss")
+                        (offset . 1)
+                        (limit . 20))))
+                tool-use #f)
+          'ansi 80)
+         "\n")))
+   (and
+    (string-contains? "Tool call  read" text)
+    (string-contains? "path: src/main.ss" text)
+    (string-contains? "limit: 20" text))))
+(check-true
+ "ANSI eval calls show source without an empty assistant heading"
+ (let ((lines
+        (render-message-lines
+         rt-host
+         '(msg assistant ""
+               ((call "eval-call" eval
+                      ((code . "(fact-cps 5 'done)"))))
+               tool-use #f)
+         'ansi 80)))
+   (and
+    (string-contains?
+     "Tool call  eval"
+     (string-join lines "\n"))
+    (string-contains?
+     "(fact-cps 5 'done)"
+     (string-join lines "\n"))
+    (not
+     (find
+      (lambda (line)
+        (string-contains? "Assistant" line))
+      lines)))))
+(check-true
+ "ANSI tool results distinguish success and error panels"
+ (let ((success
+        (string-join
+         (render-message-lines
+          rt-host
+          '(msg tool "ok" eval "120\n" #f)
+          'ansi 80)
+         "\n"))
+       (failure
+        (string-join
+         (render-message-lines
+          rt-host
+          '(msg tool "bad" eval
+                "variable fact is not bound" #t)
+          'ansi 80)
+         "\n")))
+   (and
+    (string-contains? "Tool result  eval" success)
+    (string-contains? "120" success)
+    (string-contains? "Tool error  eval" failure)
+    (string-contains?
+     "variable fact is not bound" failure))))
+(check-true
+ "ANSI tool panels remain width bounded"
+ (for-all
+  (lambda (line)
+    (<= (string-display-width line) 24))
+  (render-message-lines
+   rt-host
+   '(msg assistant ""
+         ((call "narrow" eval
+                ((code
+                  . "(define (long-function-name value) (* value value))"))))
+          tool-use #f)
+    'ansi 24)))
+(check-true
+ "ANSI user messages use a padded neutral background block"
+ (let ((lines
+        (render-message-lines
+         rt-host
+         '(msg user "用 Scheme eval 算 (fact 5)")
+         'ansi 36)))
+   (and
+    (= (length lines) 3)
+    (for-all
+     (lambda (line)
+       (= (string-display-width line) 36))
+     lines)
+    (string-contains?
+     (string-append esc
+                    "[38;2;212;212;212;48;2;52;53;65m")
+     (car lines))
+    (string-contains?
+     "(fact 5)"
+     (string-join lines "\n")))))
+(check-true
+ "ANSI user message blocks wrap wide text without exceeding the frame"
+ (let ((lines
+        (render-message-lines
+         rt-host
+         '(msg user
+               "这是一个需要换行的用户消息，用来验证灰色背景块在窄终端中仍然稳定。")
+         'ansi 24)))
+   (and
+    (> (length lines) 3)
+    (for-all
+     (lambda (line)
+       (= (string-display-width line) 24))
+     lines))))
 (check-true
  "main-screen TUI keeps transcript lines beyond the viewport"
  (let-values (((main-lines main-row main-column)
@@ -1092,13 +1206,49 @@
  "TUI displays a reasoning delta when the provider supplies one"
  (let-values (((lines row column)
                (tui-normal-frame fact-frame-app 120 30)))
-   (string-contains?
-    "visible reasoning summary"
-    (string-join lines "\n"))))
+   (let ((text (string-join lines "\n")))
+     (and
+      (string-contains? "Thinking" text)
+      (string-contains?
+       "visible reasoning summary" text)
+      (string-contains?
+       (string (integer->char #x256d))
+       text)))))
+(session-add-message!
+ fact-session
+ '(msg assistant "done" () stop #f))
 (tui-handle-event!
  fact-frame-app
  '(ev message-end
       (msg assistant "done" () stop #f)))
+(check-true
+ "completed reasoning stays before its assistant reply"
+ (let-values (((lines row column)
+               (tui-main-frame fact-frame-app 120)))
+   (let loop ((lines lines)
+              (index 0)
+              (thinking-index #f)
+              (answer-index #f))
+     (if (null? lines)
+         (and thinking-index
+              answer-index
+              (< thinking-index answer-index))
+         (loop
+          (cdr lines)
+          (+ index 1)
+          (if (and
+               (not thinking-index)
+               (string-contains?
+                "visible reasoning summary"
+                (car lines)))
+              index
+              thinking-index)
+          (if (and
+               (not answer-index)
+               (string-contains?
+                "done" (car lines)))
+              index
+              answer-index))))))
 (define (fact-frame-has-reasoning?)
   (let-values (((lines row column)
                 (tui-normal-frame fact-frame-app 120 30)))

@@ -167,7 +167,7 @@ entry，并同步：
 
 ## 9. P2：验证深化
 
-当前 89 个离线契约测试覆盖主要不变量。下一阶段增加：
+当前 96 个离线契约测试覆盖主要不变量。下一阶段增加：
 
 - journal tree property test；
 - branch/scope model-based test；

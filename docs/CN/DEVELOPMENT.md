@@ -363,7 +363,7 @@ scheme --script tests/run-tests.ss
 - extension load cleanup；
 - source manifest。
 
-当前离线套件有 89 个契约测试。测试数量不是目标；每个测试都应对应一个跨模块不变量
+当前离线套件有 96 个契约测试。测试数量不是目标；每个测试都应对应一个跨模块不变量
 或已经发生过的故障。
 
 ## 14. 构建

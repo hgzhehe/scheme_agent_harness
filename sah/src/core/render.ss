@@ -112,13 +112,15 @@
 
 (define (ansi-bold text) (ansi "1" text))
 (define (ansi-dim text) (ansi "2" text))
-(define (ansi-red text) (ansi "31" text))
-(define (ansi-green text) (ansi "32" text))
-(define (ansi-yellow text) (ansi "33" text))
-(define (ansi-cyan text) (ansi "36" text))
-(define (ansi-bright-black text) (ansi "90" text))
-(define (ansi-bright-blue text) (ansi "94" text))
-(define (ansi-bright-cyan text) (ansi "96" text))
+(define (ansi-red text) (ansi "38;2;204;102;102" text))
+(define (ansi-green text) (ansi "38;2;181;189;104" text))
+(define (ansi-yellow text) (ansi "38;2;240;198;116" text))
+(define (ansi-cyan text) (ansi "38;2;138;190;183" text))
+(define (ansi-bright-black text) (ansi "38;2;102;102;102" text))
+(define (ansi-bright-blue text) (ansi "38;2;95;135;255" text))
+(define (ansi-bright-cyan text) (ansi "38;2;0;215;255" text))
+(define (ansi-user-message text)
+  (ansi "38;2;212;212;212;48;2;52;53;65" text))
 
 (define (combining-codepoint? n)
   (or (and (>= n #x0300) (<= n #x036f))
@@ -251,6 +253,170 @@
                 (if first? prefix continuation)
                 (car lines))
                out)))))
+
+(define (pad-display-width text width)
+  (let* ((text (take-display-width text width))
+         (padding
+          (max 0 (- width (string-display-width text)))))
+    (string-append text (make-string padding #\space))))
+
+(define (ansi-user-message-lines content width)
+  ;; Match Pi's message hierarchy: user turns are neutral, padded blocks while
+  ;; assistant prose remains open on the terminal background.
+  (let* ((width (max 20 width))
+         (body-width (max 1 (- width 2)))
+         (content-lines (wrap-text content body-width))
+         (blank (make-string width #\space)))
+    (map
+     ansi-user-message
+     (append
+      (list blank)
+      (map
+       (lambda (line)
+         (pad-display-width
+          (string-append " " line)
+          width))
+       content-lines)
+      (list blank)))))
+
+(define (blank-text? text)
+  (or (not (string? text))
+      (string=? (string-trim text) "")))
+
+(define (drop-trailing-blank-lines lines)
+  (reverse
+   (let loop ((lines (reverse lines)))
+     (if (and (pair? lines)
+              (string=? (string-trim (car lines)) ""))
+         (loop (cdr lines))
+         lines))))
+
+(define (text-content-lines text)
+  (if (blank-text? text)
+      '()
+      (drop-trailing-blank-lines
+       (string-split text "\n"))))
+
+(define (fit-render-line line width)
+  (if (<= (string-display-width line) width)
+      line
+      (take-styled-display-width line width)))
+
+(define (ansi-panel-lines title lines width border-style body-style)
+  ;; The short open frame reads clearly in a dense transcript without making
+  ;; every tool interaction a full-width card.
+  (let* ((width (max 8 width))
+         (body-width (max 1 (- width 2)))
+         (wrapped
+          (apply
+           append
+           (map (lambda (line)
+                  (wrap-line line body-width))
+                lines))))
+    (append
+     (list
+      (fit-render-line
+       (border-style
+        (string-append
+         (string (integer->char #x256d))
+         (string (integer->char #x2500))
+         " "
+         title))
+       width))
+     (map
+      (lambda (line)
+        (fit-render-line
+         (string-append
+          (border-style
+           (string (integer->char #x2502)))
+          " "
+          (body-style line))
+         width))
+      wrapped)
+     (list
+      (border-style
+       (string-append
+        (string (integer->char #x2570))
+        (string (integer->char #x2500))))))))
+
+(define (tool-primary-argument name)
+  (case name
+    ((eval) 'code)
+    ((shell) 'command)
+    (else #f)))
+
+(define (tool-argument-lines pair)
+  (let ((name (car pair))
+        (value (cdr pair)))
+    (cond
+      ((and (string? value)
+            (string-contains? "\n" value))
+       (cons
+        (format "~a:" name)
+        (map (lambda (line)
+               (string-append "  " line))
+             (text-content-lines value))))
+      ((string? value)
+       (list (format "~a: ~a" name value)))
+      (else
+       (list (format "~a: ~s" name value))))))
+
+(define (tool-call-body-lines name args)
+  (if (not (list? args))
+      (list (format "~s" args))
+      (let* ((primary-name (tool-primary-argument name))
+             (primary (and primary-name
+                           (assq primary-name args)))
+             (rest
+              (if primary
+                  (filter
+                   (lambda (pair)
+                     (not (eq? (car pair) primary-name)))
+                   args)
+                  args))
+             (primary-lines
+              (if (and primary (string? (cdr primary)))
+                  (text-content-lines (cdr primary))
+                  '()))
+             (rest-lines
+              (apply append
+                     (map tool-argument-lines rest))))
+        (append
+         primary-lines
+         (if (and (pair? primary-lines)
+                  (pair? rest-lines))
+             (list "")
+             '())
+         rest-lines))))
+
+(define (render-tool-call-ansi-lines call width)
+  (match call
+    [(call ,id ,name ,args)
+     (ansi-panel-lines
+      (format "Tool call  ~a" name)
+      (tool-call-body-lines name args)
+      width
+      ansi-cyan
+      (if (memq name '(eval shell))
+          ansi-yellow
+          (lambda (line) line)))]
+    [,other
+     (ansi-panel-lines
+      "Tool call"
+      (list (format "~s" other))
+      width ansi-cyan (lambda (line) line))]))
+
+(define (render-tool-calls-ansi-lines calls width)
+  (let loop ((calls calls) (out '()))
+    (if (null? calls)
+        out
+        (loop
+         (cdr calls)
+         (append
+          out
+          (if (null? out) '() (list ""))
+          (render-tool-call-ansi-lines
+           (car calls) width))))))
 
 ;;----------------------------------------------------------------------------
 ;; Canonical JSON projections
@@ -513,11 +679,11 @@
                  "<section class=\"message user\"><h2>User</h2><pre>"
                  (html-escape content)
                  "</pre></section>")))
+         ((ansi)
+          (ansi-user-message-lines content width))
          (else
           (prefix-lines
-           (if (eq? output-format 'ansi)
-               (string-append (ansi-bold (ansi-bright-cyan "You")) "  ")
-               "You  ")
+           "You  "
            "     "
            (wrap-text content (max 1 (- width 5))))))]
       [(msg system ,content)
@@ -570,9 +736,25 @@
                       "</pre></details>"))
                  "</section>")))
          ((ansi)
-          (append
-           (list (ansi-bold (ansi-bright-blue "Assistant")))
-           (render-markdown-ansi-lines content width)))
+          (let ((answer-lines
+                 (if (blank-text? content)
+                     '()
+                     (append
+                      (list
+                       (ansi-bold
+                        (ansi-bright-blue "Assistant")))
+                      (render-markdown-ansi-lines
+                       content width))))
+                (call-lines
+                 (render-tool-calls-ansi-lines
+                  calls width)))
+            (append
+             answer-lines
+             (if (and (pair? answer-lines)
+                      (pair? call-lines))
+                 (list "")
+                 '())
+             call-lines)))
          (else
           (append
            (list "Assistant")
@@ -594,18 +776,27 @@
               "\"><h3>" (html-escape title) "</h3><pre>"
               (html-escape content)
               "</pre></section>")))
+           ((ansi)
+            (ansi-panel-lines
+             (format "~a  ~a"
+                     (if error?
+                         "Tool error"
+                         "Tool result")
+                     name)
+             (let ((lines
+                    (text-content-lines content)))
+               (if (null? lines)
+                   (list "(no output)")
+                   lines))
+             width
+             (if error? ansi-red ansi-green)
+             (if error?
+                 ansi-red
+                 (lambda (line) line))))
            (else
             (append
-             (list
-              (if (eq? output-format 'ansi)
-                  ((if error? ansi-red ansi-green) title)
-                  title))
-             (map
-              (lambda (line)
-                (if (eq? output-format 'ansi)
-                    (ansi-dim line)
-                    line))
-              (wrap-text content width))))))]
+             (list title)
+             (wrap-text content width)))))]
       [,other (list (format "~s" other))])))
 
 (define (render-message-lines rt message output-format width)

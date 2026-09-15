@@ -4,6 +4,7 @@
   (fields host terminal editor
           (mutable streaming)
           (mutable thinking)
+          (mutable thinking-entry)
           (mutable status)
           (mutable notice)
           (mutable selector)
@@ -13,7 +14,7 @@
 
 (define (make-tui-app* host terminal)
   (make-tui-app host terminal (make-editor)
-                "" "" 'idle #f #f #f #t #f))
+                "" "" #f 'idle #f #f #f #t #f))
 
 (define (tui-request-render! app)
   (when (and (tui-app-running? app)
@@ -33,6 +34,7 @@
     [(ev message-start)
      (tui-app-streaming-set! app "")
      (tui-app-thinking-set! app "")
+     (tui-app-thinking-entry-set! app #f)
      (tui-app-status-set! app 'thinking)]
     [(ev message-delta ,text)
      (tui-app-streaming-set!
@@ -43,7 +45,16 @@
       app (string-append (tui-app-thinking app) text))
      (tui-app-status-set! app 'thinking)]
     [(ev message-end ,message)
-     (tui-app-streaming-set! app "")]
+     (tui-app-streaming-set! app "")
+     (tui-app-thinking-entry-set!
+      app
+      (and
+       (not (blank-text?
+             (tui-app-thinking app)))
+       (log-leaf
+        (session-log
+         (session-host-session
+          (tui-app-host app))))))]
     [(ev tool-start ,id ,name ,args)
      (tui-app-status-set! app (cons 'tool name))]
     [(ev tool-end ,id ,name ,error? ,output)
@@ -60,6 +71,7 @@
     [(ev session-start ,session ,reason ,previous)
      (tui-app-streaming-set! app "")
      (tui-app-thinking-set! app "")
+     (tui-app-thinking-entry-set! app #f)
      (tui-app-status-set! app 'idle)]
     [(ev session-recovered ,session ,recovery)
      (tui-set-notice!
@@ -114,24 +126,46 @@
   (let* ((host (tui-app-host app))
          (rt (session-host-rt host))
          (session (session-host-session host))
+         (entries
+          (session-renderable-entries session))
+         (thinking
+          (if (blank-text? (tui-app-thinking app))
+              '()
+              (append
+               (ansi-panel-lines
+                "Thinking"
+                (text-content-lines
+                 (tui-app-thinking app))
+                width
+                ansi-bright-black
+                ansi-dim)
+               (list ""))))
+         (thinking-entry
+          (tui-app-thinking-entry app))
+         (insert-thinking?
+          (and
+           thinking-entry
+           (find
+            (lambda (entry)
+              (eqv? (entry-id entry)
+                    thinking-entry))
+            entries)))
          (base
           (apply
            append
            (map
             (lambda (entry)
               (append
-               (render-entry-lines rt entry 'ansi width)
+               (if (and
+                    insert-thinking?
+                    (eqv? (entry-id entry)
+                          thinking-entry))
+                   thinking
+                   '())
+               (render-entry-lines
+                rt entry 'ansi width)
                (list "")))
-            (session-renderable-entries session))))
-         (thinking
-          (if (string=? (tui-app-thinking app) "")
-              '()
-              (append
-               (list (ansi-dim "Thinking"))
-               (map ansi-dim
-                    (wrap-text
-                     (tui-app-thinking app) width))
-               (list ""))))
+            entries)))
          (stream
           (if (string=? (tui-app-streaming app) "")
               '()
@@ -141,7 +175,10 @@
                  (ansi-bright-blue "Assistant")))
                (render-markdown-ansi-lines
                 (tui-app-streaming app) width)))))
-    (append base thinking stream)))
+    (append
+     base
+     (if insert-thinking? '() thinking)
+     stream)))
 
 (define (tui-notice-lines app width)
   (if (tui-app-notice app)
