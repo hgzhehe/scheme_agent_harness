@@ -39,6 +39,23 @@
 (define (section name)
   (printf "~%== ~a ==~%" name))
 
+(define (sleep-ms milliseconds)
+  (sleep
+   (make-time
+    'time-duration
+    (* (modulo milliseconds 1000) 1000000)
+    (quotient milliseconds 1000))))
+
+(define (wait-until predicate timeout-ms)
+  (let ((deadline (+ (now-ms) timeout-ms)))
+    (let loop ()
+      (cond
+        ((predicate) #t)
+        ((>= (now-ms) deadline) #f)
+        (else
+         (sleep-ms 10)
+         (loop))))))
+
 (define test-dir
   (path-join (temp-dir) (string-append "sah-kernel-" (short-id))))
 (ensure-dir! test-dir)
@@ -68,6 +85,15 @@
     (let ((config (finalize-config rt base-config test-dir)))
       (runtime-config-set! rt config))
     rt))
+
+(check-true
+ "default bootstrap explains sah even when the workspace has no source"
+ (let ((system (assq-ref (runtime-config (test-runtime)) 'system)))
+   (and (string-contains? "A plugin is a dependency-linked Scheme program"
+                          system)
+        (string-contains? "working directory is the user's workspace"
+                          system)
+        (string-contains? "/plugin inspect NAME" system))))
 
 (define (message-text message)
   (match message
@@ -631,6 +657,111 @@
                 (run-agent!
                  rt-provider-failure "fail cleanly")))
 
+(define rt-cancelled-machine (test-runtime))
+(define cancelled-machine-session
+  (session-memory rt-cancelled-machine test-dir "m"))
+(define cancelled-machine-control (new-run-control))
+(define cancelled-provider-entered #f)
+(define cancelled-machine-result #f)
+(define cancelled-machine-events '())
+(runtime-chat-override-set!
+ rt-cancelled-machine
+ (lambda args
+   (set! cancelled-provider-entered #t)
+   (let loop ()
+     (if
+         (run-control-cancelled-now?
+          (current-run-control))
+         '(msg assistant "must not commit" () stop
+               ((input . 1) (output . 1)))
+         (begin (sleep-ms 10) (loop))))))
+(runtime-subscribe!
+ rt-cancelled-machine
+ (lambda (event)
+   (set! cancelled-machine-events
+         (cons event cancelled-machine-events))))
+(runtime-session-set!
+ rt-cancelled-machine cancelled-machine-session)
+(run-control-start! cancelled-machine-control)
+(fork-thread
+ (lambda ()
+   (parameterize
+       ((current-run-control
+         cancelled-machine-control))
+     (set! cancelled-machine-result
+           (run-agent!
+            rt-cancelled-machine "cancel me")))))
+(define cancelled-provider-started?
+  (wait-until
+   (lambda () cancelled-provider-entered) 1000))
+(define cancelled-request-accepted?
+  (run-control-cancel! cancelled-machine-control))
+(define cancelled-machine-settled?
+  (wait-until
+   (lambda () cancelled-machine-result) 1000))
+(run-control-finish! cancelled-machine-control)
+(check
+ "cancellation settles the machine without committing a provider reply"
+ '(#t #t #t cancelled ("cancel me"))
+ (list
+  cancelled-provider-started?
+  cancelled-request-accepted?
+  cancelled-machine-settled?
+  cancelled-machine-result
+  (map message-text
+       (session-messages
+        cancelled-machine-session))))
+(check-true
+ "cancellation is an explicit agent lifecycle event"
+ (and
+  (member '(ev agent-cancelled)
+          cancelled-machine-events)
+  (member '(ev agent-settled)
+          cancelled-machine-events)))
+
+(define shell-cancel-control (new-run-control))
+(define shell-cancel-result #f)
+(define shell-cancel-finished? #f)
+(define shell-cancel-command
+  (if windows?
+      "cmd.exe /c \"ping -n 6 127.0.0.1 >NUL\""
+      "sh -c \"sleep 5\""))
+(run-control-start! shell-cancel-control)
+(fork-thread
+ (lambda ()
+   (parameterize
+       ((current-run-control shell-cancel-control))
+     (set!
+      shell-cancel-result
+      (guard
+        (error (#t (err->string error)))
+        (run-with-stdin shell-cancel-command "")))
+     (set! shell-cancel-finished? #t))))
+(define shell-handler-installed?
+  (wait-until
+   (lambda ()
+     (run-control-interruptible?
+      shell-cancel-control))
+   1000))
+(define shell-cancel-accepted?
+  (run-control-cancel! shell-cancel-control))
+(define shell-cancel-settled?
+  (wait-until
+   (lambda () shell-cancel-finished?) 2000))
+(run-control-finish! shell-cancel-control)
+(check
+ "cancelling a shell tool terminates its process tree"
+ '(#t #t #t #t)
+ (list
+  shell-handler-installed?
+  shell-cancel-accepted?
+  shell-cancel-settled?
+  (and
+   (string? shell-cancel-result)
+   (string-contains?
+    "cancelled by user"
+    shell-cancel-result))))
+
 ;;----------------------------------------------------------------------------
 (section "plugin program")
 
@@ -929,18 +1060,6 @@
 (check "SGR mouse wheel down is decoded"
        'scroll-down
        (terminal-read-key wheel-down-terminal))
-(check-true
- "unsupported console readiness never escapes as an exception"
- (guard
-   (error (#t #f))
-   (boolean?
-    (terminal-input-ready?
-     (make-tui-terminal
-     (standard-input-port)
-      (current-output-port)
-      #f #f #f #f
-      '() 0 0 0 0)
-     0))))
 (check
  "regular TUI preserves native scrollback and mouse selection"
  '(#f #f #f #t)
@@ -1016,6 +1135,64 @@
                 (lambda (line)
                   (<= (string-display-width line) 20))
                 lines))))
+
+(define rt-async-tui (test-runtime))
+(define async-tui-session
+  (session-memory rt-async-tui test-dir "m"))
+(define async-tui-turn 0)
+(define async-tui-first-entered #f)
+(runtime-session-set! rt-async-tui async-tui-session)
+(runtime-chat-override-set!
+ rt-async-tui
+ (lambda args
+   (set! async-tui-turn (+ async-tui-turn 1))
+   (if (= async-tui-turn 1)
+       (begin
+         (set! async-tui-first-entered #t)
+         (let loop ()
+           (if
+               (run-control-cancelled-now?
+                (current-run-control))
+               '(msg assistant "must not commit" () stop
+                     ((input . 1) (output . 1)))
+               (begin (sleep-ms 10) (loop)))))
+       '(msg assistant "second reply" () stop
+             ((input . 1) (output . 1))))))
+(define async-tui-app
+  (make-tui-app* rt-async-tui (make-terminal)))
+(define async-tui-start-result
+  (tui-start-input! async-tui-app "first"))
+(define async-tui-started?
+  (wait-until
+   (lambda () async-tui-first-entered) 1000))
+(define async-tui-queue-result
+  (tui-start-input! async-tui-app "second"))
+(define async-tui-cancel-result
+  (tui-cancel-run! async-tui-app))
+(define async-tui-settled?
+  (wait-until
+   (lambda ()
+     (let drain ()
+       (when (tui-process-event! async-tui-app)
+         (drain)))
+     (and
+      (not (tui-busy? async-tui-app))
+      (null? (tui-app-pending async-tui-app))
+      (= async-tui-turn 2)))
+   2000))
+(tui-app-running?-set! async-tui-app #f)
+(check
+ "TUI runs asynchronously, cancels, and drains follow-up input"
+ '(started #t queued #t #t
+           ("first" "second" "second reply"))
+ (list
+  async-tui-start-result
+  async-tui-started?
+  async-tui-queue-result
+  async-tui-cancel-result
+  async-tui-settled?
+  (map message-text
+       (session-messages async-tui-session))))
 
 (define fact-session
   (session-memory rt-host test-dir "m"))
@@ -1362,6 +1539,32 @@
             (string-contains?
              "- prompt-tool:"
              (assq-ref prompt-config-loaded 'system)))
+
+(define rt-custom-prompt
+  (runtime-new
+   prompt-extension-cwd
+   (alist-merge base-config '((system . "Answer in haiku.")))))
+(install-core-op-handlers! rt-custom-prompt)
+(install-core-tools! rt-custom-prompt)
+(install-resource-input-handlers! rt-custom-prompt)
+(define custom-prompt-config
+  (finalize-config
+   rt-custom-prompt
+   (runtime-config rt-custom-prompt)
+   prompt-extension-cwd))
+(runtime-config-set! rt-custom-prompt custom-prompt-config)
+(define custom-prompt-loaded
+  (load-resources
+   rt-custom-prompt custom-prompt-config prompt-extension-cwd))
+(check
+ "custom instructions preserve sah contract and dynamic tools"
+ '(#t #t #t)
+ (let ((system (assq-ref custom-prompt-loaded 'system)))
+   (list
+    (string-contains? "Answer in haiku." system)
+    (string-contains? "A plugin is a dependency-linked Scheme program"
+                      system)
+    (string-contains? "- prompt-tool:" system))))
 
 (check "manifest has no deleted legacy state modules"
        '()

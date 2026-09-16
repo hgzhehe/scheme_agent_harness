@@ -16,11 +16,13 @@
 ;; system prompt
 ;;----------------------------------------------------------------------------
 
-;; The built-in prompt's tool list is GENERATED from the tools the model can
-;; actually call, so `exclude-tools` (or a `tools` allowlist, or an extension
-;; registering a tool) can never leave the prompt naming a tool that is not
-;; there. A SYSTEM.md, or a `system` key in config.scm, replaces the built-in
-;; text entirely -- the user's prompt is the user's.
+;; The prompt has three layers:
+;;   1. sah's invariant runtime contract;
+;;   2. user-replaceable working instructions;
+;;   3. the generated list of tools the model can actually call.
+;;
+;; Keeping the contract outside the replaceable layer means a custom SYSTEM.md
+;; can change how the agent works without making it forget what hosts it.
 (define (first-sentence s)
   (let ((i (string-index s #\.)))
     (if (and i (> i 20)) (substring s 0 (+ i 1)) s)))
@@ -37,18 +39,47 @@
                    [,other ""]))
                (runtime-active-tools rt)))))
 
-(define (builtin-system-prompt rt config)
+(define sah-runtime-contract
   (string-append
-   "You are sah, a coding agent running in Chez Scheme.\n"
+   "You are the coding agent hosted by sah, a Scheme agent harness running "
+   "in Chez Scheme. Identify yourself in that context; sah is not merely a "
+   "project in the current directory.\n"
    "\n"
-   (tools-block rt)
+   "Sah runtime:\n"
+   "- Runtime owns the active Session, one owner-tagged capability registry, "
+   "dynamic resources, and plugin slots.\n"
+   "- Session is a journal plus cursor. `eval` runs in its session-local "
+   "Scheme scope; successful definitions are journaled and replayed on "
+   "resume.\n"
+   "- Agent control is a defunctionalized data machine whose effects are "
+   "performed by the host runtime.\n"
+   "- Extensions are Scheme files loaded from global and project `.sah/"
+   "extensions` directories; each file is an ownership boundary.\n"
+   "- A plugin is a dependency-linked Scheme program. Imports form lexical "
+   "scope, its body yields ops, mount prepares then applies external effects "
+   "transactionally, and frames retain exact undo evidence for dispose or "
+   "restart. Tools, hooks, commands, renderers, and widgets can be plugin "
+   "effects.\n"
+   "- Skills and prompt templates are discovered resources, not plugins.\n"
    "\n"
-   "Act, don't narrate: inspect, change, verify. Be brief.\n"))
+   "Runtime inspection:\n"
+   "- The working directory is the user's workspace and may be empty. Do not "
+   "infer that sah lacks a mechanism merely because its source is absent "
+   "there.\n"
+   "- Use `/plugins`, `/plugin inspect NAME`, `/help`, `/session`, `/context`, "
+   "and `/reload` to inspect public runtime state.\n"
+   "- Session `eval` cannot see sah host internals. Use public commands or "
+   "read the sah source when implementation detail is required.\n"))
 
-;; Loaded from a file when present (first match wins), else the built-in.
+(define default-agent-instructions
+  (string-append
+   "Work from evidence: inspect before changing anything, make the smallest "
+   "change that works, and verify it. Act instead of narrating. Be brief.\n"))
+
+;; Loaded from a file when present (first match wins), else the default.
 ;;   ~/.sah/SYSTEM.md      (global)
 ;;   <cwd>/.sah/SYSTEM.md  (project)
-(define (configured-system-prompt config cwd)
+(define (configured-agent-instructions config cwd)
   (define (from-file p)
     (and (file-exists? p)
          (let ((s (string-trim (file->string p))))
@@ -57,20 +88,26 @@
       (from-file (path-join (sah-home) "SYSTEM.md"))
       (from-file (path-join cwd ".sah" "SYSTEM.md"))))
 
-(define (system-prompt-for rt config cwd)
-  (or (configured-system-prompt config cwd)
-      (builtin-system-prompt rt config)))
+(define (compose-system-prompt rt instructions cwd)
+  (string-append
+   sah-runtime-contract
+   "\nWorking instructions:\n"
+   instructions
+   "\n"
+   (tools-block rt)
+   "\nWorking directory: " cwd "\n"))
 
 (define (finalize-config rt config cwd)
-  (let* ((custom (configured-system-prompt config cwd))
-         (base-text
-          (string-append (or custom (builtin-system-prompt rt config))
-                         "\nWorking directory: " cwd "\n")))
-    (alist-merge config
-                 (list (cons 'base-system base-text)
-                       (cons 'system base-text)
-                       (cons 'system-mode
-                             (if custom 'custom 'generated))))))
+  (let* ((custom (configured-agent-instructions config cwd))
+         (instructions (or custom default-agent-instructions))
+         (base-text (compose-system-prompt rt instructions cwd)))
+    (alist-merge
+     config
+     (list (cons 'system-instructions instructions)
+           (cons 'base-system base-text)
+           (cons 'system base-text)
+           (cons 'system-mode
+                 (if custom 'custom 'default))))))
 
 ;;----------------------------------------------------------------------------
 ;; settings

@@ -15,7 +15,6 @@
 (define win-get-console-mode #f)
 (define win-set-console-mode #f)
 (define win-get-console-info #f)
-(define win-wait-for-single-object #f)
 
 (when windows?
   (guard (e (#t #t))
@@ -29,10 +28,28 @@
                              (void* unsigned-32) int))
     (set! win-get-console-info
           (foreign-procedure "GetConsoleScreenBufferInfo"
-                             (void* void*) int))
-    (set! win-wait-for-single-object
-          (foreign-procedure "WaitForSingleObject"
-                             (void* unsigned-32) unsigned-32))))
+                             (void* void*) int))))
+
+(define terminal-native-init #f)
+(define terminal-native-read #f)
+(define terminal-native-pause #f)
+(define terminal-native-active? #f)
+
+(guard (e (#t #f))
+  (let ((init
+         (foreign-procedure
+          "(cs)ee_init_term" (iptr iptr) boolean))
+        (read
+         (foreign-procedure
+          "(cs)ee_read_char" (boolean) scheme-object))
+        (pause
+         (foreign-procedure
+          "(cs)ee_nanosleep"
+          (unsigned-32 unsigned-32)
+          void)))
+    (set! terminal-native-init init)
+    (set! terminal-native-read read)
+    (set! terminal-native-pause pause)))
 
 (define (with-foreign-u32 proc)
   (let ((pointer (foreign-alloc 4)))
@@ -63,6 +80,12 @@
 
 (define (make-terminal)
   (let ((interactive? (terminal-interactive?)))
+    (set! terminal-native-active?
+          (and interactive?
+               terminal-native-init
+               terminal-native-read
+               (guard (e (#t #f))
+                 (terminal-native-init -1 -1))))
     (make-tui-terminal
      (if (and windows? interactive?)
          (guard (e (#t (current-input-port)))
@@ -98,13 +121,9 @@
              terminal input-mode)
             (tui-terminal-saved-output-mode-set!
              terminal output-mode)
-            ;; Disable processed, line and echo input. Enable VT key sequences.
-            (win-set-console-mode
-             input-handle
-             (bitwise-ior
-              #x0200
-              (bitwise-and input-mode
-                           (bitwise-not #x0007))))
+            ;; Windows Terminal/ConPTY delivers a VT input stream. Keep
+            ;; controls raw so Ctrl+C is data, while retaining resize events.
+            (win-set-console-mode input-handle #x0208)
             (win-set-console-mode
              output-handle
              (bitwise-ior output-mode #x0004))))
@@ -349,20 +368,45 @@
           terminal lines cursor-row cursor-column
           first-changed width height))))))
 
-(define (terminal-input-ready? terminal timeout-ms)
-  (let ((port (tui-terminal-input terminal)))
-    (or
-     (guard (e (#t #f))
-       (char-ready? port))
-     (and windows?
-          win-get-std-handle
-          win-wait-for-single-object
-          (let ((handle (win-get-std-handle -10)))
-            (and handle
-                 (not (= handle 0))
-                 (= (win-wait-for-single-object
-                     handle timeout-ms)
-                    0)))))))
+(define (terminal-pause milliseconds)
+  (let ((seconds (quotient milliseconds 1000))
+        (nanoseconds
+         (* (modulo milliseconds 1000) 1000000)))
+    (if terminal-native-pause
+        (terminal-native-pause seconds nanoseconds)
+        (sleep
+         (make-time
+          'time-duration nanoseconds seconds)))))
+
+(define (terminal-read-character terminal block?)
+  (if (and terminal-native-active?
+           (tui-terminal-interactive? terminal))
+      (if block?
+          (let loop ()
+            (let ((char (terminal-native-read #f)))
+              (if char
+                  char
+                  (begin
+                    (terminal-pause 10)
+                    (loop)))))
+          (terminal-native-read #f))
+      (let ((port (tui-terminal-input terminal)))
+        (if block?
+            (get-char port)
+            (guard (e (#t #f))
+              (and (char-ready? port)
+                   (get-char port)))))))
+
+(define (terminal-read-character/timeout terminal timeout-ms)
+  (let loop ((remaining (max 0 timeout-ms)))
+    (let ((char (terminal-read-character terminal #f)))
+      (cond
+        (char char)
+        ((zero? remaining) #f)
+        (else
+         (let ((pause (min remaining 5)))
+           (terminal-pause pause)
+           (loop (- remaining pause))))))))
 
 (define (escape-tail-complete? chars)
   (let ((count (length chars)))
@@ -379,16 +423,22 @@
          (else #t))))))
 
 (define (read-escape-tail terminal)
-  (let ((port (tui-terminal-input terminal)))
-    (let loop ((count 0) (out '()))
-      (if (or (>= count 64)
-              (escape-tail-complete? (reverse out))
-              (not (terminal-input-ready? terminal 25)))
-          (list->string (reverse out))
-          (let ((char (get-char port)))
-            (if (eof-object? char)
-                (list->string (reverse out))
-                (loop (+ count 1) (cons char out))))))))
+  (let loop ((count 0) (out '()))
+    (if (or (>= count 64)
+            (escape-tail-complete? (reverse out)))
+        (list->string (reverse out))
+        (let ((char
+               (terminal-read-character/timeout
+                terminal 25)))
+          (cond
+            ((not char)
+             (list->string (reverse out)))
+            ((eq? char #t)
+             (loop count out))
+            ((eof-object? char)
+             (list->string (reverse out)))
+            (else
+             (loop (+ count 1) (cons char out))))))))
 
 (define (string-tail? suffix text)
   (string-suffix? suffix text))
@@ -415,19 +465,21 @@
           'scroll-up
           'scroll-down)))))
 
-(define (read-bracketed-paste port)
+(define (read-bracketed-paste terminal)
   (let loop ((text ""))
-    (let ((char (get-char port)))
-      (if (eof-object? char)
-          text
-          (let ((next (string-append text (string char))))
-            (if (string-tail? (string-append esc "[201~") next)
-                (substring
-                 next 0
-                 (- (string-length next) 6))
-                (loop next)))))))
+    (let ((char (terminal-read-character terminal #t)))
+      (cond
+        ((eq? char #t) (loop text))
+        ((eof-object? char) text)
+        (else
+         (let ((next (string-append text (string char))))
+           (if (string-tail? (string-append esc "[201~") next)
+               (substring
+                next 0
+                (- (string-length next) 6))
+               (loop next))))))))
 
-(define (decode-escape-key port tail)
+(define (decode-escape-key terminal tail)
   (or
    (decode-sgr-mouse tail)
    (cond
@@ -439,32 +491,43 @@
      ((or (string=? tail "[F") (string=? tail "[4~")) 'end)
      ((string=? tail "[3~") 'delete)
      ((string=? tail "[5~") 'page-up)
-     ((string=? tail "[6~") 'page-down)
-     ((string=? tail "[200~")
-      (cons 'text (read-bracketed-paste port)))
-     ((or (string=? tail "\r") (string=? tail "\n")) 'alt-enter)
-     ((string=? tail "") 'escape)
-     (else 'ignored))))
+      ((string=? tail "[6~") 'page-down)
+      ((string=? tail "[200~")
+       (cons 'text (read-bracketed-paste terminal)))
+      ((or (string=? tail "\r") (string=? tail "\n")) 'alt-enter)
+      ((string=? tail "") 'escape)
+      (else 'ignored))))
+
+(define (terminal-decode-key terminal char)
+  (cond
+    ((eq? char #t) 'resize)
+    ((eof-object? char) 'ctrl-d)
+    ((char=? char (integer->char 27))
+     (decode-escape-key
+      terminal
+      (read-escape-tail terminal)))
+    ((or (char=? char #\return)
+         (char=? char #\newline))
+     'enter)
+    ((or (char=? char (integer->char 8))
+         (char=? char (integer->char 127)))
+     'backspace)
+    ((char=? char (integer->char 1)) 'ctrl-a)
+    ((char=? char (integer->char 3)) 'ctrl-c)
+    ((char=? char (integer->char 4)) 'ctrl-d)
+    ((char=? char (integer->char 5)) 'ctrl-e)
+    ((char=? char (integer->char 12)) 'ctrl-l)
+    ((char<? char (integer->char 32)) 'ignored)
+    (else (cons 'text (string char)))))
 
 (define (terminal-read-key terminal)
-  (let* ((port (tui-terminal-input terminal))
-         (char (get-char port)))
-    (cond
-      ((eof-object? char) 'ctrl-d)
-      ((char=? char (integer->char 27))
-       (decode-escape-key
-        port
-        (read-escape-tail terminal)))
-      ((or (char=? char #\return)
-           (char=? char #\newline))
-       'enter)
-      ((or (char=? char (integer->char 8))
-           (char=? char (integer->char 127)))
-       'backspace)
-      ((char=? char (integer->char 1)) 'ctrl-a)
-      ((char=? char (integer->char 3)) 'ctrl-c)
-      ((char=? char (integer->char 4)) 'ctrl-d)
-      ((char=? char (integer->char 5)) 'ctrl-e)
-      ((char=? char (integer->char 12)) 'ctrl-l)
-      ((char<? char (integer->char 32)) 'ignored)
-      (else (cons 'text (string char))))))
+  (terminal-decode-key
+   terminal
+   (terminal-read-character terminal #t)))
+
+(define (terminal-read-key/timeout terminal timeout-ms)
+  (let ((char
+         (terminal-read-character/timeout
+          terminal timeout-ms)))
+    (and char
+         (terminal-decode-key terminal char))))

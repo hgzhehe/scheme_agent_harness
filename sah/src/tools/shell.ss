@@ -117,16 +117,49 @@
 (define (quote-exe s)
   (if (string-contains? " " s) (string-append "\"" s "\"") s))
 
+(define (read-shell-output port)
+  (let ((output (open-output-string)))
+    (let loop ()
+      (when
+          (run-control-cancelled-now?
+           (current-run-control))
+        (error 'cancelled "cancelled by user"))
+      (if (guard (e (#t #t))
+            (char-ready? port))
+          (let ((char (get-char port)))
+            (if (eof-object? char)
+                (get-output-string output)
+                (begin
+                  (put-char output char)
+                  (loop))))
+          (begin
+            (sleep
+             (make-time
+              'time-duration 10000000 0))
+            (loop))))))
+
 (define (run-with-stdin cmdline input)
   ;; open-process-ports => (stdin stdout stderr pid)
   (call-with-values
     (lambda () (open-process-ports cmdline 'block (native-transcoder)))
     (lambda (to from err proc)
-      (put-string to input)
-      (guard (e (#t #t)) (close-port to))
-      (let ((out (get-string-all from)))
-        (guard (e (#t #t)) (close-port from))
-        (guard (e (#t #t)) (close-port err))
+      (let* ((cancel (lambda () (terminate-process-tree! proc)))
+             (out
+              (dynamic-wind
+                (lambda () #t)
+                (lambda ()
+                  (call-with-run-cancel-handler
+                   cancel
+                    (lambda ()
+                      (put-string to input)
+                      (close-port to)
+                      (read-shell-output from))))
+                (lambda ()
+                  (guard (e (#t #t)) (close-port to))
+                  (guard (e (#t #t)) (close-port from))
+                  (guard (e (#t #t)) (close-port err))))))
+        (when (run-control-cancelled-now? (current-run-control))
+          (error 'cancelled "cancelled by user"))
         (if (eof-object? out) "" out)))))
 
 (define (run-in-file exe command)

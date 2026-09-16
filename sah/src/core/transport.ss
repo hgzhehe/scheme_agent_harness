@@ -28,10 +28,17 @@
           (let-values (((to from err proc)
                         (open-process-ports cmd 'block (native-transcoder))))
             (guard (e2 (#t #t)) (close-port to))
-            (let ((out (get-string-all from))
+            (let ((out
+                   (call-with-run-cancel-handler
+                    (lambda () (terminate-process-tree! proc))
+                    (lambda () (get-string-all from))))
                   (note (guard (e2 (#t "")) (get-string-all err))))
               (guard (e2 (#t #t)) (close-port from))
               (guard (e2 (#t #t)) (close-port err))
+              (when
+                  (run-control-cancelled-now?
+                   (current-run-control))
+                (error 'cancelled "cancelled by user"))
               (if (and (or (eof-object? out) (string=? out ""))
                        (string? note)
                        (not (string=? (string-trim note) "")))
@@ -60,14 +67,21 @@
           (let-values (((to from err proc)
                         (open-process-ports cmd 'line (native-transcoder))))
             (guard (e2 (#t #t)) (close-port to))
-            (let loop ()
-              (let ((line (get-line-or-eof from)))
-                (unless (eof-object? line)
-                  (on-line line)
-                  (loop))))
+            (call-with-run-cancel-handler
+             (lambda () (terminate-process-tree! proc))
+             (lambda ()
+               (let loop ()
+                 (let ((line (get-line-or-eof from)))
+                   (unless (eof-object? line)
+                     (on-line line)
+                     (loop))))))
             (let ((note (guard (e2 (#t "")) (get-string-all err))))
               (guard (e2 (#t #t)) (close-port from))
               (guard (e2 (#t #t)) (close-port err))
+              (when
+                  (run-control-cancelled-now?
+                   (current-run-control))
+                (error 'cancelled "cancelled by user"))
               (if (eof-object? note) "" note)))))
       (lambda ()
         (guard (e (#t #t)) (delete-file tmp))))))

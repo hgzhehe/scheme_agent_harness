@@ -398,8 +398,10 @@ TUI 只保存：
 Windows Terminal 使用主屏而不是 alternate screen，因而保留滚动条和原生鼠标选择。
 鼠标滚轮输入被解码但不会调用不可靠的 stdin readiness 路径。
 
-当前 agent interpreter 仍同步；真正的 cancel、steering 和输入队列属于 gap，而不是用
-虚假的 UI 状态宣称已经完成。
+agent interpreter 仍按 Machine effect 顺序同步推进；TUI 只把这次运行放到后台线程。
+局部 `run-control` 承担取消位和当前外部进程的取消函数，Ctrl+C 可终止 provider/shell
+子进程，忙碌期间提交的输入按 FIFO 在当前运行收束后继续。它不进入 Runtime、Session
+或 Machine datum。
 
 ### 11.2 RPC
 

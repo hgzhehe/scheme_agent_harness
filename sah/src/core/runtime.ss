@@ -33,6 +33,84 @@
 (define current-runtime (make-parameter #f))
 (define current-owner (make-parameter 'extension))
 
+;; One local agent run owns one cancellation cell. It is dynamically scoped,
+;; not stored in Runtime or Session, so it cannot become a second machine state.
+(define-record-type run-control
+  (fields lock
+          (mutable active?)
+          (mutable cancelled?)
+          (mutable cancel-handler)))
+
+(define (new-run-control)
+  (make-run-control (make-mutex) #f #f #f))
+
+(define current-run-control (make-parameter #f))
+
+(define (run-control-start! control)
+  (with-mutex (run-control-lock control)
+    (run-control-active?-set! control #t)
+    (run-control-cancelled?-set! control #f)
+    (run-control-cancel-handler-set! control #f))
+  control)
+
+(define (run-control-finish! control)
+  (with-mutex (run-control-lock control)
+    (run-control-active?-set! control #f)
+    (run-control-cancelled?-set! control #f)
+    (run-control-cancel-handler-set! control #f))
+  control)
+
+(define (run-control-cancel! control)
+  (let ((result
+         (with-mutex (run-control-lock control)
+           (if (or (not (run-control-active? control))
+                   (run-control-cancelled? control))
+               (cons #f #f)
+               (begin
+                 (run-control-cancelled?-set! control #t)
+                 (cons #t (run-control-cancel-handler control)))))))
+    (when (cdr result)
+      (guard (e (#t #f)) ((cdr result))))
+    (car result)))
+
+(define (run-control-cancelled-now? control)
+  (and control
+       (with-mutex (run-control-lock control)
+         (run-control-cancelled? control))))
+
+(define (run-control-interruptible? control)
+  (and control
+       (with-mutex (run-control-lock control)
+         (and (run-control-active? control)
+              (run-control-cancel-handler control)
+              #t))))
+
+(define (run-control-install-cancel! control handler)
+  (let ((cancel-now?
+         (with-mutex (run-control-lock control)
+           (run-control-cancel-handler-set! control handler)
+           (run-control-cancelled? control))))
+    (when cancel-now?
+      (guard (e (#t #f)) (handler))))
+  handler)
+
+(define (run-control-clear-cancel! control handler)
+  (with-mutex (run-control-lock control)
+    (when (eq? handler (run-control-cancel-handler control))
+      (run-control-cancel-handler-set! control #f)))
+  #t)
+
+(define (call-with-run-cancel-handler handler thunk)
+  (let ((control (current-run-control)))
+    (if (not control)
+        (thunk)
+        (dynamic-wind
+          (lambda ()
+            (run-control-install-cancel! control handler))
+          thunk
+          (lambda ()
+            (run-control-clear-cancel! control handler))))))
+
 (define (require-runtime)
   (or (current-runtime)
       (error 'runtime "no current runtime at this extension boundary")))

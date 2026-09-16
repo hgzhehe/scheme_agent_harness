@@ -178,26 +178,52 @@
   (runtime-emit! rt '(ev agent-end))
   (runtime-emit! rt '(ev agent-settled)))
 
+(define (cancel-agent! rt)
+  (runtime-emit! rt '(ev agent-cancelled))
+  (settle-agent! rt #f)
+  'cancelled)
+
 (define (run-agent! rt prompt)
-  (parameterize ((current-runtime rt)
-                 (current-owner 'agent))
-    (let loop ((state
-                (agent-machine
-                 prompt
-                 (assq-ref (runtime-config rt) 'max-steps))))
-      (match (machine-step state)
-        [(await ,effect ,continuation)
-         (loop
-          (machine-resume
-           continuation
-           (perform-agent-effect rt effect)))]
-        [(done ,reply)
-         (settle-agent! rt #f)
-         reply]
-        [(failed ,reason)
-         (settle-agent! rt reason)
-         (error 'agent reason)]
-        [,next (loop next)]))))
+  (let* ((control
+          (or (current-run-control)
+              (new-run-control)))
+         (owned?
+          (not (run-control-active? control))))
+    (when owned? (run-control-start! control))
+    (parameterize ((current-runtime rt)
+                   (current-owner 'agent)
+                   (current-run-control control))
+      (dynamic-wind
+        (lambda () #t)
+        (lambda ()
+          (let loop ((state
+                      (agent-machine
+                       prompt
+                       (assq-ref
+                        (runtime-config rt)
+                        'max-steps))))
+            (if (run-control-cancelled-now? control)
+                (cancel-agent! rt)
+                (match (machine-step state)
+                  [(await ,effect ,continuation)
+                   (let ((result
+                          (perform-agent-effect rt effect)))
+                     (if
+                         (run-control-cancelled-now? control)
+                         (cancel-agent! rt)
+                         (loop
+                          (machine-resume
+                           continuation result))))]
+                  [(done ,reply)
+                   (settle-agent! rt #f)
+                   reply]
+                  [(failed ,reason)
+                   (settle-agent! rt reason)
+                   (error 'agent reason)]
+                  [,next (loop next)]))))
+        (lambda ()
+          (when owned?
+            (run-control-finish! control)))))))
 
 (define (runtime-submit! rt input)
   (parameterize ((current-runtime rt))

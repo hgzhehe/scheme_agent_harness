@@ -182,7 +182,8 @@ scheme --script sah.ss -- "Reply with exactly: ok"
 sah --repl
 ```
 
-输入消息回车即可。Ctrl-D（或按两次 Ctrl-C）退出。`--repl` 每次开新会话；
+输入消息回车即可。运行期间 Ctrl+C 取消当前请求，继续输入并回车会排到下一轮；
+Ctrl-D 退出。`--repl` 每次开新会话；
 要接着最近一次会话：
 
 ```bash

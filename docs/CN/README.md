@@ -208,13 +208,21 @@ echo 'export SAH_API_KEY=sk-xxx' >> ~/.zshrc
 
 ### System prompt
 
-按顺序加载，先命中者优先；最后统一追加当前工作目录：
+system prompt 由三层组成：
+
+1. sah 固定的运行时契约，包括 Session、plugin、extension、skill 和自省命令；
+2. 可替换的工作指令；
+3. 根据当前 Runtime 生成的工具表和工作目录。
+
+工作指令按顺序加载，先命中者优先：
 
 1. `~/.sah/config.scm` 里的 `system` 键
 2. `~/.sah/SYSTEM.md`（全局）
 3. `<cwd>/.sah/SYSTEM.md`（项目级）
-4. 内置 prompt —— 其中的工具表由实际启用的工具生成（受 `--tools` /
-   `--exclude-tools` 影响）；样例见 [`SYSTEM.md`](../../sah/SYSTEM.md)
+4. 内置工作指令；样例见 [`SYSTEM.md`](../../sah/SYSTEM.md)
+
+自定义工作指令不会覆盖 sah 的运行时契约或动态工具表。工具表受 `--tools` /
+`--exclude-tools` 影响，并在 extension 加载或 `/reload` 后重建。
 
 ## 工具
 

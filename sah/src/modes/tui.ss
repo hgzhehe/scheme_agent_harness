@@ -1,7 +1,9 @@
 ;;; tui.ss -- fullscreen event-driven terminal mode.
 
 (define-record-type tui-app
-  (fields rt terminal editor
+  (fields rt terminal editor run-control event-lock
+          (mutable event-front)
+          (mutable event-back)
           (mutable streaming)
           (mutable thinking)
           (mutable thinking-entry)
@@ -10,24 +12,44 @@
           (mutable selector)
           (mutable selector-action)
           (mutable running?)
+          (mutable active-run)
+          (mutable pending)
           (mutable subscriber)))
 
 (define (make-tui-app* rt terminal)
-  (make-tui-app rt terminal (make-editor)
-                "" "" #f 'idle #f #f #f #t #f))
+  (make-tui-app
+   rt terminal (make-editor)
+   (new-run-control) (make-mutex)
+   '() '()
+   "" "" #f 'idle #f #f #f #t #f '() #f))
 
-(define (tui-request-render! app)
-  (when (and (tui-app-running? app)
-             (tui-terminal-active? (tui-app-terminal app)))
-    (tui-render! app)))
+(define (tui-enqueue! app event)
+  (with-mutex (tui-app-event-lock app)
+    (tui-app-event-back-set!
+     app
+     (cons event (tui-app-event-back app)))))
+
+(define (tui-dequeue! app)
+  (with-mutex (tui-app-event-lock app)
+    (when (null? (tui-app-event-front app))
+      (tui-app-event-front-set!
+       app
+       (reverse (tui-app-event-back app)))
+      (tui-app-event-back-set! app '()))
+    (and
+     (pair? (tui-app-event-front app))
+     (let ((event (car (tui-app-event-front app))))
+       (tui-app-event-front-set!
+        app
+        (cdr (tui-app-event-front app)))
+       event))))
 
 (define (tui-set-notice! app text)
   (tui-app-notice-set!
    app
    (and text
         (not (string=? (string-trim text) ""))
-        (string-trim text)))
-  (tui-request-render! app))
+        (string-trim text))))
 
 (define (tui-handle-event! app event)
   (match event
@@ -65,6 +87,9 @@
     [(ev agent-failed ,reason)
      (tui-app-status-set! app 'failed)
      (tui-set-notice! app (string-append "error: " reason))]
+    [(ev agent-cancelled)
+     (tui-app-status-set! app 'cancelling)
+     (tui-set-notice! app "Cancelled current run.")]
     [(ev agent-settled)
      (tui-app-streaming-set! app "")
      (tui-app-status-set! app 'idle)]
@@ -81,8 +106,7 @@
      (tui-set-notice! app (format "Mounted plugin ~a" name))]
     [(ev plugin-dispose ,name)
      (tui-set-notice! app (format "Disposed plugin ~a" name))]
-    [,other #f])
-  (tui-request-render! app))
+    [,other #f]))
 
 (define (tui-status-text app)
   (let ((status (tui-app-status app)))
@@ -92,6 +116,7 @@
       ((eq? status 'thinking) "thinking")
       ((eq? status 'responding) "streaming")
       ((eq? status 'compacting) "compacting")
+      ((eq? status 'cancelling) "cancelling")
       ((eq? status 'tool-error) "tool error")
       ((eq? status 'failed) "failed")
       (else (format "~a" status)))))
@@ -340,13 +365,11 @@
 
 (define (tui-open-selector! app title items action)
   (tui-app-selector-set! app (make-selector title items))
-  (tui-app-selector-action-set! app action)
-  (tui-request-render! app))
+  (tui-app-selector-action-set! app action))
 
 (define (tui-close-selector! app)
   (tui-app-selector-set! app #f)
-  (tui-app-selector-action-set! app #f)
-  (tui-request-render! app))
+  (tui-app-selector-action-set! app #f))
 
 (define (tui-tree-items session)
   (map
@@ -453,21 +476,87 @@
               (format "Resumed session ~a"
                       (session-id (runtime-session rt))))))))))
 
-(define (tui-run-input! app text)
+(define (tui-run-input-body! app text)
   (let ((port (open-output-string))
         (rt (tui-app-rt app)))
     (guard
       (error
        (#t
-        (tui-set-notice!
-         app (string-append "error: " (err->string error)))
-        'handled))
+        (string-append "error: " (err->string error))))
       (parameterize ((current-output-port port))
         (runtime-submit! rt text))
       (let ((output (get-output-string port)))
-        (when (not (string=? (string-trim output) ""))
-          (tui-set-notice! app output)))
-      'handled)))
+        (and
+         (not (string=? (string-trim output) ""))
+         output)))))
+
+(define (tui-busy? app)
+  (and (tui-app-active-run app) #t))
+
+(define (tui-queue-input! app text)
+  (tui-app-pending-set!
+   app
+   (append (tui-app-pending app) (list text)))
+  (tui-set-notice!
+   app
+   (format
+    "Queued ~a message~a. Ctrl+C cancels the current run."
+    (length (tui-app-pending app))
+    (if (= 1 (length (tui-app-pending app))) "" "s")))
+  'queued)
+
+(define (tui-start-input! app text)
+  (if (tui-busy? app)
+      (tui-queue-input! app text)
+      (let ((token (cons 'run (now-ms)))
+            (control (tui-app-run-control app)))
+        (tui-app-active-run-set! app token)
+        (run-control-start! control)
+        (fork-thread
+         (lambda ()
+           (parameterize ((current-run-control control))
+             (let ((notice (tui-run-input-body! app text)))
+               (run-control-finish! control)
+               (tui-enqueue!
+                app
+                (list 'run-finished token notice))))))
+        'started)))
+
+(define (tui-finish-run! app token notice)
+  (when (eq? token (tui-app-active-run app))
+    (tui-app-active-run-set! app #f)
+    (when notice
+      (tui-set-notice! app notice))
+    (when (and (tui-app-running? app)
+               (pair? (tui-app-pending app)))
+      (let ((next (car (tui-app-pending app))))
+        (tui-app-pending-set!
+         app (cdr (tui-app-pending app)))
+        (tui-start-input! app next)))))
+
+(define (tui-process-event! app)
+  (let ((event (tui-dequeue! app)))
+    (and
+     event
+     (begin
+       (match event
+         [(runtime ,runtime-event)
+          (tui-handle-event! app runtime-event)]
+         [(run-finished ,token ,notice)
+          (tui-finish-run! app token notice)]
+         [,other #f])
+       #t))))
+
+(define (tui-cancel-run! app)
+  (if (not (tui-busy? app))
+      #f
+      (begin
+        (when
+            (run-control-cancel!
+             (tui-app-run-control app))
+          (tui-app-status-set! app 'cancelling)
+          (tui-set-notice! app "Cancelling current run..."))
+        #t)))
 
 (define (tui-submit! app text)
   (let ((trimmed (string-trim text))
@@ -493,7 +582,7 @@
               app "usage: /tree [entry-id]"))))
       ((string=? trimmed "/resume") (tui-open-resume! app))
       (else
-       (tui-run-input! app text)))))
+       (tui-start-input! app text)))))
 
 (define (tui-handle-selector-key! app key)
   (let ((result
@@ -507,23 +596,30 @@
              (action (tui-app-selector-action app)))
          (tui-close-selector! app)
          (when action (action value))))
-      ((eq? result 'redraw) (tui-request-render! app))
+      ((eq? result 'redraw) #t)
       (else #f))))
 
 (define (tui-handle-editor-key! app key)
-  (let ((result
-         (editor-handle-key!
-          (tui-app-editor app) key)))
-    (cond
-      ((eq? result 'exit)
-       (tui-app-running?-set! app #f))
-      ((and (pair? result) (eq? (car result) 'submit))
-       (tui-submit! app (cdr result)))
-      ((eq? result 'redraw)
-       (when (eq? key 'ctrl-c)
-         (tui-app-notice-set! app #f))
-       (tui-request-render! app))
-      (else #f))))
+  (cond
+    ((eq? key 'resize) #t)
+    ((and (eq? key 'ctrl-c)
+          (tui-busy? app))
+     (tui-cancel-run! app))
+    (else
+     (let ((result
+            (editor-handle-key!
+             (tui-app-editor app) key)))
+       (cond
+         ((eq? result 'exit)
+          (tui-app-pending-set! app '())
+          (tui-cancel-run! app)
+          (tui-app-running?-set! app #f))
+         ((and (pair? result) (eq? (car result) 'submit))
+          (tui-submit! app (cdr result)))
+         ((eq? result 'redraw)
+          (when (eq? key 'ctrl-c)
+            (tui-app-notice-set! app #f)))
+         (else #f))))))
 
 (define (run-tui rt . maybe-prompt)
   (let ((terminal (make-terminal)))
@@ -534,7 +630,9 @@
                 (runtime-subscribe!
                  rt
                  (lambda (event)
-                   (tui-handle-event! app event)))))
+                    (tui-enqueue!
+                     app
+                     (list 'runtime event))))))
           (tui-app-subscriber-set! app subscriber)
           (dynamic-wind
             (lambda ()
@@ -548,12 +646,23 @@
             (lambda ()
               (let loop ()
                 (when (tui-app-running? app)
-                  (let ((key (terminal-read-key terminal)))
-                    (if (tui-app-selector app)
-                        (tui-handle-selector-key! app key)
-                        (tui-handle-editor-key! app key))
-                    (loop)))))
+                  (let* ((event? (tui-process-event! app))
+                         (key
+                          (and
+                           (not event?)
+                           (terminal-read-key/timeout
+                            terminal 10))))
+                    (when key
+                      (if (tui-app-selector app)
+                          (tui-handle-selector-key! app key)
+                          (tui-handle-editor-key! app key)))
+                    (when (and (or event? key)
+                               (tui-app-running? app))
+                      (tui-render! app)))
+                  (loop))))
             (lambda ()
               (tui-app-running?-set! app #f)
+              (tui-app-pending-set! app '())
+              (tui-cancel-run! app)
               (runtime-unsubscribe! rt subscriber)
               (terminal-leave! terminal)))))))

@@ -48,22 +48,22 @@
         (block (skills-block rt)))
     (if (string=? block "") base (string-append base block))))
 
-(define (refresh-generated-system rt config cwd)
-  (if (eq? (assq-ref config 'system-mode) 'generated)
-      (alist-merge
-       config
-       (list
-        (cons 'base-system
-              (string-append
-               (builtin-system-prompt rt config)
-               "\nWorking directory: " cwd "\n"))))
-      config))
+(define (refresh-system-base rt config cwd)
+  (alist-merge
+   config
+   (list
+    (cons 'base-system
+          (compose-system-prompt
+           rt
+           (or (assq-ref config 'system-instructions)
+               default-agent-instructions)
+           cwd)))))
 
 (define (load-resources rt config cwd)
   (load-extensions! rt cwd)
   (load-skills! rt cwd)
   (load-prompts! rt cwd)
-  (let* ((refreshed (refresh-generated-system rt config cwd))
+  (let* ((refreshed (refresh-system-base rt config cwd))
          (next
           (alist-merge
            refreshed

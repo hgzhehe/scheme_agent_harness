@@ -29,3 +29,26 @@
 ;; COMSPEC is kept as a second signal: a Windows host advertises itself to its
 ;; children that way, so it also catches a machine type we do not recognise.
 (define windows? (or (eq? machine-os 'windows) (and (getenv "COMSPEC") #t)))
+
+(define (run-process-control-command command)
+  (guard
+    (e (#t #f))
+    (let-values (((to from err process-id)
+                  (open-process-ports
+                   command 'block (native-transcoder))))
+      (close-port to)
+      (get-string-all from)
+      (get-string-all err)
+      (close-port from)
+      (close-port err)
+      #t)))
+
+(define (terminate-process-tree! process-id)
+  (when (and process-id (integer? process-id))
+    (run-process-control-command
+     (if windows?
+         (format "taskkill /PID ~a /T /F" process-id)
+         (format
+          "pkill -TERM -P ~a; kill -TERM ~a"
+          process-id process-id))))
+  #t)

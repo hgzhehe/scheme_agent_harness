@@ -34,12 +34,14 @@ sah 已经形成自己的 agent harness 内核：
 
 这些是当前行为边界，不自动构成实施计划。
 
-### 同步 Run
+### Run Control
 
-provider、tool batch 和 compaction 仍由同步 driver 执行。运行期间没有可靠的取消、
-steering 或 follow-up queue。
+Machine 的 effect driver 仍是同步解释器，但 TUI 在后台线程运行它，并为当前一次运行建立
+局部 `run-control`。Ctrl+C 设置取消位并终止当前内置外部进程；运行结束后按 FIFO 处理
+用户在忙碌期间提交的 follow-up。Ctrl+D 不等待运行完成即可退出。
 
-只有在实现交互中断时，才设计局部 run handle；不得把第二份 agent state 放进 Runtime。
+`run-control` 不是 Runtime 或 Session 状态，也不复制 Machine。纯 Scheme 的第三方工具若
+永久阻塞且不注册取消处理器，仍不能被安全抢占；这是 extension 自己的协作边界。
 
 ### 单进程 Session Writer
 
