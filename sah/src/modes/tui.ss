@@ -14,6 +14,7 @@
           (mutable running?)
           (mutable active-run)
           (mutable pending)
+          (mutable animation-frame)
           (mutable subscriber)))
 
 (define (make-tui-app* rt terminal)
@@ -21,7 +22,7 @@
    rt terminal (make-editor)
    (new-run-control) (make-mutex)
    '() '()
-   "" "" #f 'idle #f #f #f #t #f '() #f))
+   "" "" #f 'idle #f #f #f #t #f '() -1 #f))
 
 (define (tui-enqueue! app event)
   (with-mutex (tui-app-event-lock app)
@@ -53,6 +54,8 @@
 
 (define (tui-handle-event! app event)
   (match event
+    [(ev agent-start)
+     (tui-app-status-set! app 'working)]
     [(ev message-start)
      (tui-app-streaming-set! app "")
      (tui-app-thinking-set! app "")
@@ -113,6 +116,7 @@
     (cond
       ((pair? status) (format "tool: ~a" (cdr status)))
       ((eq? status 'idle) "ready")
+      ((eq? status 'working) "working")
       ((eq? status 'thinking) "thinking")
       ((eq? status 'responding) "streaming")
       ((eq? status 'compacting) "compacting")
@@ -147,8 +151,74 @@
       (string-append left space (ansi-dim right))
       width))))
 
+(define tui-animation-interval-ms 120)
+
+(define (tui-run-elapsed-ms app now)
+  (let ((run (tui-app-active-run app)))
+    (if (and (pair? run)
+             (number? (cdr run)))
+        (max 0 (- now (cdr run)))
+        0)))
+
+(define (tui-animation-index app now)
+  (quotient
+   (tui-run-elapsed-ms app now)
+   tui-animation-interval-ms))
+
+(define (tui-activity-label app)
+  (let ((status (tui-app-status app)))
+    (cond
+      ((pair? status) (format "Running ~a" (cdr status)))
+      ((eq? status 'working) "Working")
+      ((eq? status 'thinking) "Thinking")
+      ((eq? status 'compacting) "Compacting")
+      ((eq? status 'cancelling) "Cancelling")
+      ((eq? status 'tool-error) "Tool error")
+      (else #f))))
+
+(define (tui-activity-title app label now)
+  (let* ((elapsed (tui-run-elapsed-ms app now))
+         (spinner
+          (vector-ref
+           '#("|" "/" "-" "\\")
+           (modulo
+            (tui-animation-index app now)
+            4))))
+    (format "~a  ~a  ~a.~as"
+            label
+            spinner
+            (quotient elapsed 1000)
+            (quotient (modulo elapsed 1000) 100))))
+
+(define (tui-activity-lines app width now)
+  (let ((label
+         (and (tui-busy? app)
+              (tui-activity-label app))))
+    (if label
+        (append
+         (ansi-panel-lines
+          (tui-activity-title app label now)
+          '()
+          width
+          ansi-bright-black
+          ansi-dim)
+         (list ""))
+        '())))
+
+(define (tui-animation-due! app)
+  (let* ((now (now-ms))
+         (frame (tui-animation-index app now)))
+    (and
+     (tui-busy? app)
+     (tui-activity-label app)
+     (not (= frame (tui-app-animation-frame app)))
+     (begin
+       (tui-app-animation-frame-set! app frame)
+       #t))))
+
 (define (tui-transcript-lines app width)
-  (let* ((rt (tui-app-rt app))
+  (let* ((now (now-ms))
+         (rt (tui-app-rt app))
          (session (runtime-session rt))
          (entries
           (session-renderable-entries session))
@@ -157,7 +227,12 @@
               '()
               (append
                (ansi-panel-lines
-                "Thinking"
+                (if (and (tui-busy? app)
+                         (eq? (tui-app-status app)
+                              'thinking))
+                    (tui-activity-title
+                     app "Thinking" now)
+                    "Thinking")
                 (text-content-lines
                  (tui-app-thinking app))
                 width
@@ -202,7 +277,12 @@
     (append
      base
      (if insert-thinking? '() thinking)
-     stream)))
+     stream
+     (if (and
+          (eq? (tui-app-status app) 'thinking)
+          (not (blank-text? (tui-app-thinking app))))
+         '()
+         (tui-activity-lines app width now)))))
 
 (define (tui-notice-lines app width)
   (if (tui-app-notice app)
@@ -511,6 +591,11 @@
       (let ((token (cons 'run (now-ms)))
             (control (tui-app-run-control app)))
         (tui-app-active-run-set! app token)
+        (tui-app-streaming-set! app "")
+        (tui-app-thinking-set! app "")
+        (tui-app-thinking-entry-set! app #f)
+        (tui-app-status-set! app 'working)
+        (tui-app-animation-frame-set! app -1)
         (run-control-start! control)
         (fork-thread
          (lambda ()
@@ -656,9 +741,11 @@
                       (if (tui-app-selector app)
                           (tui-handle-selector-key! app key)
                           (tui-handle-editor-key! app key)))
-                    (when (and (or event? key)
-                               (tui-app-running? app))
-                      (tui-render! app)))
+                    (let ((animation?
+                           (tui-animation-due! app)))
+                      (when (and (or event? key animation?)
+                                (tui-app-running? app))
+                        (tui-render! app))))
                   (loop))))
             (lambda ()
               (tui-app-running?-set! app #f)

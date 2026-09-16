@@ -1136,6 +1136,34 @@
                   (<= (string-display-width line) 20))
                 lines))))
 
+(define rt-activity-tui (test-runtime))
+(runtime-session-set!
+ rt-activity-tui
+ (session-memory rt-activity-tui test-dir "m"))
+(define activity-tui-app
+  (make-tui-app* rt-activity-tui (make-terminal)))
+(tui-app-active-run-set! activity-tui-app '(run . 1000))
+(tui-handle-event! activity-tui-app '(ev agent-start))
+(check
+ "TUI agent-start immediately exposes a working state"
+ '(working #t)
+ (let-values (((lines row column)
+               (tui-frame activity-tui-app 80 20)))
+   (list
+    (tui-app-status activity-tui-app)
+    (and
+     (string-contains?
+      "Working"
+      (string-join lines "\n"))
+     #t))))
+(check-true
+ "TUI activity title advances with elapsed time"
+ (not
+  (string=?
+   (tui-activity-title activity-tui-app "Working" 1000)
+   (tui-activity-title activity-tui-app "Working" 1120))))
+(tui-app-active-run-set! activity-tui-app #f)
+
 (define rt-async-tui (test-runtime))
 (define async-tui-session
   (session-memory rt-async-tui test-dir "m"))
@@ -1162,6 +1190,8 @@
   (make-tui-app* rt-async-tui (make-terminal)))
 (define async-tui-start-result
   (tui-start-input! async-tui-app "first"))
+(define async-tui-immediate-status
+  (tui-app-status async-tui-app))
 (define async-tui-started?
   (wait-until
    (lambda () async-tui-first-entered) 1000))
@@ -1183,10 +1213,11 @@
 (tui-app-running?-set! async-tui-app #f)
 (check
  "TUI runs asynchronously, cancels, and drains follow-up input"
- '(started #t queued #t #t
+ '(started working #t queued #t #t
            ("first" "second" "second reply"))
  (list
   async-tui-start-result
+  async-tui-immediate-status
   async-tui-started?
   async-tui-queue-result
   async-tui-cancel-result
