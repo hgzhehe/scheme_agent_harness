@@ -21,6 +21,30 @@ extension 就是一个普通的 Scheme 文件。加载它等于执行它的顶�
 或 `register-widget!`。没有 API 对象、没有工厂函数、没有构建步骤、没有类型定义，
 因为扩展语言就是实现语言。
 
+模型可通过核心 `plugin` 工具执行 `list`、`inspect`、`mount`、`dispose`
+和 `restart`。`/plugin` 命令与该工具共用同一生命周期事务：插件集合改变后，
+当前会话的 eval scope 会立即重建；若 journal 依赖被卸载的语言能力，变更会
+被拒绝并恢复原插件集合。
+
+插件还可以通过 `op-register-session-bootstrap` 向每个 session 的隔离 Scheme
+环境加入基础语法，通过 `op-register-prompt-fragment` 向实际发送给模型的 system
+prompt 加入对应说明。内置 `scheme-match` 插件就是这两个 effect 的基准实现：
+它作为完整的 `plugins/match/` 包携带 `plugin.ss`、`DESCRIPTION.md`、
+`match.ss`、`PROMPT.md` 和许可证。description 进入 agent 的已挂载插件目录，
+prompt 进入该插件的模型说明；`eval` 默认具有 `match`，而不引用源码树中的间接路径，
+也不把宿主内部绑定暴露给 session。构建从这个包生成内置 plugin definition，并把
+整个包原样复制到 `dist/plugins/`。
+
+内置 `minikanren` 插件采用同一个 package contract，但把上游
+`miniKanren/miniKanren` 放在 `plugins/minikanren/upstream/` git submodule。
+源码运行时，`/reload` 会重新读取当前 `mk.scm`，事务式重挂插件，再从未改动的
+session journal 重建当前 Scheme scope。首次拉取或父仓库更新 submodule 指针后运行：
+
+```text
+git pull --recurse-submodules
+git submodule update --init --recursive
+```
+
 ```scheme
 ;; ~/.sah/extensions/guard-destructive.ss
 (register-hook! 'tool-call

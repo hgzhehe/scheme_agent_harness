@@ -250,9 +250,8 @@
     (ensure-dir! dir)
     (let ((s (make-session id cwd file (log-empty) #f
                            (now-ms) model #f
-                           (scope-layer
-                            (runtime-session-root-scope rt)
-                            'session id)
+                           (session-scope-from-log
+                            rt id (log-empty))
                            'healthy #f)))
       (session-port-set! s (open-session-port file))
       (session-write! (session-port s) (session-header s))
@@ -262,9 +261,8 @@
   (make-session
    (short-id) cwd #f (log-empty) #f
    (now-ms) model #f
-   (scope-layer
-    (runtime-session-root-scope rt)
-    'session 'memory)
+   (session-scope-from-log
+    rt 'memory (log-empty))
    'healthy #f))
 
 ;;----------------------------------------------------------------------------
@@ -470,7 +468,13 @@
   (let ((scope
          (scope-layer (runtime-session-root-scope rt) 'session label)))
     (scope-replay!
-     scope (session-scope-replay-forms log))
+     scope
+     (append
+      (apply
+       append
+       (runtime-visible-capabilities
+        rt 'session-bootstrap))
+      (session-scope-replay-forms log)))
     scope))
 
 (define (session-load rt path)

@@ -19,7 +19,7 @@
 
 (define eval-tool
   (make-tool-datum 'eval
-  "Evaluate Chez Scheme in this session's lexical scope. Definitions are journaled and replayed when the session is resumed."
+  "Evaluate Chez Scheme with `match` available in this session's lexical scope. Definitions are journaled and replayed when the session is resumed."
   (schema '((code "string" "One or more Scheme expressions")))
   (lambda (args)
     (let ((code (assq-ref args 'code)))

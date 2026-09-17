@@ -27,7 +27,8 @@
                 '() '()
                 '((skills . ())
                   (prompts . ())
-                  (extensions . ()))
+                  (extensions . ())
+                  (system-plugins . ()))
                 #f 0))
 
 (define current-runtime (make-parameter #f))
@@ -192,6 +193,10 @@
        (loop (cdr cells)
              (cons (cap-key (car cells)) seen)
              (cons (car cells) visible))))))
+
+(define (runtime-visible-capabilities rt kind)
+  (map cap-value
+       (runtime-visible-capability-cells rt kind)))
 
 (define (runtime-remove-capability! rt token)
   (runtime-capability-cells-set!

@@ -58,18 +58,18 @@
    "- A plugin is a dependency-linked Scheme program. Imports form lexical "
    "scope, its body yields ops, mount prepares then applies external effects "
    "transactionally, and frames retain exact undo evidence for dispose or "
-   "restart. Tools, hooks, commands, renderers, and widgets can be plugin "
-   "effects.\n"
+   "restart. Tools, hooks, commands, renderers, widgets, session-language "
+   "bootstraps, and prompt fragments can be plugin effects.\n"
    "- Skills and prompt templates are discovered resources, not plugins.\n"
    "\n"
    "Runtime inspection:\n"
    "- The working directory is the user's workspace and may be empty. Do not "
    "infer that sah lacks a mechanism merely because its source is absent "
    "there.\n"
-   "- Use `/plugins`, `/plugin inspect NAME`, `/help`, `/session`, `/context`, "
-   "and `/reload` to inspect public runtime state.\n"
-   "- Session `eval` cannot see sah host internals. Use public commands or "
-   "read the sah source when implementation detail is required.\n"))
+   "- Mounted plugins, their descriptions, and their model instructions are "
+   "appended to this prompt. Session `eval` intentionally cannot see sah "
+   "host internals. Use the `plugin` tool to list, inspect, mount, dispose, "
+   "or restart plugins.\n"))
 
 (define default-agent-instructions
   (string-append

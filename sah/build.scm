@@ -10,6 +10,7 @@
 ;;;   dist/sah.exe        copy of the Chez petite runtime
 ;;;   dist/sah.boot       self-contained boot (petite + program, concatenated)
 ;;;   dist/*.dll          runtime sidecars, when required by a Windows build
+;;;   dist/plugins/       bundled, self-contained system plugin packages
 ;;;
 ;;; Run it with:  dist/sah.exe --usage
 ;;;
@@ -46,6 +47,8 @@
 (load (string-append root "/src/util/platform.ss"))
 (load (string-append root "/src/util/path.ss"))
 (load (string-append root "/src/util/misc.ss"))
+(load (string-append root "/plugins/match/plugin.ss"))
+(load (string-append root "/plugins/minikanren/plugin.ss"))
 
 (define (path-list)
   ;; PATH uses ';' on Windows and ':' on POSIX
@@ -193,11 +196,31 @@
                       acc))))))
 
 (define (source-text)
-  (apply string-append
-         (map (lambda (f)
-                (string-append "\n;;; ---- src/" f " ----\n"
-                               (file->string (path-join root "src" f))))
-              sah-source-files)))
+  (let* ((match-root (path-join root "plugins" "match"))
+         (match-definition
+          (scheme-match-plugin match-root))
+         (minikanren-root
+          (path-join root "plugins" "minikanren"))
+         (minikanren-definition
+          (minikanren-plugin minikanren-root)))
+    (string-append
+     (apply string-append
+            (map (lambda (f)
+                   (string-append
+                    "\n;;; ---- src/" f " ----\n"
+                    (file->string
+                     (path-join root "src" f))))
+                 sah-source-files))
+     "\n(system-plugin-loaders-set!\n"
+     " (list\n"
+     "  (cons 'system/match\n"
+     "        (lambda () '"
+     (format "~s" match-definition)
+     "))\n"
+     "  (cons 'system/minikanren\n"
+     "        (lambda () '"
+     (format "~s" minikanren-definition)
+     "))))\n")))
 
 ;; The generated program contains the compiled code plus the source text. The
 ;; source is evaluated into the interaction environment at startup so plugin
@@ -255,6 +278,29 @@
          (printf "[build] dll:     ~a~n" name)
          (copy-file! (path-join runtime-dir name) (path-join dist-dir name)))
        sidecars))))
+
+(define (copy-tree! source target)
+  (ensure-dir! target)
+  (for-each
+   (lambda (name)
+     (unless (string=? name ".git")
+       (let ((from (path-join source name))
+             (to (path-join target name)))
+         (if (file-directory? from)
+             (copy-tree! from to)
+             (copy-file! from to)))))
+   (dir-entries source)))
+
+(define (delete-tree! path)
+  (when (file-exists? path)
+    (if (file-directory? path)
+        (begin
+          (for-each
+           (lambda (name)
+             (delete-tree! (path-join path name)))
+           (dir-entries path))
+          (delete-directory path))
+        (delete-file path))))
 
 (define (read-bytes path)
   (let* ((in (open-file-input-port path))
@@ -331,7 +377,7 @@
 (assert-not-in-use! (path-join dist-dir exe-name))
 
 ;; clean the dist dir so stale artifacts do not linger
-(for-each (lambda (f) (guard (e (#t #t)) (delete-file (path-join dist-dir f))))
+(for-each (lambda (f) (delete-tree! (path-join dist-dir f)))
           (if (file-exists? dist-dir) (directory-list dist-dir) '()))
 
 (printf "[build] generating ~a\n" (path-join build-dir "sah-boot.ss"))
@@ -354,6 +400,9 @@
 (printf "[build] assembling ~a\n" dist-dir)
 (copy-file! runtime-exe (path-join dist-dir exe-name))
 (copy-runtime-sidecars! runtime-exe dist-dir)
+(copy-tree!
+ (path-join root "plugins")
+ (path-join dist-dir "plugins"))
 (when (assq-ref platform 'exec-bit?) (make-executable! (path-join dist-dir exe-name)))
 (if (null? runtime-boots)
     (begin

@@ -29,7 +29,7 @@
   (for-each
    (lambda (tool) (runtime-install-tool! rt 'core tool))
    (list read-tool write-tool edit-tool ls-tool
-         grep-tool find-files-tool shell-tool eval-tool))
+         grep-tool find-files-tool shell-tool eval-tool plugin-tool))
   rt)
 
 (define (runtime-all-tools rt)

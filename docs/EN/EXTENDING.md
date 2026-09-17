@@ -23,6 +23,35 @@ calls `register-hook!`, `register-tool!`, `register-command!`,
 build step, or type definition because the extension language is the
 implementation language.
 
+The model-facing `plugin` tool supports `list`, `inspect`, `mount`, `dispose`,
+and `restart`. `/plugin` uses the same lifecycle transaction: a plugin change
+immediately rebuilds the current eval scope, and a journal that depends on a
+removed language capability rejects the change and restores the previous
+plugin set.
+
+Plugins may also use `op-register-session-bootstrap` to extend every
+session's isolated Scheme language and `op-register-prompt-fragment` to add
+the corresponding guidance to the system prompt actually sent to the model.
+The built-in `scheme-match` plugin is the reference implementation: it makes
+`plugins/match/` a complete package containing `plugin.ss`, `match.ss`,
+`DESCRIPTION.md`, `PROMPT.md`, and its license. The description enters the
+agent's mounted-plugin catalog and the prompt becomes that plugin's model
+instructions. It makes `match` available to `eval` without an indirect
+source-tree path or exposure of host internals. The build derives the built-in
+plugin definition from this package and copies the whole package into
+`dist/plugins/`.
+
+The built-in `minikanren` plugin uses the same package contract and keeps
+`miniKanren/miniKanren` at `plugins/minikanren/upstream/` as a git submodule.
+In a source run, `/reload` rereads the current `mk.scm`, transactionally
+remounts the plugin, and rebuilds the current Scheme scope from the unchanged
+session journal. After the first clone or a parent-repository submodule update:
+
+```text
+git pull --recurse-submodules
+git submodule update --init --recursive
+```
+
 ```scheme
 ;; ~/.sah/extensions/guard-destructive.ss
 (register-hook! 'tool-call

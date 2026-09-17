@@ -12,6 +12,23 @@
 (load (string-append test-root "/manifest.ss"))
 (load-sah-sources! test-root sah-source-files)
 
+(define match-package
+  (path-join test-root "plugins" "match"))
+(load (path-join match-package "plugin.ss"))
+(define minikanren-package
+  (path-join test-root "plugins" "minikanren"))
+(load (path-join minikanren-package "plugin.ss"))
+(system-plugin-loaders-set!
+ (list
+  (cons
+   'system/match
+   (lambda ()
+     (scheme-match-plugin match-package)))
+  (cons
+   'system/minikanren
+   (lambda ()
+     (minikanren-plugin minikanren-package)))))
+
 (define passed 0)
 (define failed 0)
 
@@ -82,18 +99,123 @@
     (install-core-op-handlers! rt)
     (install-core-tools! rt)
     (install-resource-input-handlers! rt)
+    (install-system-plugins! rt)
+    (runtime-mount-all-plugins! rt)
     (let ((config (finalize-config rt base-config test-dir)))
       (runtime-config-set! rt config))
     rt))
 
 (check-true
  "default bootstrap explains sah even when the workspace has no source"
- (let ((system (assq-ref (runtime-config (test-runtime)) 'system)))
-   (and (string-contains? "A plugin is a dependency-linked Scheme program"
-                          system)
-        (string-contains? "working directory is the user's workspace"
-                          system)
-        (string-contains? "/plugin inspect NAME" system))))
+ (let* ((rt (test-runtime))
+        (session (session-memory rt test-dir "test-model"))
+        (system
+         (match
+          (car
+           (build-request-messages
+            rt session (runtime-config rt)))
+          [(msg system ,content) content]
+          [,other ""])))
+   (and
+    (string-contains?
+     "A plugin is a dependency-linked Scheme program" system)
+    (string-contains?
+     "working directory is the user's workspace" system)
+    (string-contains? "Available sah plugins:" system)
+    (string-contains?
+     "- scheme-match: Adds the bundled Chez Scheme `match` syntax"
+     system)
+    (string-contains?
+     "- minikanren: Adds the canonical miniKanren relational programming language"
+     system)
+    (string-contains?
+     "Plugin instructions for scheme-match:" system)
+    (string-contains?
+     "Plugin instructions for minikanren:" system)
+    (string-contains?
+     "The `eval` tool has the bundled Chez `match` syntax preloaded"
+     system)
+    (string-contains?
+     "Pattern variables use comma" system))))
+
+(check
+ "model context closes an interrupted tool call before later user input"
+ '((msg assistant
+        "running"
+        ((call "stuck" eval ((code . "(let loop () (loop))"))))
+        tool-use
+        #f)
+   (msg tool
+        "stuck"
+        eval
+        "error: interrupted: the previous sah process exited before this tool returned; no result is available"
+        #t)
+   (msg user "are you there?"))
+ (complete-interrupted-tool-calls
+  '((msg assistant
+         "running"
+         ((call "stuck" eval
+                ((code . "(let loop () (loop))"))))
+         tool-use
+         #f)
+    (msg user "are you there?"))))
+
+(check
+ "model context groups completed and interrupted results by call order"
+ '((msg assistant
+        ""
+        ((call "a" read ((path . "a")))
+         (call "b" eval ((code . "(loop)"))))
+        tool-use
+        #f)
+   (msg tool "a" read "ok" #f)
+   (msg tool
+        "b"
+        eval
+        "error: interrupted: the previous sah process exited before this tool returned; no result is available"
+        #t)
+   (msg user "continue"))
+ (complete-interrupted-tool-calls
+  '((msg assistant
+         ""
+         ((call "a" read ((path . "a")))
+          (call "b" eval ((code . "(loop)"))))
+         tool-use
+         #f)
+    (msg user "continue")
+    (msg tool "a" read "ok" #f))))
+
+(let ((package-root (path-join test-root "plugins" "match")))
+  (check
+   "the bundled match plugin is a self-contained package"
+   '(#t #t #t #t #t #f)
+   (list
+    (file-exists? (path-join package-root "plugin.ss"))
+    (file-exists? (path-join package-root "DESCRIPTION.md"))
+    (file-exists? (path-join package-root "match.ss"))
+    (file-exists? (path-join package-root "PROMPT.md"))
+    (file-exists? (path-join package-root "match.LICENSE"))
+    (string-contains?
+     "src/vendor"
+     (file->string (path-join package-root "plugin.ss"))))))
+
+(let ((package-root
+       (path-join test-root "plugins" "minikanren")))
+  (check
+   "the bundled minikanren plugin owns a complete submodule package"
+   '(#t #t #t #t #t #t)
+   (list
+    (file-exists? (path-join package-root "plugin.ss"))
+    (file-exists? (path-join package-root "DESCRIPTION.md"))
+    (file-exists? (path-join package-root "PROMPT.md"))
+    (file-exists?
+     (path-join package-root "upstream" "mk.scm"))
+    (file-exists?
+     (path-join package-root "upstream" "LICENSE"))
+    (string-contains?
+     "sah/plugins/minikanren/upstream"
+     (file->string
+      (path-join test-root ".." ".gitmodules"))))))
 
 (define (message-text message)
   (match message
@@ -228,6 +350,31 @@
 (define rt-scope (test-runtime))
 (define session-a (session-new rt-scope test-dir "test-model"))
 (runtime-session-set! rt-scope session-a)
+(check
+ "the system match plugin bootstraps every eval scope"
+ '(#t 3 #t (5) 0)
+ (list
+  (scope-has? (session-scope session-a) 'match)
+  (scope-eval
+   (session-scope session-a)
+   '(match '(1 2)
+      [(,left ,right) (+ left right)]))
+  (scope-has? (session-scope session-a) 'run*)
+  (scope-eval
+   (session-scope session-a)
+   '(run* (q) (== q 5)))
+  (session-count session-a)))
+(session-eval-form!
+ rt-scope session-a
+ '(define (match-sum pair)
+    (match pair
+      [(,left ,right) (+ left right)])))
+(session-eval-form!
+ rt-scope session-a
+ '(define (drinko q)
+    (conde
+      [(== q 'tea)]
+      [(== q 'coffee)])))
 (let-values (((output error?)
                (runtime-call-tool
                 rt-scope 'eval
@@ -239,9 +386,54 @@
 (define session-a-file (session-file session-a))
 (session-close! session-a)
 (define session-a-loaded (session-load rt-scope session-a-file))
-(check "scope forms replay when a session is resumed"
-       42
-       (scope-eval (session-scope session-a-loaded) '(+ answer 1)))
+(check "scope forms using the system match plugin replay on resume"
+       '(42 9 (tea coffee))
+       (list
+        (scope-eval
+         (session-scope session-a-loaded)
+         '(+ answer 1))
+        (scope-eval
+         (session-scope session-a-loaded)
+         '(match-sum '(4 5)))
+        (scope-eval
+         (session-scope session-a-loaded)
+         '(run* (q) (drinko q)))))
+(runtime-session-set! rt-scope session-a-loaded)
+(let ((loaders *system-plugin-loaders*)
+      (loads 0))
+  (dynamic-wind
+    (lambda ()
+      (system-plugin-loaders-set!
+       (map
+        (lambda (item)
+          (cons
+           (car item)
+           (let ((load (cdr item)))
+             (lambda ()
+               (set! loads (+ loads 1))
+               (load)))))
+        loaders)))
+    (lambda ()
+      (reload-resources!
+       rt-scope
+       (runtime-config rt-scope)
+       test-dir))
+    (lambda ()
+      (system-plugin-loaders-set! loaders)))
+  (check
+   "reload rereads system packages and rebuilds the current session scope"
+   '(2 9 (tea coffee) (5))
+   (list
+    loads
+    (scope-eval
+     (session-scope session-a-loaded)
+     '(match-sum '(4 5)))
+    (scope-eval
+     (session-scope session-a-loaded)
+     '(run* (q) (drinko q)))
+    (scope-eval
+     (session-scope session-a-loaded)
+     '(run* (q) (== q 5))))))
 (check "scope forms stay out of model context"
        '()
        (map message-text (session-context-messages session-a-loaded)))
@@ -766,6 +958,99 @@
 (section "plugin program")
 
 (define rt-plugin (test-runtime))
+(define system-match-slot
+  (runtime-plugin-slot rt-plugin 'scheme-match))
+(define system-minikanren-slot
+  (runtime-plugin-slot rt-plugin 'minikanren))
+(check
+ "the built-in match support is a mounted system plugin"
+ '(mounted
+   ("register-session-bootstrap scheme-match"
+    "register-prompt-fragment scheme-match"))
+ (list
+  (plugin-slot-state system-match-slot)
+  (map
+   (lambda (frame) (frame-show rt-plugin frame))
+   (reverse
+    (plugin-slot-frames system-match-slot)))))
+(check
+ "the canonical minikanren submodule is a mounted system plugin"
+ '(mounted
+   "Adds the canonical miniKanren relational programming language to every session-local `eval` environment."
+   ("register-session-bootstrap minikanren"
+    "register-prompt-fragment minikanren"))
+ (list
+  (plugin-slot-state system-minikanren-slot)
+  (plugin-description
+   (plugin-slot-definition system-minikanren-slot))
+  (map
+   (lambda (frame) (frame-show rt-plugin frame))
+   (reverse
+    (plugin-slot-frames system-minikanren-slot)))))
+
+(define rt-dynamic-plugin (test-runtime))
+(define dynamic-plugin-session
+  (session-memory rt-dynamic-plugin test-dir "test-model"))
+(runtime-session-set! rt-dynamic-plugin dynamic-plugin-session)
+(let-values (((output error?)
+              (runtime-call-tool
+               rt-dynamic-plugin 'plugin '((action . "list")))))
+  (check
+   "the model plugin tool lists defined plugins and states"
+   '(#f #t #t)
+   (list
+    error?
+    (string-contains? "scheme-match  mounted" output)
+    (string-contains? "minikanren  mounted" output))))
+(let-values (((output error?)
+              (runtime-call-tool
+               rt-dynamic-plugin 'plugin
+               '((action . "dispose") (name . "minikanren")))))
+  (check
+   "the model plugin tool unloads a session language immediately"
+   '(#f defined #f)
+   (list
+    error?
+    (plugin-slot-state
+     (runtime-plugin-slot rt-dynamic-plugin 'minikanren))
+    (scope-has?
+     (session-scope dynamic-plugin-session) 'run*))))
+(let-values (((output error?)
+              (runtime-call-tool
+               rt-dynamic-plugin 'plugin
+               '((action . "mount") (name . "minikanren")))))
+  (check
+   "the model plugin tool mounts a session language immediately"
+   '(#f mounted (5))
+   (list
+    error?
+    (plugin-slot-state
+     (runtime-plugin-slot rt-dynamic-plugin 'minikanren))
+    (scope-eval
+     (session-scope dynamic-plugin-session)
+     '(run* (q) (== q 5))))))
+(session-eval-form!
+ rt-dynamic-plugin dynamic-plugin-session
+ '(define saved-mini-results
+    (run* (q) (== q 5))))
+(let-values (((output error?)
+              (runtime-call-tool
+               rt-dynamic-plugin 'plugin
+               '((action . "dispose") (name . "minikanren")))))
+  (check
+   "plugin unload rolls back when the session journal depends on it"
+   '(#t #t mounted (5))
+   (list
+    error?
+    (string-contains?
+     "current session depends on the previous plugin set"
+     output)
+    (plugin-slot-state
+     (runtime-plugin-slot rt-dynamic-plugin 'minikanren))
+    (scope-value
+     (session-scope dynamic-plugin-session)
+     'saved-mini-results))))
+
 (parameterize ((current-runtime rt-plugin)
                (current-owner 'test-file))
   (plugin left
@@ -1079,11 +1364,49 @@
     (string-append esc "[?1006h")
     terminal-enter-sequence)
    #t)
-  (and
-   (string-contains?
-    (string-append esc "[?2004h")
-    terminal-enter-sequence)
-   #t)))
+   (and
+    (string-contains?
+     (string-append esc "[?2004h")
+     terminal-enter-sequence)
+    #t)))
+
+(define rt-command-tui (test-runtime))
+(runtime-session-set!
+ rt-command-tui
+ (session-memory rt-command-tui test-dir "m"))
+(runtime-start-session! rt-command-tui 'initial #f)
+(define command-tui-app
+  (make-tui-app* rt-command-tui (make-terminal)))
+(check
+ "TUI command output is a local transcript entry, not a notice"
+ '(#f #t #t #t ())
+ (let* ((notice
+         (tui-run-input-body!
+          command-tui-app "/plugins"))
+        (entry
+         (car
+          (reverse
+           (session-entries
+            (runtime-session rt-command-tui)))))
+        (lines
+         (render-entry-lines
+          rt-command-tui entry 'ansi 80))
+        (text (string-join lines "\n")))
+   (list
+    notice
+    (and
+     (eq? (entry-kind entry) 'custom)
+     (eq? (entry-custom-type entry)
+          'command-output)
+     (equal?
+      (car (entry-data entry))
+      "/plugins"))
+    (string-contains? "minikanren" text)
+    (string-contains? "scheme-match" text)
+    (session-context-messages
+     (runtime-session rt-command-tui)))))
+(runtime-stop-session! rt-command-tui 'test #f)
+
 (define main-screen-output
   (open-output-string))
 (define main-screen-terminal

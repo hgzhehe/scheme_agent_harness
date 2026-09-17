@@ -22,4 +22,21 @@
 (load (string-append *root* "/manifest.ss"))
 (load-sah-sources! *root* sah-source-files)
 
+(define match-package
+  (string-append *root* "/plugins/match"))
+(load (string-append match-package "/plugin.ss"))
+(define minikanren-package
+  (string-append *root* "/plugins/minikanren"))
+(load (string-append minikanren-package "/plugin.ss"))
+(system-plugin-loaders-set!
+ (list
+  (cons
+   'system/match
+   (lambda ()
+     (scheme-match-plugin match-package)))
+  (cons
+   'system/minikanren
+   (lambda ()
+     (minikanren-plugin minikanren-package)))))
+
 (main (cdr (command-line)))

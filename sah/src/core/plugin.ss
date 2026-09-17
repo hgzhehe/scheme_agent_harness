@@ -1,9 +1,15 @@
 ;;; plugin.ss -- dependency-linked programs with transactional effects.
 
 (define (plugin-name p) (list-ref p 1))
-(define (plugin-imports p) (list-ref p 2))
-(define (plugin-declared-exports p) (list-ref p 3))
-(define (plugin-body p) (list-ref p 4))
+(define (plugin-described? p) (= (length p) 6))
+(define (plugin-description p)
+  (if (plugin-described? p) (list-ref p 2) ""))
+(define (plugin-imports p)
+  (list-ref p (if (plugin-described? p) 3 2)))
+(define (plugin-declared-exports p)
+  (list-ref p (if (plugin-described? p) 4 3)))
+(define (plugin-body p)
+  (list-ref p (if (plugin-described? p) 5 4)))
 
 ;; One slot is the whole runtime truth for one plugin.
 (define-record-type plugin-slot
@@ -160,6 +166,10 @@
   (list 'op-register-renderer target key renderer))
 (define (op-register-widget placement key renderer)
   (op-register-renderer 'widget (cons placement key) renderer))
+(define (op-register-session-bootstrap key forms)
+  (list 'op-register-session-bootstrap key forms))
+(define (op-register-prompt-fragment key text)
+  (list 'op-register-prompt-fragment key text))
 
 (define (install-core-op-handlers! rt)
   (define (none op rt scope owner) #f)
@@ -198,6 +208,39 @@
      (match op [(op-register-renderer ,target ,key ,renderer)
                 (runtime-register-renderer!
                  rt owner target key renderer)]))
+   remove)
+  (runtime-register-op-handler!
+   rt 'core 'op-register-session-bootstrap 'registry none
+   (lambda (op rt scope owner)
+     (match op
+       [(op-register-session-bootstrap ,key ,forms)
+        (unless (symbol? key)
+          (error 'plugin "session bootstrap key must be a symbol"))
+        (unless (list? forms)
+          (error 'plugin "session bootstrap must be a list of forms"))
+        forms]))
+   (lambda (op rt scope owner forms)
+     (match op
+       [(op-register-session-bootstrap ,key ,raw)
+        (runtime-add-capability!
+         rt owner 'session-bootstrap key forms)]))
+   remove)
+  (runtime-register-op-handler!
+   rt 'core 'op-register-prompt-fragment 'registry none
+   (lambda (op rt scope owner)
+     (match op
+       [(op-register-prompt-fragment ,key ,text)
+        (unless (symbol? key)
+          (error 'plugin "prompt fragment key must be a symbol"))
+        (unless (and (string? text)
+                     (not (string=? (string-trim text) "")))
+          (error 'plugin "prompt fragment must be non-empty text"))
+        (string-trim text)]))
+   (lambda (op rt scope owner text)
+     (match op
+       [(op-register-prompt-fragment ,key ,raw)
+        (runtime-add-capability!
+         rt owner 'prompt-fragment key text)]))
    remove)
   rt)
 
@@ -573,6 +616,13 @@
 
 (define-syntax plugin
   (syntax-rules (imports exports)
+    [(_ name description
+        (imports import ...)
+        (exports export ...)
+        body ...)
+     (plugin-define!
+      (list 'plugin 'name description
+            '(import ...) '(export ...) '(body ...)))]
     [(_ name (imports import ...) (exports export ...) body ...)
      (plugin-define!
       (list 'plugin 'name

@@ -558,7 +558,15 @@
 
 (define (tui-run-input-body! app text)
   (let ((port (open-output-string))
-        (rt (tui-app-rt app)))
+        (rt (tui-app-rt app))
+        (command?
+         (and
+          (> (string-length text) 1)
+          (char=? (string-ref text 0) #\/)
+          (let-values (((name args) (parse-command text)))
+            (and (runtime-find-command
+                  (tui-app-rt app) name)
+                 #t)))))
     (guard
       (error
        (#t
@@ -566,9 +574,15 @@
       (parameterize ((current-output-port port))
         (runtime-submit! rt text))
       (let ((output (get-output-string port)))
-        (and
-         (not (string=? (string-trim output) ""))
-         output)))))
+        (cond
+          ((string=? (string-trim output) "") #f)
+          (command?
+           (session-add-custom!
+            (runtime-session rt)
+            'command-output
+            (list text (string-trim output)))
+           #f)
+          (else output))))))
 
 (define (tui-busy? app)
   (and (tui-app-active-run app) #t))

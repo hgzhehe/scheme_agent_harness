@@ -562,6 +562,16 @@
      (info-entry-lines
       "Branch summary" "[branch] "
       summary output-format width)]
+    [(custom ,id ,parent ,ts command-output
+             (,command ,output))
+     (if (eq? output-format 'ansi)
+         (ansi-panel-lines
+          (string-append "$ " command)
+          (text-content-lines output)
+          width
+          ansi-cyan
+          ansi-dim)
+         '())]
     [(custom-message ,id ,parent ,ts ,kind ,content ,display?)
      (if display?
          (builtin-message-lines
