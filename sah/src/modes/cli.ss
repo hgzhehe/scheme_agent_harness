@@ -157,10 +157,6 @@
 ;; session selection (--session / -r / -C)
 ;;----------------------------------------------------------------------------
 
-(define (pick-session rt cwd)
-  (let ((path (pick-session-path cwd)))
-    (and path (session-load rt path))))
-
 (define (pick-session-path cwd)
   (let ((items (session-list-for-cwd cwd)))
     (if (null? items)
@@ -199,7 +195,8 @@
            (begin (printf "error: session not found: ~a~%" (assq-ref opts 'session))
                   (exit 1)))))
     ((assq-ref opts 'resume)
-     (or (pick-session rt cwd)
+     (or (let ((path (pick-session-path cwd)))
+           (and path (session-load rt path)))
          (begin (printf "no session selected~%") (exit 0))))
     ((assq-ref opts 'continue) (session-latest rt cwd))
     (else #f)))

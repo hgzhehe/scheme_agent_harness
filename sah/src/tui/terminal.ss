@@ -440,9 +440,6 @@
             (else
              (loop (+ count 1) (cons char out))))))))
 
-(define (string-tail? suffix text)
-  (string-suffix? suffix text))
-
 (define (decode-sgr-mouse tail)
   (and
    (string-prefix? "[<" tail)
@@ -473,7 +470,7 @@
         ((eof-object? char) text)
         (else
          (let ((next (string-append text (string char))))
-           (if (string-tail? (string-append esc "[201~") next)
+           (if (string-suffix? (string-append esc "[201~") next)
                (substring
                 next 0
                 (- (string-length next) 6))

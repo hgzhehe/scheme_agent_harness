@@ -48,13 +48,10 @@
 (load (string-append root "/src/util/path.ss"))
 (load (string-append root "/src/util/misc.ss"))
 
-(define (path-list)
-  ;; PATH uses ';' on Windows and ':' on POSIX
-  (let ((path (or (getenv "PATH") "")))
-    (string-split path (if (memv #\; (string->list path)) ";" ":"))))
-
 (define (which name)
-  (let loop ((ps (path-list)))
+  ;; PATH uses ';' on Windows and ':' on POSIX.
+  (let loop ((ps (string-split (or (getenv "PATH") "")
+                               (if windows? ";" ":"))))
     (cond ((null? ps) #f)
           ((let ((p (path-join (car ps) name)))
              (and (file-exists? p) (not (file-directory? p))))
@@ -69,8 +66,7 @@
 (define platform
   `((exe-suffix  . ,(if windows? ".exe" ""))
     (exec-bit?   . ,(not windows?))
-    (null-device . ,(if windows? "NUL" "/dev/null"))
-    (quote       . ,(if windows? "\"" "'"))))
+    (null-device . ,(if windows? "NUL" "/dev/null"))))
 
 ;; Which Chez runtime/boot to embed. `scheme` is the full system; `petite`
 ;; labels itself "Petite". On some installs the two executables are identical
@@ -81,10 +77,6 @@
   (or (getenv "SAH_RUNTIME_EXE")
       (which (string-append name ".exe"))
       (which name)
-      ;; last-resort Windows location; POSIX distros put scheme on PATH
-      (and windows?
-           (let ((cand (string-append "G:/ChezScheme/ta6nt/bin/ta6nt/" name ".exe")))
-             (and (file-exists? cand) cand)))
       (error 'build "cannot find ~a; set SAH_RUNTIME_EXE to its path" name)))
 
 (define (chez-version-token)
@@ -96,15 +88,6 @@
             ((char=? (string-ref s i) #\space)
              (substring s (+ i 1) (string-length s)))
             (else (loop (- i 1)))))))
-
-(define (machine-dir-name exe)
-  ;; Chez lays boot files out under boot/<machine>/ and
-  ;; lib/csv<version>/<machine>/. The machine type comes from platform.ss; fall
-  ;; back to the runtime's own directory, which is the machine directory in the
-  ;; Windows layout (<chez>/bin/<machine>/scheme.exe).
-  (if (string=? chez-machine-type "unknown")
-      (basename (dirname exe))
-      chez-machine-type))
 
 (define (csv-boot-candidates lib-root machine boot)
   ;; The boot directory is versioned (`csv10.1.0-pre-release.3`), so we cannot
@@ -145,7 +128,10 @@
   (let* ((exe-dir (dirname exe))
          (exe-parent (dirname exe-dir))
          (chez-root (dirname exe-parent))
-         (machine (machine-dir-name exe))
+         ;; Windows installs put the runtime under bin/<machine>/.
+         (machine (if (string=? chez-machine-type "unknown")
+                      (basename exe-dir)
+                      chez-machine-type))
          (boot (string-append name ".boot"))
          (explicit (getenv "SAH_RUNTIME_BOOT"))
          (boot-dir (getenv "SAH_BOOT_DIR"))
@@ -287,30 +273,16 @@
           (delete-directory path))
         (delete-file path))))
 
-(define (read-bytes path)
-  (let* ((in (open-file-input-port path))
-         (bv (get-bytevector-all in)))
-    (close-port in)
-    bv))
-
-(define (write-bytes path bv)
+(define (concat-many! path inputs)
   (when (file-exists? path) (delete-file path))
   (let ((out (open-file-output-port path)))
-    (put-bytevector out bv)
+    (for-each
+     (lambda (input)
+       (let ((in (open-file-input-port input)))
+         (put-bytevector out (get-bytevector-all in))
+         (close-port in)))
+     inputs)
     (close-port out)))
-
-(define (concat-bytes-list bvs)
-  (let* ((total (apply + (map bytevector-length bvs)))
-         (out (make-bytevector total 0)))
-    (let loop ((bs bvs) (pos 0))
-      (if (null? bs)
-          out
-          (let ((b (car bs)))
-            (bytevector-copy! b 0 out pos (bytevector-length b))
-            (loop (cdr bs) (+ pos (bytevector-length b))))))))
-
-(define (concat-many! out in-list)
-  (write-bytes out (concat-bytes-list (map read-bytes in-list))))
 
 (define (make-executable! path)
   ;; Writing the runtime copy creates a fresh file, so the source's executable
@@ -330,8 +302,7 @@
 (define (smoke-check! exe)
   ;; The runtime resolves its boot at startup, so a missing base boot shows up
   ;; here rather than on the user's first run. `--usage` is read-only.
-  (let* ((q (assq-ref platform 'quote))
-         (quoted (string-append q (shell-path exe) q))
+  (let* ((quoted (string-append "\"" (shell-path exe) "\""))
          (sink (string-append "> " (assq-ref platform 'null-device) " 2>&1"))
          (status (guard (e (#t #f)) (system (string-append quoted " --usage " sink)))))
     (if (and (integer? status) (zero? status))

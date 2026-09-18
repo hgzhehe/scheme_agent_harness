@@ -60,7 +60,7 @@ snapshot。
 一个 plugin 名字只有一个运行时事实：
 
 ```scheme
-(plugin-slot OWNER DEFINITION STATE SCOPE OPS FRAMES)
+(plugin-slot OWNER DEFINITION STATE SCOPE FRAMES)
 ```
 
 definition、状态、词法 scope 和撤销证据不分散到第二张表。

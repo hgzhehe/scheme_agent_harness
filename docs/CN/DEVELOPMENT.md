@@ -385,7 +385,7 @@ capability 自动恢复。
 C:\chezscheme\ta6nt\bin\ta6nt\scheme.exe --script sah\tests\run-tests.ss
 ```
 
-当前基线为 122 个测试。每个测试应对应跨模块不变量或真实故障，不以数量代替设计。
+当前基线为 124 个测试。每个测试应对应跨模块不变量或真实故障，不以数量代替设计。
 
 构建：
 
@@ -404,7 +404,7 @@ scheme --script sah\build.scm
 提交前：
 
 ```text
-tests 122/122
+tests 124/124
 source usage smoke
 standalone build smoke
 git diff --check

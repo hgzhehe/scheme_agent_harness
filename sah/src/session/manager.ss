@@ -173,16 +173,12 @@
   (session-push! s (lambda (lg) (log-push-message lg msg))))
 (define (session-add-compaction! s summary first-kept tokens-before details)
   (session-push! s (lambda (lg) (log-push-compaction lg summary first-kept tokens-before details))))
-(define (session-add-branch-summary! s from-id summary)
-  (session-push! s (lambda (lg) (log-push-branch-summary lg from-id summary))))
 (define (session-add-label! s target-id label)
   (session-push! s (lambda (lg) (log-push-label lg target-id label))))
 (define (session-add-name! s name)
   (session-push! s (lambda (lg) (log-push-session-info lg name))))
 (define (session-add-custom! s custom-type data)
   (session-push! s (lambda (lg) (log-push-custom lg custom-type data))))
-(define (session-add-custom-message! s custom-type content display)
-  (session-push! s (lambda (lg) (log-push-custom-message lg custom-type content display))))
 (define (session-add-model-change! s provider model)
   (session-push! s (lambda (lg) (log-push-model-change lg provider model))))
 (define (session-add-thinking-level! s level)
@@ -323,18 +319,11 @@
                     (+ index 1)
                     (if datum (cons datum entries) entries))))))))
 
-(define (read-entries path)
-  (let-values (((entries health recovery)
-                (read-entries/status path)))
-    entries))
-
 ;; migration from older file shapes. Sessions written before tagged lists used
 ;; alists; sessions written before index numbering used hex ids.
 (define (normalize-entry e)
   (match e
-    [(session ,version ,id ,cwd ,created ,model) e]
     [(message ,id ,parent ,ts ,msg) `(message ,id ,parent ,ts ,(normalize-message msg))]
-    [(compaction ,id ,parent ,ts ,summary ,fk ,tb ,details) e]
     [((kind . session) (version . ,v) (id . ,id) (cwd . ,cwd) (created . ,created) (model . ,model))
      `(session ,v ,id ,cwd ,created ,model)]
     [((kind . session) (version . ,v) (id . ,id) (cwd . ,cwd) (created . ,created))
@@ -346,13 +335,13 @@
      `(compaction ,id ,parent ,ts ,s ,fk ,tb ,d)]
     [,other e]))
 
-(define (entry-index? e) (and (integer? (entry-id e)) (exact? (entry-id e))))
-
 ;; v1 -> v2: entry ids become log indices. Parents and a compaction's
 ;; first-kept id are remapped through the same table; a parent that is the
 ;; session header (or anything unknown) becomes #f, i.e. the root.
 (define (migrate-entries body)
-  (if (or (null? body) (entry-index? (car body)))
+  (if (or (null? body)
+          (let ((id (entry-id (car body))))
+            (and (integer? id) (exact? id))))
       body
       (let ((tab (make-hashtable equal-hash equal?)))
         (define (remap v)
@@ -571,7 +560,6 @@
 (define (session-count s) (log-count (session-log s)))
 (define (session-messages s) (entries->messages (session-entries s)))
 (define (session-context-messages s) (log-context-messages (session-log s) #f))
-(define (session-context s) (log-context (session-log s) #f))
 
 (define (session-latest-path-entry s kind)
   (find

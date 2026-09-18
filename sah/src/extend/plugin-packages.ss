@@ -7,13 +7,12 @@
 
 (define (default-plugin-dirs cwd)
   (filter
-   file-directory?
-   (filter
-    values
-    (list
-     (path-join cwd ".sah" "plugins")
-     (path-join (sah-home) "plugins")
-     *installed-plugin-dir*))))
+   (lambda (path)
+     (and path (file-directory? path)))
+   (list
+    (path-join cwd ".sah" "plugins")
+    (path-join (sah-home) "plugins")
+    *installed-plugin-dir*)))
 
 (define (plugin-package-files dirs)
   (dedupe-by
@@ -42,9 +41,7 @@
          (runtime-resource rt 'plugin-dirs)))
     (if (pair? configured)
         configured
-        (let ((dirs (default-plugin-dirs cwd)))
-          (runtime-resource-set! rt 'plugin-dirs dirs)
-          dirs))))
+        (default-plugin-dirs cwd))))
 
 (define (load-plugin-packages! rt cwd)
   (let ((loaded '()))

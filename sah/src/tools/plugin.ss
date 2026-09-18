@@ -31,7 +31,7 @@
             (let ((definition (plugin-slot-definition slot)))
               (format
                "~a  ~a  ~a"
-               (plugin-name definition)
+               (plugin-slot-name slot)
                (plugin-slot-state slot)
                (plugin-description definition))))
           slots)
@@ -74,10 +74,10 @@
        (case action
          ((list)
           (plugin-tool-list rt))
-         ((inspect show)
+         ((inspect)
           (plugin-tool-inspect
            rt (plugin-tool-name (assq-ref args 'name))))
-         ((mount load start dispose unload stop restart reload)
+         ((mount dispose restart)
           (let* ((name
                   (plugin-tool-name (assq-ref args 'name)))
                  (state

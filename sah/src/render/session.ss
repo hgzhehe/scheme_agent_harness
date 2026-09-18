@@ -48,23 +48,20 @@
   (case output-format
     ((html)
      (render-html-session rt session width))
-    ((json jsonl)
-     (string-join
-      (map
-       (lambda (entry)
-         (write-json-string (entry->json entry)))
-       (session-renderable-entries session))
-      "\n"))
     (else
-     (string-join
-      (apply
-       append
-       (map
-        (lambda (entry)
-          (render-entry-lines
-           rt entry output-format width))
-        (session-renderable-entries session)))
-      "\n"))))
+     (let ((format
+            (if (eq? output-format 'jsonl)
+                'json
+                output-format)))
+       (string-join
+        (apply
+         append
+         (map
+          (lambda (entry)
+            (render-entry-lines
+             rt entry format width))
+          (session-renderable-entries session)))
+        "\n")))))
 
 (define (render-format-extension output-format)
   (case output-format

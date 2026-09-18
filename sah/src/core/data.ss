@@ -37,14 +37,6 @@
 ;;; (Sessions written before this were numbered with random hex ids; see
 ;;; `migrate-entries` in session/manager.ss.)
 
-;; Tool messages carry an error flag. A message with four slots (hand-built, or
-;; from a pre-v3 session) simply does not match the five-slot pattern and reads
-;; as "no error"; `normalize-message` pads it at the load boundary.
-(define (tool-message-error? msg)
-  (match msg
-    [(msg tool ,id ,name ,content ,e) (and e #t)]
-    [,other #f]))
-
 (define (assistant-text msg)
   (match msg
     [(msg assistant ,content ,calls ,stop ,usage) content]
@@ -55,11 +47,9 @@
 ;; reading entries
 ;;----------------------------------------------------------------------------
 ;; Every entry is `(KIND ID PARENT TS . PAYLOAD)`, so the first four slots are
-;; uniform and only the payload differs. That payload is the *same slot* for
-;; different kinds -- `entry-label`, `entry-summary` and `entry-first-kept` all
-;; read slot 5, for example. They are kept as separate names because the name is
-;; what documents the kind; the implementation is one line each and there is only
-;; one place (below) that knows how to index a list.
+;; uniform and only the payload differs. The helpers below name payload slots
+;; used by runtime callers; `entry-summary` dispatches because summary occupies
+;; a different slot in compaction and branch-summary entries.
 ;;
 ;; The payload slots, as data.ss is the single place that defines them:
 ;;
@@ -91,13 +81,8 @@
 (define (entry-message e) (entry-field e 4))
 (define (entry-custom-type e) (entry-field e 4))
 (define (entry-name e) (entry-field e 4))
-(define (entry-target e) (entry-field e 4))     ; label
-(define (entry-from e) (entry-field e 4))       ; branch-summary
-(define (entry-label e) (entry-field e 5))
 (define (entry-data e) (entry-field e 5))
 (define (entry-first-kept e) (entry-field e 5))
-(define (entry-display e) (entry-field e 6))
-(define (entry-tokens-before e) (entry-field e 6))
 (define (entry-details e) (entry-field e 7))
 
 ;; summary text: slot 4 for a compaction, slot 5 for a branch-summary
@@ -172,16 +157,14 @@
 
 (define (normalize-call c)
   (match c
-    [(call ,id ,name ,args) c]
     [((id . ,id) (name . ,name) (args . ,args)) `(call ,id ,name ,args)]
     [,other c]))
 
 (define (normalize-message m)
   (match m
-    [(msg ,role ,content) (if (eq? role 'assistant) `(msg assistant ,content '() 'stop #f) m)]
+    [(msg assistant ,content) `(msg assistant ,content '() 'stop #f)]
     [(msg assistant ,content ,calls ,stop ,usage)
      `(msg assistant ,content ,(map normalize-call calls) ,stop ,usage)]
-    [(msg tool ,id ,name ,content ,e) m]
     [(msg tool ,id ,name ,content) `(msg tool ,id ,name ,content #f)]
     [((role . assistant) (content . ,content) (calls . ,calls) (stop . ,stop) (usage . ,usage))
      `(msg assistant ,content ,(map normalize-call calls) ,stop ,usage)]

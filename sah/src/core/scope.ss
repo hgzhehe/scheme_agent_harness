@@ -34,13 +34,8 @@
           (scope-cache-set! s symbols)
           symbols))))
 
-(define (scope-defined s)
-  (if (scope-parent s)
-      (scope-locals s)
-      (scope-symbols s)))
-
 (define (scope-local? s name)
-  (and (memq name (scope-defined s)) #t))
+  (and (memq name (if (scope-parent s) (scope-locals s) (scope-symbols s))) #t))
 
 (define (scope-has? s name)
   (and (memq name (scope-symbols s)) #t))

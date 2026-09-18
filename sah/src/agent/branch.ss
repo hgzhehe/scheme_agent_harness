@@ -39,15 +39,15 @@
 (define (branch-summarize! rt session config target-id)
   (let* ((lg (session-log session))
          (old-leaf (log-leaf lg))
-         (target (if (not target-id) -1 target-id))
-         (gone (abandoned-entries (log-path lg old-leaf)
-                                  (if (< target 0) '() (log-path lg target)))))
+         (gone (abandoned-entries
+                (log-path lg old-leaf)
+                (if target-id (log-path lg target-id) '()))))
     (if (null? (entries->messages gone))
         #f
         (begin
           (printf "[sah] summarising the abandoned branch (~a entries)~%" (length gone))
           (let-values (((summary+ ops)
-                        (summarize-entries rt config gone '() BRANCH-SUMMARY-INSTRUCTIONS #f)))
-            (session-branch-summary! rt session (if (< target 0) #f target) old-leaf summary+)
+                        (summarize-entries rt config gone #f BRANCH-SUMMARY-INSTRUCTIONS #f)))
+            (session-branch-summary! rt session target-id old-leaf summary+)
             (runtime-emit! rt `(ev branch-summary ,summary+))
             summary+)))))

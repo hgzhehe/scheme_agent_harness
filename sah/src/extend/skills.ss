@@ -33,40 +33,39 @@
 ;;----------------------------------------------------------------------------
 
 (define (load-skill-file path fallback-name)
-  (let* ((text (guard (e (#t #f)) (file->string path)))
-         (fm/body (and text (call-with-values (lambda () (split-frontmatter text)) list))))
-    (if (not fm/body)
-        #f
-        (let* ((fm (car fm/body))
-               (body (cadr fm/body))               (desc (assq-ref fm 'description))
-               (name (or (assq-ref fm 'name) fallback-name)))
-          ;; a skill without a description is not loaded (same rule as pi)
-          (if (or (not (string? desc)) (string=? desc ""))
-              #f
-              (list 'skill name desc path body))))))
+  (let ((text (guard (e (#t #f)) (file->string path))))
+    (and
+     text
+     (let-values (((fm body) (split-frontmatter text)))
+       (let ((desc (assq-ref fm 'description))
+             (name (or (assq-ref fm 'name) fallback-name)))
+         ;; a skill without a description is not loaded (same rule as pi)
+         (and (string? desc)
+              (not (string=? desc ""))
+              (list 'skill name desc path body)))))))
 
 ;; A directory is a skill if it has SKILL.md. A bare .md file counts when it has
 ;; frontmatter with a description.
 (define (discover-skills dirs)
-  (apply append
-         (map (lambda (dir)
-                (apply append
-                       (map (lambda (entry)
-                              (let ((full (path-join dir entry)))
-                                (cond
-                                  ((file-directory? full)
-                                   (let ((md (path-join full "SKILL.md")))
-                                     (if (file-exists? md)
-                                         (let ((s (load-skill-file md entry)))
-                                           (if s (list s) '()))
-                                         '())))
-                                  ((string-suffix? ".md" entry)
-                                   (let* ((base (substring entry 0 (- (string-length entry) 3)))
-                                          (s (load-skill-file full base)))
-                                     (if s (list s) '())))
-                                  (else '()))))
-                            (dir-entries dir))))
-              dirs)))
+  (filter
+   values
+   (apply append
+          (map (lambda (dir)
+                 (map (lambda (entry)
+                        (let ((full (path-join dir entry)))
+                          (cond
+                            ((file-directory? full)
+                             (let ((md (path-join full "SKILL.md")))
+                               (and (file-exists? md)
+                                    (load-skill-file md entry))))
+                            ((string-suffix? ".md" entry)
+                             (load-skill-file
+                              full
+                              (substring
+                               entry 0 (- (string-length entry) 3))))
+                            (else #f))))
+                      (dir-entries dir)))
+               dirs))))
 
 ;; Project first: `find-skill` returns the first match, and duplicate names are
 ;; dropped, so a project skill overrides a global one of the same name.

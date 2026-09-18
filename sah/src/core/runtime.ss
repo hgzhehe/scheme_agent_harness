@@ -24,13 +24,7 @@
   (make-runtime cwd config #f #f
                 (make-runtime-root-scope)
                 (make-session-root-scope)
-                '() '()
-                '((skills . ())
-                  (prompts . ())
-                  (extensions . ())
-                  (plugin-dirs . ())
-                  (plugin-packages . ()))
-                #f 0))
+                '() '() '() #f 0))
 
 (define current-runtime (make-parameter #f))
 (define current-owner (make-parameter 'extension))

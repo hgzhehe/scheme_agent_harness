@@ -39,7 +39,6 @@
 
 ;; the cursor: the entry the next append will descend from (#f when empty)
 (define (log-leaf l) (slog-cursor l))
-(define (log-linear? l) (slog-linear? l))
 
 ;;----------------------------------------------------------------------------
 ;; appending
@@ -52,7 +51,8 @@
     (make-slog (pvec-conj (slog-vec l) entry)
                (entry-id entry)
                (and (slog-linear? l)
-                    (or (= i 0) (eqv? (entry-parent entry) (- i 1)))))))
+                    (eqv? (entry-parent entry)
+                          (if (= i 0) #f (- i 1)))))))
 
 ;; Append an entry whose id becomes the next index and whose parent is the
 ;; current cursor. This is the only way the tree grows.
@@ -72,8 +72,6 @@
   (log-push l 'session-info (list name)))
 (define (log-push-custom l custom-type data)
   (log-push l 'custom (list custom-type data)))
-(define (log-push-custom-message l custom-type content display)
-  (log-push l 'custom-message (list custom-type content display)))
 (define (log-push-model-change l provider model)
   (log-push l 'model-change (list provider model)))
 (define (log-push-thinking-level l level)
@@ -81,29 +79,18 @@
 (define (log-push-scope-form l form)
   (log-push l 'scope-form (list form)))
 
-;; Rebuild a log from file order. The cursor is the last entry (metadata
-;; included), which is where the file was left. LINEAR? is recomputed from the
-;; parent links, so a branched file is recognised even though it was built by
-;; appending.
+;; Rebuild a log from file order. The cursor is the last position (metadata
+;; included), which is where the file was left. `log-append` also reconstructs
+;; LINEAR? from the parent links.
 (define (log-from-entries es)
-  (let* ((l (fold-left (lambda (l e) (log-append l e)) (log-empty) es)))
-    (make-slog (slog-vec l) (log-tip l)
-               (let loop ((es es) (prev #f))
-                 (cond ((null? es) #t)
-                       ((eqv? (entry-parent (car es)) prev) (loop (cdr es) (entry-id (car es))))
-                       (else #f))))))
-
-;; The last entry: the append position when the file was written.
-(define (log-tip l)
-  (let ((n (log-count l))) (if (= n 0) #f (- n 1))))
+  (let* ((l (fold-left (lambda (l e) (log-append l e)) (log-empty) es))
+         (n (log-count l)))
+    (make-slog (slog-vec l) (if (= n 0) #f (- n 1)) (slog-linear? l))))
 
 ;; Move the cursor. The next append hangs off this entry, so this is what
 ;; "switch branch" / "fork here" / "undo the last append" all reduce to.
 (define (log-set-leaf l i)
   (make-slog (slog-vec l) i (and (slog-linear? l) (eqv? i (log-leaf l)))))
-
-;; Cursor before the first entry: the next append creates a second root.
-(define (log-reset-leaf l) (make-slog (slog-vec l) #f (slog-linear? l)))
 
 (define (log-is-leaf? l i) (eqv? i (log-leaf l)))
 
@@ -125,13 +112,6 @@
 
 (define (log-path l leaf)
   (map (lambda (i) (log-ref l i)) (log-path-indices l leaf)))
-
-;; Direct children of an entry (or the roots when ID is #f). O(n): fine for the
-;; occasional query, but the tree walk below builds an index instead.
-(define (log-children l id)
-  (filter (lambda (e) (eqv? (entry-parent e) id)) (log-entries l)))
-
-(define (log-roots l) (log-children l #f))
 
 ;; parent id -> children, in one pass
 (define (log-children-index l)
@@ -162,21 +142,15 @@
 ;; metadata views (labels, session name)
 ;;----------------------------------------------------------------------------
 
-;; target id -> label, latest assignment wins; a (label ... #f) clears it
-(define (log-labels l)
-  ;; fold instead of an index loop: an alist is all this is
-  (fold-left
-   (lambda (acc e)
-     (match e
-       [(label ,id ,parent ,ts ,target ,label)
-        (let ((rest (filter (lambda (p) (not (eqv? (car p) target))) acc)))
-          (if label (cons (cons target label) rest) rest))]
-       [,other acc]))
-   '()
-   (log-entries l)))
-
+;; Latest assignment wins; a (label ... #f) clears the target.
 (define (log-label-of l id)
-  (let ((hit (assv id (log-labels l)))) (and hit (cdr hit))))
+  (let loop ((i (- (log-count l) 1)))
+    (if (< i 0)
+        #f
+        (match (log-ref l i)
+          [(label ,entry-id ,parent ,ts ,target ,label)
+           (if (eqv? target id) label (loop (- i 1)))]
+          [,other (loop (- i 1))]))))
 
 ;; display name from the newest session-info entry
 (define (log-session-name l)

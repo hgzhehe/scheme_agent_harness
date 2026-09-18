@@ -259,6 +259,12 @@
                 'function)))
          (assq-ref function 'name)))
 
+(check "provider headers are read from config"
+       '(("User-Agent" . "test-client") ("X-Test" . "yes"))
+       (configured-http-headers
+        '((headers . (("User-Agent" . "test-client")
+                      (X-Test . "yes"))))))
+
 (check "Responses decoder preserves opaque output state"
        #t
        (let ((message

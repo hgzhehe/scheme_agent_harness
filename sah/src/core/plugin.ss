@@ -16,7 +16,6 @@
   (fields owner definition
           (mutable state)
           (mutable scope)
-          (mutable ops)
           (mutable frames)))
 
 (define (plugin-slot-name slot)
@@ -25,7 +24,6 @@
 (define (plugin-slot-reset! slot)
   (plugin-slot-state-set! slot 'defined)
   (plugin-slot-scope-set! slot #f)
-  (plugin-slot-ops-set! slot '())
   (plugin-slot-frames-set! slot '())
   slot)
 
@@ -50,7 +48,7 @@
     (runtime-plugins-set!
      rt
      (cons (make-plugin-slot
-            (current-owner) definition 'defined #f '() '())
+            (current-owner) definition 'defined #f '())
            (runtime-plugins rt)))
     name))
 
@@ -316,7 +314,7 @@
                         (prepared (prepare-op rt name scope op)))
                    (when (eq? (prepared-undo prepared) 'scope)
                      (apply-prepared! rt scope prepared))
-                   (cons source op)))
+                   op))
                (plugin-body definition)))
          (missing
           (filter (lambda (export) (not (scope-local? scope export)))
@@ -333,9 +331,9 @@
      (append links (list (link-plugin rt links name))))
    '() order))
 
-(define (effect-op? rt pair)
+(define (effect-op? rt op)
   (not (eq? (handler-undo
-             (runtime-op-handler rt (cdr pair)))
+             (runtime-op-handler rt op))
             'scope)))
 
 (define (prepare-effects rt links)
@@ -345,12 +343,12 @@
     (lambda (link)
       (let ((slot (link-slot link))
             (scope (link-scope link)))
-        (map (lambda (pair)
+        (map (lambda (op)
                (list slot scope
                      (prepare-op rt
                                  (plugin-slot-name slot)
-                                 scope (cdr pair))))
-             (filter (lambda (pair) (effect-op? rt pair))
+                                 scope op)))
+             (filter (lambda (op) (effect-op? rt op))
                      (link-ops link)))))
     links)))
 
@@ -386,7 +384,6 @@
        (when (or (eq? state 'mounted) (pair? frames))
          (plugin-slot-state-set! slot state)
          (plugin-slot-scope-set! slot (link-scope link))
-         (plugin-slot-ops-set! slot (link-ops link))
          (plugin-slot-frames-set! slot frames))))
    links))
 
@@ -435,13 +432,13 @@
                  (let ((plugin-name
                         (plugin-slot-name (link-slot link))))
                    (for-each
-                    (lambda (pair)
-                      (when (effect-op? rt pair)
+                    (lambda (op)
+                      (when (effect-op? rt op)
                         (runtime-emit!
                          rt `(ev plugin-op
                                  ,plugin-name
-                                 ,(op-kind (cdr pair))
-                                 ,(op-show rt (cdr pair))))))
+                                 ,(op-kind op)
+                                 ,(op-show rt op)))))
                     (link-ops link))
                    (runtime-emit!
                     rt `(ev plugin-mount ,plugin-name))))
@@ -575,19 +572,8 @@
   (runtime-dispose-plugin! (require-runtime) name))
 (define (plugin-restart! name)
   (runtime-restart-plugin! (require-runtime) name))
-(define (plugin-mount-all!)
-  (runtime-mount-all-plugins! (require-runtime)))
-(define (plugin-dispose-all!)
-  (runtime-dispose-all-plugins! (require-runtime)))
 (define (plugin-list)
   (runtime-plugin-list (require-runtime)))
-(define (plugin-env name)
-  (let ((slot (runtime-plugin-slot (require-runtime) name)))
-    (and slot (plugin-slot-scope slot))))
-(define (plugin-exports name)
-  (runtime-plugin-exports (require-runtime) name))
-(define (runtime-plugin-exports rt name)
-  (plugin-exports-in rt '() name))
 (define (plugin-frames name)
   (let* ((rt (require-runtime))
          (slot (runtime-plugin-slot rt name)))

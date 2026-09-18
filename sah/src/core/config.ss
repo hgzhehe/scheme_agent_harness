@@ -53,8 +53,6 @@
    "- The working directory is the user's workspace and may not contain the "
    "sah source tree.\n"))
 
-(define default-agent-instructions "")
-
 ;; Loaded from a file when present (first match wins), else the default.
 ;;   ~/.sah/SYSTEM.md      (global)
 ;;   <cwd>/.sah/SYSTEM.md  (project)
@@ -83,15 +81,12 @@
 
 (define (finalize-config rt config cwd)
   (let* ((custom (configured-agent-instructions config cwd))
-         (instructions (or custom default-agent-instructions))
-         (base-text (compose-system-prompt rt instructions cwd)))
+         (instructions (or custom ""))
+         (system (compose-system-prompt rt instructions cwd)))
     (alist-merge
      config
      (list (cons 'system-instructions instructions)
-           (cons 'base-system base-text)
-           (cons 'system base-text)
-           (cons 'system-mode
-                 (if custom 'custom 'default))))))
+           (cons 'system system)))))
 
 ;;----------------------------------------------------------------------------
 ;; settings
@@ -159,14 +154,33 @@
         (string-append "!" command)
         (or (assq-ref config 'api-key) ""))))
 
-(define (api-key-configured? config)
-  (nonempty-string? (api-key-spec config)))
-
 (define (resolve-api-key config)
   (let ((key (resolve-config-value (api-key-spec config))))
     (if (nonempty-string? key)
         key
         (error 'config "no API key configured"))))
+
+(define (configured-http-headers config)
+  (let ((headers (or (assq-ref config 'headers) '())))
+    (unless (list? headers)
+      (error 'config "headers must be an alist"))
+    (map
+     (lambda (entry)
+       (unless (pair? entry)
+         (error 'config (format "invalid header entry: ~s" entry)))
+       (let* ((raw-name (car entry))
+              (name (cond ((string? raw-name) raw-name)
+                          ((symbol? raw-name) (symbol->string raw-name))
+                          (else
+                           (error 'config
+                                  (format "invalid header name: ~s" raw-name)))))
+              (value (resolve-config-value (cdr entry))))
+         (unless (string? value)
+           (error 'config (format "invalid value for header ~a" name)))
+         (when (string-ci=? name "Authorization")
+           (error 'config "Authorization is managed by the provider"))
+         (cons name value)))
+     headers)))
 
 (define (load-config cwd)
   (let* ((path (path-join (sah-home) "config.scm"))
@@ -180,6 +194,7 @@
                  (api . openai-completions)
                  (base-url . "https://api.deepseek.com")
                  (api-key . "")
+                 (headers . ())
                  (model . "deepseek-flash")
                  (max-output-tokens . 8192)
                  (max-steps . 1000)

@@ -91,12 +91,6 @@
 ;; settings / token accounting
 ;;----------------------------------------------------------------------------
 
-(define (compaction-settings config)
-  (list (cons 'enabled (let ((v (assq-ref config 'compact))) (if (eq? v #f) #f #t)))
-        (cons 'context-window (or (assq-ref config 'context-window) 64000))
-        (cons 'reserve-tokens (or (assq-ref config 'reserve-tokens) 16384))
-        (cons 'keep-recent-tokens (or (assq-ref config 'keep-recent-tokens) 20000))))
-
 (define (last-assistant-usage session)
   (let loop ((ms (reverse (session-messages session))))
     (if (null? ms)
@@ -260,12 +254,6 @@
     (assistant-text
      (llm-chat rt (alist-merge config '((stream . #f))) msgs '()))))
 
-(define (last-compaction-details es)
-  (let ((c (last-compaction-of es)))
-    (if c
-        (list (cons 'summary (entry-summary c)) (cons 'details (entry-details c)))
-        '())))
-
 ;; Summarisation instructions for the half of a turn that is being left behind.
 (define TURN-PREFIX-INSTRUCTIONS
   (string-append
@@ -290,13 +278,16 @@
 ;; the turn being left behind -- because one structured history summary is poor
 ;; material for "what has happened so far in the turn we are in". pi does the
 ;; same, then merges.
-(define (summarize-entries rt config entries previous-details instructions split-at)
-  (let* ((ops (collect-file-ops (entries->messages entries) (assq-ref previous-details 'details)))
-         (prev (assq-ref previous-details 'summary))
+(define (summarize-entries rt config entries previous instructions split-at)
+  (let* ((messages (entries->messages entries))
+         (ops (collect-file-ops
+               messages
+               (and previous (entry-details previous))))
+         (prev (and previous (entry-summary previous)))
          (prev (and (string? prev) prev))
          (body
           (if (not split-at)
-              (summarize rt config (serialize-conversation (entries->messages entries))
+              (summarize rt config (serialize-conversation messages)
                          prev instructions)
               (let* ((history (take-list split-at entries))
                      (turn (drop-list split-at entries))
@@ -337,15 +328,14 @@
         (compact-now! rt session config reason instr))))
 
 (define (compact-now! rt session config reason custom-instructions)
-  (let* ((settings (compaction-settings config))
-         (keep (assq-ref settings 'keep-recent-tokens))
+  (let* ((keep (or (assq-ref config 'keep-recent-tokens) 20000))
          (toks (log-path-measured (session-log session) #f)))
     (let-values (((first-kept split-at)
                   (find-first-kept toks keep (if (memq reason '(manual overflow)) #t #f))))
       (if (not first-kept)
           (begin (printf "[sah] nothing to compact~%") #f)
           (let* ((to-summarize (pvec-range->list toks 0 first-kept))
-                 (prev (last-compaction-details to-summarize))
+                 (prev (last-compaction-of to-summarize))
                  (tokens-before (context-tokens session config))
                  (reason-name (match reason [manual "manual"] [threshold "threshold"] [overflow "overflow"] [,o "auto"])))
             (printf "[sah] compacting (~a): folding ~a entr~a into a summary, keeping from #~a~a~%"
@@ -368,10 +358,9 @@
 ;;----------------------------------------------------------------------------
 
 (define (maybe-auto-compact! rt session config)
-  (let* ((settings (compaction-settings config))
-         (enabled (assq-ref settings 'enabled))
-         (window (assq-ref settings 'context-window))
-         (reserve (assq-ref settings 'reserve-tokens))
+  (let* ((enabled (not (eq? (assq-ref config 'compact) #f)))
+         (window (or (assq-ref config 'context-window) 64000))
+         (reserve (or (assq-ref config 'reserve-tokens) 16384))
          (tokens (context-tokens session config)))
     (when (and enabled (> tokens (- window reserve)))
       (compact! rt session config 'threshold #f))))

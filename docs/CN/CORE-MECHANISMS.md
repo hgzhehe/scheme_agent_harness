@@ -334,7 +334,7 @@ provider error(context-overflow)
 Plugin 把 Cordis 式动态组合压成 Scheme datum。一个名字只对应一个 Runtime slot：
 
 ```scheme
-(plugin-slot OWNER DEFINITION STATE SCOPE OPS FRAMES)
+(plugin-slot OWNER DEFINITION STATE SCOPE FRAMES)
 ```
 
 它的核心保证只有三条：

@@ -13,6 +13,8 @@
  (api . openai-completions)
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-REPLACE_ME")
+ ;; Optional provider-specific HTTP headers:
+ ;; (headers . (("User-Agent" . "my-client")))
  (model    . "deepseek-flash")
  (max-output-tokens . 8192)
  (max-steps . 1000)

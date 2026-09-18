@@ -14,15 +14,14 @@
           (mutable running?)
           (mutable active-run)
           (mutable pending)
-          (mutable animation-frame)
-          (mutable subscriber)))
+          (mutable animation-frame)))
 
 (define (make-tui-app* rt terminal)
   (make-tui-app
    rt terminal (make-editor)
    (new-run-control) (make-mutex)
    '() '()
-   "" "" #f 'idle #f #f #f #t #f '() -1 #f))
+   "" "" #f 'idle #f #f #f #t #f '() -1))
 
 (define (tui-enqueue! app event)
   (with-mutex (tui-app-event-lock app)
@@ -740,7 +739,6 @@
                     (tui-enqueue!
                      app
                      (list 'runtime event))))))
-          (tui-app-subscriber-set! app subscriber)
           (dynamic-wind
             (lambda ()
               (terminal-enter! terminal)

@@ -43,7 +43,8 @@
 (define (prepare-edits text edits)
   (let loop ((es edits) (acc '()))
     (if (null? es)
-        (sort-by-start (reverse acc))
+        (list-sort (lambda (a b) (< (car a) (car b)))
+                   (reverse acc))
         (let* ((e (car es))
                (old (assq-ref e 'oldText))
                (new (assq-ref e 'newText)))
@@ -62,15 +63,6 @@
                                     (length hits))))
               (else (loop (cdr es)
                           (cons (list (car hits) (+ (car hits) (string-length old)) old new) acc)))))))))
-
-(define (sort-by-start ranges)
-  (if (or (null? ranges) (null? (cdr ranges)))
-      ranges
-      (let* ((pivot (car ranges))
-             (rest (cdr ranges))
-             (lo (filter (lambda (r) (< (car r) (car pivot))) rest))
-             (hi (filter (lambda (r) (>= (car r) (car pivot))) rest)))
-        (append (sort-by-start lo) (list pivot) (sort-by-start hi)))))
 
 (define (check-overlap! ranges)
   (let loop ((rs ranges))

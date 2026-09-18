@@ -18,13 +18,13 @@
             ((string? m) m)
             (else "unknown")))))
 
-(define (machine-type-os m)
-  (cond ((string-suffix? "nt" m) 'windows)
-        ((string-suffix? "osx" m) 'macos)
-        ((or (string-suffix? "le" m) (string-suffix? "be" m)) 'unix)
+(define machine-os
+  (cond ((string-suffix? "nt" chez-machine-type) 'windows)
+        ((string-suffix? "osx" chez-machine-type) 'macos)
+        ((or (string-suffix? "le" chez-machine-type)
+             (string-suffix? "be" chez-machine-type))
+         'unix)
         (else 'unix)))
-
-(define machine-os (machine-type-os chez-machine-type))
 
 ;; COMSPEC is kept as a second signal: a Windows host advertises itself to its
 ;; children that way, so it also catches a machine type we do not recognise.
@@ -74,25 +74,22 @@
       (let ((line (command-line)))
         (and (pair? line) (car line)))))
 
-(define (run-process-control-command command)
-  (guard
-    (e (#t #f))
-    (let-values (((to from err process-id)
-                  (open-process-ports
-                   command 'block (native-transcoder))))
-      (close-port to)
-      (get-string-all from)
-      (get-string-all err)
-      (close-port from)
-      (close-port err)
-      #t)))
-
 (define (terminate-process-tree! process-id)
   (when (and process-id (integer? process-id))
-    (run-process-control-command
-     (if windows?
-         (format "taskkill /PID ~a /T /F" process-id)
-         (format
-          "pkill -TERM -P ~a; kill -TERM ~a"
-          process-id process-id))))
+    (guard
+      (e (#t #f))
+      (let-values (((to from err control-id)
+                    (open-process-ports
+                     (if windows?
+                         (format "taskkill /PID ~a /T /F" process-id)
+                         (format
+                          "pkill -TERM -P ~a; kill -TERM ~a"
+                          process-id process-id))
+                     'block
+                     (native-transcoder))))
+        (close-port to)
+        (get-string-all from)
+        (get-string-all err)
+        (close-port from)
+        (close-port err))))
   #t)

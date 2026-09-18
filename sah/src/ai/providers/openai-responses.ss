@@ -208,12 +208,11 @@
 ;; streaming
 ;;----------------------------------------------------------------------------
 
-;; (TEXT THINKING indexed-output-items terminal-response)
-(define (responses-acc-new) (list "" "" '() #f))
+;; (TEXT indexed-output-items terminal-response)
+(define (responses-acc-new) (list "" '() #f))
 (define (responses-acc-text acc) (list-ref acc 0))
-(define (responses-acc-thinking acc) (list-ref acc 1))
-(define (responses-acc-items acc) (list-ref acc 2))
-(define (responses-acc-terminal acc) (list-ref acc 3))
+(define (responses-acc-items acc) (list-ref acc 1))
+(define (responses-acc-terminal acc) (list-ref acc 2))
 
 (define (responses-upsert-item items index item)
   (if (assv index items)
@@ -258,7 +257,6 @@
     (when (or (string=? type "error") (string=? type "response.failed"))
       (responses-event-error event))
     (values (list (string-append (responses-acc-text acc) text-delta)
-                  (string-append (responses-acc-thinking acc) thinking-delta)
                   items
                   terminal)
             text-delta
@@ -315,7 +313,10 @@
            (lambda (proc payload)
              (let ((result (proc payload config)))
                (and (pair? result) result))))))
-    (values url `(("Authorization" . ,auth)) (write-json-string payload))))
+    (values url
+            (cons `("Authorization" . ,auth)
+                  (configured-http-headers config))
+            (write-json-string payload))))
 
 (define (responses-chat-blocking rt config messages tools)
   (let-values (((url headers body)

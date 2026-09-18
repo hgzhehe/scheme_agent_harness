@@ -186,9 +186,6 @@
                 (vector-ref (vnode-children node) k)
                 (loop (vector-ref (vnode-children node) k) (- level 5))))))))
 
-(define (pvec-first v) (pvec-ref v 0))
-(define (pvec-last v) (pvec-ref v (- (pvec-count v) 1)))
-
 ;; measure of the first i elements. O(log32 n).
 (define (pvec-prefix-measure v i)
   (let* ((mon (pvec-mon v)) (id (monoid-id mon))

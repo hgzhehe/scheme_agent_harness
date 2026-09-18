@@ -28,19 +28,20 @@
         (path-join (sah-home) "prompts")))
 
 (define (load-prompt-file path fallback-name)
-  (let* ((text (guard (e (#t #f)) (file->string path))))
-    (when text
-      (let-values (((fm body) (split-frontmatter text)))
-        (let* ((desc (or (assq-ref fm 'description) (first-line body)))
-               (hint (or (assq-ref fm 'argument-hint) "")))
-          ;; 'prompt NAME DESCRIPTION BODY HINT -- the file path is not part of
-          ;; the record; nothing read it, and the body is what gets expanded
-          (list 'prompt fallback-name desc body hint))))))
+  (let ((text (guard (e (#t #f)) (file->string path))))
+    (and
+     text
+     (let-values (((fm body) (split-frontmatter text)))
+       (let ((desc (or (assq-ref fm 'description) (first-line body)))
+             (hint (or (assq-ref fm 'argument-hint) "")))
+         ;; 'prompt NAME DESCRIPTION BODY HINT -- the file path is not part of
+         ;; the record; nothing read it, and the body is what gets expanded
+         (list 'prompt fallback-name desc body hint))))))
 
 (define (discover-prompts dirs)
   (apply append
          (map (lambda (dir)
-                (filter (lambda (p) p)
+                (filter values
                         (map (lambda (entry)
                                (and (string-suffix? ".md" entry)
                                     (load-prompt-file (path-join dir entry)
@@ -119,21 +120,16 @@
        (if (and (>= n 1) (<= n (length argv))) (list-ref argv (- n 1)) "")))
     (else "")))
 
-;; /name args... -> expanded prompt, or 'handled when there is no such template
-(define (expand-prompt-command rt name args)
-  (let ((p (find-prompt rt name)))
-    (if (not p)
-        'handled
-        (expand-template (prompt-body p) (split-args args)))))
-
 ;;----------------------------------------------------------------------------
 ;; /name as a runtime-owned input handler.
 ;;----------------------------------------------------------------------------
 
 (define (prompt-input-handler rt)
   (lambda (name args)
-    (and (find-prompt rt name)
-         (expand-prompt-command rt name args))))
+    (let ((p (find-prompt rt name)))
+      (and p
+           (expand-template
+            (prompt-body p) (split-args args))))))
 
 (define (install-resource-input-handlers! rt)
   (runtime-register-input-handler! rt 'core (skill-input-handler rt))

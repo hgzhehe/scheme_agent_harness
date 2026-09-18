@@ -60,19 +60,17 @@
     "agent/machine.ss"
     "agent/agent.ss"))
 
-;; the CLI entry points; tests and benchmarks exercise the kernel only
-(define sah-entry-source-files
-  '("tui/terminal.ss"
-    "modes/cli.ss"
-    "modes/print.ss"
-    "modes/oneshot.ss"
-    "modes/repl.ss"
-    "modes/rpc.ss"
-    "modes/tui.ss"
-    "main.ss"))
-
+;; Add the CLI entry points; tests and benchmarks can load the kernel alone.
 (define sah-source-files
-  (append sah-kernel-source-files sah-entry-source-files))
+  (append sah-kernel-source-files
+          '("tui/terminal.ss"
+            "modes/cli.ss"
+            "modes/print.ss"
+            "modes/oneshot.ss"
+            "modes/repl.ss"
+            "modes/rpc.ss"
+            "modes/tui.ss"
+            "main.ss")))
 
 (define (load-sah-sources! root files)
   ;; `root` is the sah/ directory, the one holding this file. Chez accepts "/"

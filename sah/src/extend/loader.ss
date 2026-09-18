@@ -40,23 +40,14 @@
     (runtime-resource-set! rt 'extensions (reverse loaded)))
   (all-extensions rt))
 
-(define (system-with-skills rt config)
-  (let ((base (or (assq-ref config 'base-system)
-                  (assq-ref config 'system)
-                  ""))
+(define (system-with-skills rt config cwd)
+  (let ((base
+         (compose-system-prompt
+          rt
+          (or (assq-ref config 'system-instructions) "")
+          cwd))
         (block (skills-block rt)))
     (if (string=? block "") base (string-append base block))))
-
-(define (refresh-system-base rt config cwd)
-  (alist-merge
-   config
-   (list
-    (cons 'base-system
-          (compose-system-prompt
-           rt
-           (or (assq-ref config 'system-instructions)
-               default-agent-instructions)
-           cwd)))))
 
 (define (load-resources rt config cwd)
   (load-plugin-packages! rt cwd)
@@ -64,23 +55,14 @@
   (runtime-mount-all-plugins! rt)
   (load-skills! rt cwd)
   (load-prompts! rt cwd)
-  (let* ((refreshed (refresh-system-base rt config cwd))
-         (next
-          (alist-merge
-           refreshed
-           (list
-            (cons 'system
-                  (system-with-skills rt refreshed))))))
+  (let ((next
+         (alist-merge
+          config
+          (list
+           (cons 'system
+                 (system-with-skills rt config cwd))))))
     (runtime-config-set! rt next)
     next))
-
-(define (replace-config-slot! config next key)
-  (let ((pair (assq key config)))
-    (if pair
-        (set-cdr! pair (assq-ref next key))
-        (error
-         'reload
-         (format "config has no mutable ~a slot" key)))))
 
 (define (runtime-active-plugin-names rt)
   (map
@@ -105,37 +87,38 @@
 ;; Plugin state and the active eval language change together. If replaying the
 ;; current journal under the new plugin set fails, restore the previous set.
 (define (runtime-change-plugin! rt action name)
-  (unless (runtime-plugin-slot rt name)
-    (error 'plugin (format "not defined: ~a" name)))
-  (let ((before (runtime-active-plugin-names rt)))
-    (guard
-      (change-error
-       (#t
-        (guard
-          (restore-error
-           (#t
+  (let ((slot (runtime-plugin-slot rt name)))
+    (unless slot
+      (error 'plugin (format "not defined: ~a" name)))
+    (let ((before (runtime-active-plugin-names rt)))
+      (guard
+        (change-error
+         (#t
+          (guard
+            (restore-error
+             (#t
+              (error
+               'plugin
+               "~a ~a failed (~a); restoring the previous plugin set also failed (~a)"
+               action name
+               (err->string change-error)
+               (err->string restore-error))))
+            (runtime-restore-plugin-set! rt before)
             (error
              'plugin
-             "~a ~a failed (~a); restoring the previous plugin set also failed (~a)"
-             action name
-             (err->string change-error)
-             (err->string restore-error))))
-          (runtime-restore-plugin-set! rt before)
-          (error
-           'plugin
-           "~a ~a rejected; the current session depends on the previous plugin set: ~a"
-           action name (err->string change-error)))))
-      (case action
-        ((mount load start)
-         (runtime-mount-plugin! rt name))
-        ((dispose unload stop)
-         (runtime-dispose-plugin! rt name))
-        ((restart reload)
-         (runtime-restart-plugin! rt name))
-        (else
-         (error 'plugin (format "unknown action: ~a" action))))
-      (runtime-rebuild-session-scope! rt)
-      (plugin-slot-state (runtime-plugin-slot rt name)))))
+             "~a ~a rejected; the current session depends on the previous plugin set: ~a"
+             action name (err->string change-error)))))
+        (case action
+          ((mount)
+           (runtime-mount-plugin! rt name))
+          ((dispose)
+           (runtime-dispose-plugin! rt name))
+          ((restart)
+           (runtime-restart-plugin! rt name))
+          (else
+           (error 'plugin (format "unknown action: ~a" action))))
+        (runtime-rebuild-session-scope! rt)
+        (plugin-slot-state slot)))))
 
 (define (reload-resources! rt config cwd)
   (runtime-dispose-all-plugins! rt)
@@ -144,13 +127,6 @@
    (append
     (all-plugin-packages rt)
     (all-extensions rt)))
-  (runtime-resource-set! rt 'skills '())
-  (runtime-resource-set! rt 'prompts '())
-  (runtime-resource-set! rt 'extensions '())
-  (runtime-resource-set! rt 'plugin-packages '())
   (let ((next (load-resources rt config cwd)))
-    (replace-config-slot! config next 'base-system)
-    (replace-config-slot! config next 'system)
-    (runtime-config-set! rt config)
     (runtime-rebuild-session-scope! rt)
-    config))
+    next))

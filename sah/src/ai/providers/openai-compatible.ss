@@ -122,16 +122,15 @@
               (else payload)))
       #f))
 
-;; Streaming accumulator: (CONTENT THINKING CALLS FINISH USAGE). CALLS is a list
+;; Streaming accumulator: (CONTENT CALLS FINISH USAGE). CALLS is a list
 ;; of (INDEX ID NAME ARGS) in arrival order, because a streamed tool call arrives
 ;; in fragments -- the first fragment for an index carries id and name, and the
 ;; arguments arrive in pieces that have to be concatenated.
-(define (acc-new) (list "" "" '() #f #f))
+(define (acc-new) (list "" '() #f #f))
 (define (acc-content a) (list-ref a 0))
-(define (acc-thinking a) (list-ref a 1))
-(define (acc-calls a) (list-ref a 2))
-(define (acc-finish a) (list-ref a 3))
-(define (acc-usage a) (list-ref a 4))
+(define (acc-calls a) (list-ref a 1))
+(define (acc-finish a) (list-ref a 2))
+(define (acc-usage a) (list-ref a 3))
 
 (define (stream-choice chunk)
   (let ((cs (assq-ref chunk 'choices)))
@@ -141,14 +140,13 @@
 ;; `(or X "")` does not catch it -- every streamed string field must be coerced.
 ;; DeepSeek sends `"content": null` on the chunks that carry only
 ;; `reasoning_content`, so this is the common case, not a corner.
-(define (stream-text x) (if (string? x) x ""))
 
 (define (merge-call-fragment calls tc)
   (let* ((i (or (assq-ref tc 'index) 0))
          (fn (assq-ref tc 'function))
-         (id (stream-text (assq-ref tc 'id)))
-         (name (stream-text (and fn (assq-ref fn 'name))))
-         (args (stream-text (and fn (assq-ref fn 'arguments))))
+         (id (string-content (assq-ref tc 'id)))
+         (name (string-content (and fn (assq-ref fn 'name))))
+         (args (string-content (and fn (assq-ref fn 'arguments))))
          (existing (assq i calls)))
     (if (not existing)
         (append calls (list (list i id name args)))
@@ -165,8 +163,8 @@
 (define (acc-step acc chunk)
   (let* ((choice (stream-choice chunk))
          (delta (and choice (assq-ref choice 'delta)))
-         (text (stream-text (and delta (assq-ref delta 'content))))
-         (think (stream-text (and delta (assq-ref delta 'reasoning_content))))
+         (text (string-content (and delta (assq-ref delta 'content))))
+         (think (string-content (and delta (assq-ref delta 'reasoning_content))))
          (finish (and choice (assq-ref choice 'finish_reason)))
          (tcs (and delta (assq-ref delta 'tool_calls)))
          (calls (if tcs
@@ -174,7 +172,6 @@
                                (acc-calls acc) (vector->list tcs))
                     (acc-calls acc))))
     (values (list (string-append (acc-content acc) text)
-                  (string-append (acc-thinking acc) think)
                   calls
                   (or finish (acc-finish acc))
                   (or (assq-ref chunk 'usage) (acc-usage acc)))
@@ -208,7 +205,10 @@
            (lambda (proc payload)
              (let ((result (proc payload config)))
                (and (pair? result) result))))))
-    (values url `(("Authorization" . ,auth)) (write-json-string payload))))
+    (values url
+            (cons `("Authorization" . ,auth)
+                  (configured-http-headers config))
+            (write-json-string payload))))
 
 (define (decode-response resp)
   (let ((json (read-json-string resp)))
@@ -229,8 +229,7 @@
 
 ;; Emit the deltas as they arrive, then return the assembled message. Returns #f
 ;; only when the stream produced no frames at all, so the caller can fall back to
-;; one blocking request; if it fails *after* deltas have been emitted it raises
-;; instead, because a retry would print the text a second time.
+;; one blocking request. Once the server has sent a frame, preserve its result.
 (define (chat-stream rt config messages tools)
   (let-values (((url headers body) (build-request rt config messages tools #t)))
     (let ((acc (acc-new)) (frames 0) (note ""))
