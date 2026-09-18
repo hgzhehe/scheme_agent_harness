@@ -95,7 +95,12 @@
      (tui-set-notice! app "Cancelled current run.")]
     [(ev agent-settled)
      (tui-app-streaming-set! app "")
-     (tui-app-status-set! app 'idle)]
+     (tui-app-status-set!
+      app
+      (case (tui-app-status app)
+        ((failed) 'failed)
+        ((cancelling) 'cancelled)
+        (else 'complete)))]
     [(ev session-start ,session ,reason ,previous)
      (tui-app-streaming-set! app "")
      (tui-app-thinking-set! app "")
@@ -116,11 +121,13 @@
     (cond
       ((pair? status) (format "tool: ~a" (cdr status)))
       ((eq? status 'idle) "ready")
+      ((eq? status 'complete) "done")
       ((eq? status 'working) "working")
       ((eq? status 'thinking) "thinking")
       ((eq? status 'responding) "streaming")
       ((eq? status 'compacting) "compacting")
       ((eq? status 'cancelling) "cancelling")
+      ((eq? status 'cancelled) "cancelled")
       ((eq? status 'tool-error) "tool error")
       ((eq? status 'failed) "failed")
       (else (format "~a" status)))))
@@ -171,6 +178,7 @@
       ((pair? status) (format "Running ~a" (cdr status)))
       ((eq? status 'working) "Working")
       ((eq? status 'thinking) "Thinking")
+      ((eq? status 'responding) "Responding")
       ((eq? status 'compacting) "Compacting")
       ((eq? status 'cancelling) "Cancelling")
       ((eq? status 'tool-error) "Tool error")

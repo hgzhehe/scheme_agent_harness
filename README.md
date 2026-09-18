@@ -30,23 +30,43 @@ plugin composition, and defunctionalized CPS control.
 ## Quick start
 
 ```bash
-cd sah
+git clone --recurse-submodules https://github.com/hgzhehe/scheme_agent_harness.git
+cd scheme_agent_harness/sah
 scheme --script tests/run-tests.ss  # offline contract tests
 scheme --script sah.ss --tui        # fullscreen interactive UI
 scheme --script sah.ss -- "hello"   # one-shot from source
 scheme --script build.scm           # build the runnable dist/ bundle
-./dist/sah.exe "hello"              # run the standalone executable
+./dist/sah.exe "hello"              # Windows
+./dist/sah "hello"                  # Linux/macOS
 ```
+
+For an existing checkout, run `git submodule update --init --recursive` before
+building. See the [install guide](docs/EN/INSTALL.md) for platform-specific
+installation.
 
 Start with the [tutorial](docs/EN/TUTORIAL.md) or the
 [overview](docs/EN/README.md).
 
+## Bundled plugins
+
+The installed `plugins/` directory contains three ordinary plugin packages,
+discovered through the same mechanism as user plugins:
+
+- `scheme-match` adds Chez `match` syntax to session `eval`;
+- `minikanren` adds `run`, `fresh`, `conde`, `==`, and the canonical
+  miniKanren implementation;
+- `z3` adds the `hgzhehe/chez-z3` `(z3)` and `(z3 sexpr)` libraries and
+  automatically resolves a packaged or system-installed Z3 runtime.
+
+Use `/plugins` and `/plugin inspect NAME` at runtime. Project and global plugin
+packages can override these installed packages without changing the core.
+
 ## `sah` in one paragraph
 
 `sah` runs an explicit defunctionalized agent machine against OpenAI-compatible
-Chat Completions or Responses providers. It ships eight coding tools, durable
-tree-shaped SexprL sessions, session-local Scheme evaluation, transactional
-plugins, a fullscreen TUI, JSONL RPC, and plain/ANSI/Markdown/HTML/JSON
-rendering. A shared session host keeps every frontend on the same lifecycle and
-journal semantics. The production artifact is the `dist/` bundle (`sah.exe` +
-`sah.boot`, plus runtime DLLs when required on Windows).
+Chat Completions or Responses providers. It ships eight coding tools plus a
+plugin-management tool, durable tree-shaped SexprL sessions, session-local
+Scheme evaluation, transactional plugins, a fullscreen TUI, JSONL RPC, and
+plain/ANSI/Markdown/HTML/JSON rendering. Every frontend shares the same runtime
+and journal semantics. The production artifact is the complete `dist/` bundle:
+runtime, boot file, plugin packages, and platform sidecars.

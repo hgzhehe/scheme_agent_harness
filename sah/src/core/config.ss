@@ -16,20 +16,16 @@
 ;; system prompt
 ;;----------------------------------------------------------------------------
 
-;; The prompt has three layers:
-;;   1. sah's invariant runtime contract;
-;;   2. user-replaceable working instructions;
-;;   3. the generated list of tools the model can actually call.
-;;
-;; Keeping the contract outside the replaceable layer means a custom SYSTEM.md
-;; can change how the agent works without making it forget what hosts it.
+;; The default prompt describes the host, its durable session semantics, and
+;; the capabilities actually available. A user SYSTEM.md may add project
+;; instructions, but sah does not prescribe an agent personality or workflow.
 (define (first-sentence s)
   (let ((i (string-index s #\.)))
     (if (and i (> i 20)) (substring s 0 (+ i 1)) s)))
 
 (define (tools-block rt)
   (string-append
-   "Tools:\n"
+   "Available tools:\n"
    (apply string-append
           (map (lambda (t)
                  (match t
@@ -41,40 +37,23 @@
 
 (define sah-runtime-contract
   (string-append
-   "You are the coding agent hosted by sah, a Scheme agent harness running "
-   "in Chez Scheme. Identify yourself in that context; sah is not merely a "
-   "project in the current directory.\n"
+   "You are an expert coding assistant operating inside sah, a Scheme agent "
+   "harness running on Chez Scheme. Use the available tools to help the user.\n"
    "\n"
    "Sah runtime:\n"
-   "- Runtime owns the active Session, one owner-tagged capability registry, "
-   "dynamic resources, and plugin slots.\n"
-   "- Session is a journal plus cursor. `eval` runs in its session-local "
-   "Scheme scope; successful definitions are journaled and replayed on "
-   "resume.\n"
-   "- Agent control is a defunctionalized data machine whose effects are "
-   "performed by the host runtime.\n"
-   "- Extensions are Scheme files loaded from global and project `.sah/"
-   "extensions` directories; each file is an ownership boundary.\n"
-   "- A plugin is a dependency-linked Scheme program. Imports form lexical "
-   "scope, its body yields ops, mount prepares then applies external effects "
-   "transactionally, and frames retain exact undo evidence for dispose or "
-   "restart. Tools, hooks, commands, renderers, widgets, session-language "
-   "bootstraps, and prompt fragments can be plugin effects.\n"
-   "- Skills and prompt templates are discovered resources, not plugins.\n"
-   "\n"
-   "Runtime inspection:\n"
-   "- The working directory is the user's workspace and may be empty. Do not "
-   "infer that sah lacks a mechanism merely because its source is absent "
-   "there.\n"
-   "- Mounted plugins, their descriptions, and their model instructions are "
-   "appended to this prompt. Session `eval` intentionally cannot see sah "
-   "host internals. Use the `plugin` tool to list, inspect, mount, dispose, "
-   "or restart plugins.\n"))
+   "- A session is an append-only journal. Successful `eval` forms are "
+   "journaled and replayed when the session resumes.\n"
+   "- `eval` runs Chez Scheme in the session scope; that scope is separate "
+   "from sah host internals.\n"
+   "- Plugins can add tools and session-language bindings. Use the `plugin` "
+   "tool to list, inspect, mount, dispose, or restart them. Plugin changes "
+   "rebuild the current eval scope.\n"
+   "- Extensions, skills, and prompt templates may add capabilities or "
+   "context.\n"
+   "- The working directory is the user's workspace and may not contain the "
+   "sah source tree.\n"))
 
-(define default-agent-instructions
-  (string-append
-   "Work from evidence: inspect before changing anything, make the smallest "
-   "change that works, and verify it. Act instead of narrating. Be brief.\n"))
+(define default-agent-instructions "")
 
 ;; Loaded from a file when present (first match wins), else the default.
 ;;   ~/.sah/SYSTEM.md      (global)
@@ -91,11 +70,16 @@
 (define (compose-system-prompt rt instructions cwd)
   (string-append
    sah-runtime-contract
-   "\nWorking instructions:\n"
-   instructions
    "\n"
    (tools-block rt)
-   "\nWorking directory: " cwd "\n"))
+   (if (and (string? instructions)
+            (not (string=? (string-trim instructions) "")))
+       (string-append
+        "\nAdditional instructions:\n"
+        instructions
+        "\n")
+       "")
+   "\nCurrent working directory: " cwd "\n"))
 
 (define (finalize-config rt config cwd)
   (let* ((custom (configured-agent-instructions config cwd))

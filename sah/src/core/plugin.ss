@@ -168,8 +168,6 @@
   (op-register-renderer 'widget (cons placement key) renderer))
 (define (op-register-session-bootstrap key forms)
   (list 'op-register-session-bootstrap key forms))
-(define (op-register-prompt-fragment key text)
-  (list 'op-register-prompt-fragment key text))
 
 (define (install-core-op-handlers! rt)
   (define (none op rt scope owner) #f)
@@ -224,23 +222,6 @@
        [(op-register-session-bootstrap ,key ,raw)
         (runtime-add-capability!
          rt owner 'session-bootstrap key forms)]))
-   remove)
-  (runtime-register-op-handler!
-   rt 'core 'op-register-prompt-fragment 'registry none
-   (lambda (op rt scope owner)
-     (match op
-       [(op-register-prompt-fragment ,key ,text)
-        (unless (symbol? key)
-          (error 'plugin "prompt fragment key must be a symbol"))
-        (unless (and (string? text)
-                     (not (string=? (string-trim text) "")))
-          (error 'plugin "prompt fragment must be non-empty text"))
-        (string-trim text)]))
-   (lambda (op rt scope owner text)
-     (match op
-       [(op-register-prompt-fragment ,key ,raw)
-        (runtime-add-capability!
-         rt owner 'prompt-fragment key text)]))
    remove)
   rt)
 

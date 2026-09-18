@@ -1,6 +1,6 @@
 # sah 系统开发手册
 
-> 日期：2026-09-16
+> 日期：2026-09-18
 > 本文只描述如何修改当前实现，不重复核心设计，也不保存旧 API 的迁移说明。
 > 核心不变量见 [CORE-MECHANISMS.md](CORE-MECHANISMS.md)，动态组合见
 > [CORDIS-KERNEL.md](CORDIS-KERNEL.md)。
@@ -41,7 +41,9 @@
 | `agent/agent.ss` | effect interpreter 与 driver |
 | `agent/context.ss` | provider context projection |
 | `agent/compaction.ss` | compaction policy 与 summary |
-| `extend/` | extension、skills、prompts、commands |
+| `extend/plugin-packages.ss` | 普通 plugin package 发现与加载 |
+| `extend/` 其余文件 | extension、skills、prompts、commands |
+| `plugins/` | 预装的普通 package；核心不登记其名称 |
 | `tools/` | 内置 tool datum |
 | `tui/` | terminal、editor、selector |
 | `modes/` | TUI、REPL、print、RPC |
@@ -383,7 +385,7 @@ capability 自动恢复。
 C:\chezscheme\ta6nt\bin\ta6nt\scheme.exe --script sah\tests\run-tests.ss
 ```
 
-当前基线为 96 个测试。每个测试应对应跨模块不变量或真实故障，不以数量代替设计。
+当前基线为 122 个测试。每个测试应对应跨模块不变量或真实故障，不以数量代替设计。
 
 构建：
 
@@ -402,7 +404,7 @@ scheme --script sah\build.scm
 提交前：
 
 ```text
-tests 96/96
+tests 122/122
 source usage smoke
 standalone build smoke
 git diff --check

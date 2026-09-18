@@ -4,7 +4,7 @@
 
 `sah` (Scheme Agent Harness) runs two ways: directly from source with
 `scheme --script sah.ss`, or as a standalone executable built by `build.scm`.
-This document covers the executable.
+This document covers source preparation, building, installation, and updates.
 
 ---
 
@@ -14,6 +14,8 @@ This document covers the executable.
 |-------------|-------|
 | [Chez Scheme](https://cisco.github.io/ChezScheme/) 10.x | `scheme` must be on `PATH`. Developed on 10.5. |
 | `curl` | Used as the HTTP transport; must be on `PATH`. |
+| Git | Required only to fetch and update source; a built bundle does not need it. |
+| Z3 runtime | The Windows x64 bundle may use its packaged DLL; other platforms can use a normal system Z3 package. |
 | Git Bash (Windows only) | Optional; the `shell` tool follows whatever launched sah (PowerShell, cmd, or bash). |
 | `petite`/`scheme` boot files | Shipped with Chez; `build.scm` locates them automatically. |
 
@@ -23,6 +25,23 @@ Verify:
 scheme --version     # Chez Scheme Version 10.x
 curl --version
 ```
+
+For a first source checkout:
+
+```bash
+git clone --recurse-submodules https://github.com/hgzhehe/scheme_agent_harness.git
+cd scheme_agent_harness
+```
+
+For an existing checkout, initialize plugin dependencies from the repository
+root before running or building:
+
+```bash
+git submodule update --init --recursive
+```
+
+The built `dist/` bundle contains the plugin files and does not require Git or
+submodules at runtime.
 
 ---
 
@@ -40,13 +59,16 @@ Output (`dist/`):
 dist/sah.exe     copy of the Chez runtime   (dist/sah on Linux/macOS)
 dist/sah.boot    self-contained boot (Chez base boot + compiled program)
 dist/*.dll       Windows runtime sidecars, when required by the Chez distribution
+dist/plugins/    complete preinstalled plugin packages
 ```
 
 The runtime file is `sah.exe` on Windows and `sah` on Linux/macOS; it is
 chmod'ed executable on POSIX, so `./dist/sah` runs directly. `sah.exe` and
 `sah.boot` must stay together and keep their names. Some Windows Chez
 distributions also require runtime DLLs copied into `dist/` by the build; keep
-those in the same directory too.
+those in the same directory too. `plugins/` must also remain beside the
+executable. Install and update the complete `dist/` bundle rather than copying
+only the executable and boot.
 
 ### Boot discovery
 
@@ -91,6 +113,8 @@ and the version label differ. Override the executable path with
 4. Concatenates the runtime boot chain + the subordinate boot → `dist/sah.boot`.
 5. Copies the runtime executable → `dist/sah.exe` (`dist/sah` on POSIX).
 6. On Windows, copies DLLs located beside the selected Chez runtime.
+7. Copies complete packages from `plugins/` to `dist/plugins/`, without nested
+   submodule `.git` metadata.
 
 The generated program also **embeds the source text** and evaluates it into the
 interaction environment at startup so plugin programs loaded later can use
@@ -108,14 +132,15 @@ capabilities are still owned by the runtime record, not by global registries.
 
 ## 3. Install
 
-Installing means putting every artifact from `dist/` in a directory on `PATH`.
+Install the complete `dist/` bundle into a dedicated directory and put that
+directory on `PATH`.
 
 ### Windows (PowerShell)
 
 ```powershell
-$dest = "$env:USERPROFILE\bin"
+$dest = "$env:LOCALAPPDATA\sah"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Copy-Item dist\* $dest -Force
+Copy-Item .\dist\* $dest -Recurse -Force
 
 # add to PATH for the current user (one time)
 $p = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -128,6 +153,7 @@ Open a new terminal, then verify:
 
 ```powershell
 sah --usage
+sah --no-session "/plugins"
 ```
 
 ### Linux / macOS
@@ -135,15 +161,24 @@ sah --usage
 Build on the target platform first (the boot file is platform-specific).
 
 ```bash
-install -d ~/.local/bin
-install -m 755 dist/sah.exe ~/.local/bin/sah
-install -m 644 dist/sah.boot ~/.local/bin/sah.boot
+dest="$HOME/.local/sah"
+mkdir -p "$dest"
+cp -R dist/. "$dest/"
+chmod +x "$dest/sah"
 ```
 
-Make sure `~/.local/bin` is on `PATH`, then:
+Add `~/.local/sah` to `PATH`, for example:
+
+```bash
+echo 'export PATH="$HOME/.local/sah:$PATH"' >> ~/.profile
+export PATH="$HOME/.local/sah:$PATH"
+```
+
+Then verify:
 
 ```bash
 sah --usage
+sah --no-session "/plugins"
 ```
 
 > Note: the runtime file must be named `sah` (or `sah.exe` on Windows) so it
@@ -159,6 +194,7 @@ sah reads its configuration from `~/.sah/config.scm` (see
 
 ```scheme
 ((provider . deepseek)
+ (api . openai-completions)
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-...")
  (model    . "deepseek-flash")
@@ -223,17 +259,19 @@ For a step-by-step walkthrough see [`TUTORIAL.md`](TUTORIAL.md).
 
 ## 5. Uninstall
 
-Remove the two program files:
+Remove the installation directory:
 
 ```powershell
 # Windows
-Remove-Item "$env:USERPROFILE\bin\sah.exe", "$env:USERPROFILE\bin\sah.boot" -Force
+Remove-Item "$env:LOCALAPPDATA\sah" -Recurse -Force
 ```
 
 ```bash
 # Linux / macOS
-rm -f ~/.local/bin/sah ~/.local/bin/sah.boot
+rm -rf ~/.local/sah
 ```
+
+Then remove that directory from `PATH`.
 
 Then optionally remove sah's data — configuration, system prompt and **all
 session history** live under `SAH_HOME` (default `~/.sah`):
@@ -262,7 +300,9 @@ rm -rf build dist
 | `error: no API key` | Set `DEEPSEEK_API_KEY` / `SAH_API_KEY`, add `api-key` to `~/.sah/config.scm`, or pass `--key`. |
 | `shell` runs cmd instead of bash (or vice versa) | It follows the shell that launched sah. Run sah from the terminal you want, or set `shell` in `~/.sah/config.scm` (e.g. `(shell . "bash")`). |
 | `-c` / `-h` / `--help` do nothing useful in the compiled exe | The Chez runtime consumes those. Use `-C`/`--continue` and `-H`/`--usage`. |
-| `eval` cannot see sah's own functions | Build with `build.scm` (it embeds the source); a bare `compile-program` alone does not. |
+| `/plugins` is empty or a preinstalled plugin is missing | `plugins/` was not installed, or source submodules were not initialized. Copy the complete `dist/` bundle, or run `git submodule update --init --recursive`. |
+| The Z3 plugin fails to load | A Windows x64 bundle should contain `plugins/z3/native/ta6nt/libz3.dll`; on other platforms install the system Z3 package. Set `Z3_LIBRARY` or `Z3_HOME` only for unusual layouts. |
+| `eval` cannot see sah's own functions | This is intentional session-scope isolation. Use the `plugin` tool, `/plugins`, or `/plugin inspect NAME` for host plugin introspection. |
 | Sessions from another directory are missing | Sessions are grouped by working directory under `~/.sah/sessions/<cwd-slug>/`. Run `sah` from the same directory, or set `SAH_HOME`. |
 
 ---
@@ -270,12 +310,16 @@ rm -rf build dist
 ## 7. Updating
 
 ```bash
-git pull                     # if you track the source
-scheme --script build.scm    # rebuild
-# then re-copy dist/sah.exe + dist/sah.boot over the installed pair
+git pull --recurse-submodules
+git submodule update --init --recursive
+cd sah
+scheme --script build.scm
+# re-copy the complete dist/ bundle as shown in the install section
 ```
 
-Config, system prompt and session history are untouched by an update.
+Restart sah after updating the `chez-z3` binding so the current process cannot
+reuse an already imported R6RS library. Config, system prompt and session
+history are untouched by an update.
 
 ---
 

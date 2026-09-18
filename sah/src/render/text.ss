@@ -195,12 +195,11 @@
 
 (define (ansi-panel-lines title lines width border-style body-style)
   (let* ((width (max 8 width))
-         (body-width (max 1 (- width 2)))
          (body
           (apply append
                  (map
                   (lambda (line)
-                    (wrap-line line body-width))
+                    (wrap-line line width))
                   lines))))
     (append
      (list
@@ -215,11 +214,7 @@
      (map
       (lambda (line)
         (fit-render-line
-         (string-append
-          (border-style
-           (string (integer->char #x2502)))
-          " "
-          (body-style line))
+         (body-style line)
          width))
       body)
      (list

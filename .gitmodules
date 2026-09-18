@@ -1,3 +1,6 @@
 [submodule "sah/plugins/minikanren/upstream"]
 	path = sah/plugins/minikanren/upstream
 	url = https://github.com/miniKanren/miniKanren.git
+[submodule "sah/plugins/z3/upstream"]
+	path = sah/plugins/z3/upstream
+	url = https://github.com/hgzhehe/chez-z3.git

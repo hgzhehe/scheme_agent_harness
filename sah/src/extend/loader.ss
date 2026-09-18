@@ -38,7 +38,6 @@
          (set! loaded (cons path loaded))))
      (extension-files cwd))
     (runtime-resource-set! rt 'extensions (reverse loaded)))
-  (runtime-mount-all-plugins! rt)
   (all-extensions rt))
 
 (define (system-with-skills rt config)
@@ -60,8 +59,9 @@
            cwd)))))
 
 (define (load-resources rt config cwd)
-  (install-system-plugins! rt)
+  (load-plugin-packages! rt cwd)
   (load-extensions! rt cwd)
+  (runtime-mount-all-plugins! rt)
   (load-skills! rt cwd)
   (load-prompts! rt cwd)
   (let* ((refreshed (refresh-system-base rt config cwd))
@@ -141,11 +141,13 @@
   (runtime-dispose-all-plugins! rt)
   (for-each
    (lambda (owner) (runtime-remove-owner! rt owner))
-   (all-extensions rt))
+   (append
+    (all-plugin-packages rt)
+    (all-extensions rt)))
   (runtime-resource-set! rt 'skills '())
   (runtime-resource-set! rt 'prompts '())
   (runtime-resource-set! rt 'extensions '())
-  (runtime-resource-set! rt 'system-plugins '())
+  (runtime-resource-set! rt 'plugin-packages '())
   (let ((next (load-resources rt config cwd)))
     (replace-config-slot! config next 'base-system)
     (replace-config-slot! config next 'system)

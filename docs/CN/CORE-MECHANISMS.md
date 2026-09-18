@@ -1,8 +1,8 @@
 # sah 核心机制设计
 
 > 状态：规范性设计
-> 日期：2026-09-16
-> 适用版本：`main` init baseline
+> 日期：2026-09-18
+> 适用版本：当前 plugin package baseline
 
 ## 1. 当前内核
 
@@ -357,10 +357,12 @@ dispose owned plugin slots
   -> do not publish extension path
 ```
 
-skills、prompts、extensions 使用 Runtime.resources 的同一资源表，不各自建立可变字段。
+plugin package 的 owner 是包目录。sah 按项目、全局、安装目录的优先级发现
+`<name>/plugin.ss`，包通过 `plugin-define!` 自注册；核心不登记 package 名称。
 
-项目级资源优先于用户级资源。它们当前仍以本机用户权限执行；project trust 是已知
-边界。
+plugin dirs/packages、skills、prompts、extensions 使用 Runtime.resources 的同一资源表，
+不各自建立可变字段。项目级资源优先于用户级和安装目录资源。它们当前仍以本机用户
+权限执行；project trust 是已知边界。
 
 ## 11. Renderer 与 Frontend
 
@@ -425,7 +427,8 @@ parse config
   -> runtime-new
   -> install core op handlers/tools/input handlers
   -> finalize config
-  -> load resources and mount plugins
+  -> discover plugin packages and extensions
+  -> mount plugins, then discover skills/prompts
   -> create or load session
   -> Runtime.session := session
   -> runtime-start-session!

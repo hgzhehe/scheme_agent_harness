@@ -3,7 +3,7 @@
 > English: [`../EN/INSTALL.md`](../EN/INSTALL.md)
 
 `sah`（Scheme Agent Harness）有两种运行方式：用 `scheme --script sah.ss` 直接从
-源码运行，或用 `build.scm` 编译成独立可执行文件。本文讲的是可执行文件。
+源码运行，或用 `build.scm` 编译成独立 bundle。本文覆盖源码准备、构建、安装与更新。
 
 ---
 
@@ -13,6 +13,8 @@
 |------|------|
 | [Chez Scheme](https://cisco.github.io/ChezScheme/) 10.x | `scheme` 必须在 `PATH` 里。开发于 10.5。 |
 | `curl` | 作为 HTTP 传输；必须在 `PATH` 里。 |
+| Git | 仅源码检出与更新需要；发行包运行时不需要。 |
+| Z3 runtime | Windows x64 包可使用随包 DLL；其他平台安装系统 Z3 包即可自动发现。 |
 | Git Bash（仅 Windows） | 可选；`shell` 工具跟随启动 sah 的 shell（PowerShell、cmd 或 bash）。 |
 | `petite`/`scheme` 的 boot 文件 | Chez 自带；`build.scm` 会自动定位。 |
 
@@ -22,6 +24,21 @@
 scheme --version     # Chez Scheme Version 10.x
 curl --version
 ```
+
+首次获取源码：
+
+```bash
+git clone --recurse-submodules https://github.com/hgzhehe/scheme_agent_harness.git
+cd scheme_agent_harness
+```
+
+已有仓库在运行或构建前初始化插件依赖：
+
+```bash
+git submodule update --init --recursive
+```
+
+构建出的 `dist/` 会包含插件所需文件，使用发行包时不需要 Git 或 submodule。
 
 ---
 
@@ -39,12 +56,14 @@ scheme --script build.scm
 dist/sah.exe     Chez 运行时的副本   （Linux/macOS 上是 dist/sah）
 dist/sah.boot    自包含 boot（Chez 基础 boot + 编译后的程序）
 dist/*.dll       Chez 发行版需要时携带的 Windows 运行时依赖
+dist/plugins/    预装的完整插件包
 ```
 
 运行时文件名在 Windows 上是 `sah.exe`，在 Linux/macOS 上是 `sah`；POSIX 上会
 自动 chmod 成可执行，所以 `./dist/sah` 能直接跑。`sah.exe` 与 `sah.boot`
 必须放在一起且文件名不能改；某些 Windows Chez 发行版还需要构建时复制到
-`dist/` 的运行时 DLL，也应与它们放在同一目录。
+`dist/` 的运行时 DLL。`plugins/` 也必须与可执行文件放在同一目录；安装和更新时
+应整体复制 `dist/`，不要只拿 exe 与 boot。
 
 ### boot 定位
 
@@ -85,6 +104,8 @@ Chez 装在别处，用 `SAH_RUNTIME_EXE=/path/to/scheme` 指定可执行文件�
 4. 拼接运行时 boot 链 + subordinate boot → `dist/sah.boot`。
 5. 复制运行时可执行文件 → `dist/sah.exe`（POSIX 上是 `dist/sah`）。
 6. Windows 上复制所选 Chez 运行时同目录的 DLL。
+7. 把 `plugins/` 的完整包内容复制到 `dist/plugins/`，不携带 submodule 的
+   `.git` 元数据。
 
 生成的程序还会**嵌入源码文本**，并在启动时把它求值进 interaction environment，
 供之后加载的 plugin program 使用 sah 的 extension DSL。session `eval` 使用独立的
@@ -100,14 +121,14 @@ runtime 处于同一个顶层世界；动态能力仍由 runtime record 持有�
 
 ## 3. 安装
 
-安装就是把 `dist/` 中的全部产物放进一个在 `PATH` 里的目录。
+安装就是把 `dist/` 作为一个整体复制到专用目录，并把该目录加入 `PATH`。
 
 ### Windows（PowerShell）
 
 ```powershell
-$dest = "$env:USERPROFILE\bin"
+$dest = "$env:LOCALAPPDATA\sah"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Copy-Item dist\* $dest -Force
+Copy-Item .\dist\* $dest -Recurse -Force
 
 # 为当前用户加入 PATH（一次性）
 $p = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -120,6 +141,7 @@ if ($p -notlike "*$dest*") {
 
 ```powershell
 sah --usage
+sah --no-session "/plugins"
 ```
 
 ### Linux / macOS
@@ -127,15 +149,24 @@ sah --usage
 先在目标平台上构建（boot 文件与平台相关）。
 
 ```bash
-install -d ~/.local/bin
-install -m 755 dist/sah.exe ~/.local/bin/sah
-install -m 644 dist/sah.boot ~/.local/bin/sah.boot
+dest="$HOME/.local/sah"
+mkdir -p "$dest"
+cp -R dist/. "$dest/"
+chmod +x "$dest/sah"
 ```
 
-确认 `~/.local/bin` 在 `PATH` 里，然后：
+把 `~/.local/sah` 加入 `PATH`，例如：
+
+```bash
+echo 'export PATH="$HOME/.local/sah:$PATH"' >> ~/.profile
+export PATH="$HOME/.local/sah:$PATH"
+```
+
+然后验证：
 
 ```bash
 sah --usage
+sah --no-session "/plugins"
 ```
 
 > 注意：运行时文件必须叫 `sah`（Windows 上是 `sah.exe`），这样它才会去找
@@ -150,6 +181,7 @@ sah 从 `~/.sah/config.scm` 读取配置（见
 
 ```scheme
 ((provider . deepseek)
+ (api . openai-completions)
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-...")
  (model    . "deepseek-flash")
@@ -213,17 +245,19 @@ sah "Reply with exactly: ok"
 
 ## 5. 卸载
 
-删掉两个程序文件：
+删除安装目录：
 
 ```powershell
 # Windows
-Remove-Item "$env:USERPROFILE\bin\sah.exe", "$env:USERPROFILE\bin\sah.boot" -Force
+Remove-Item "$env:LOCALAPPDATA\sah" -Recurse -Force
 ```
 
 ```bash
 # Linux / macOS
-rm -f ~/.local/bin/sah ~/.local/bin/sah.boot
+rm -rf ~/.local/sah
 ```
+
+再从 `PATH` 中删掉对应目录。
 
 然后可选地删除 sah 的数据 —— 配置、system prompt 和**全部会话历史**都在
 `SAH_HOME`（默认 `~/.sah`）下：
@@ -252,7 +286,9 @@ rm -rf build dist
 | `error: no API key` | 设 `DEEPSEEK_API_KEY` / `SAH_API_KEY`，或在 `~/.sah/config.scm` 里加 `api-key`，或传 `--key`。 |
 | `shell` 用了 cmd 而不是 bash（或相反） | 它跟随启动 sah 的 shell。从你想要的终端启动 sah，或在 `~/.sah/config.scm` 里设 `shell`（如 `(shell . "bash")`）。 |
 | 编译版里 `-c` / `-h` / `--help` 没用 | 这些被 Chez 运行时吃掉了。用 `-C`/`--continue` 和 `-H`/`--usage`。 |
-| `eval` 看不到 sah 自己的函数 | 要用 `build.scm` 构建（它嵌入了源码）；单纯 `compile-program` 不行。 |
+| `/plugins` 为空或缺少预装插件 | 安装时漏掉了 `plugins/`，或源码仓库未初始化 submodule。整体复制 `dist/`，或运行 `git submodule update --init --recursive`。 |
+| Z3 插件加载失败 | Windows x64 发行包应携带 `plugins/z3/native/ta6nt/libz3.dll`；其他平台安装 Z3 系统包。特殊布局可设 `Z3_LIBRARY` 或 `Z3_HOME`。 |
+| `eval` 看不到 sah 自己的函数 | 这是刻意的 session scope 隔离；用 `plugin` 工具、`/plugins` 或 `/plugin inspect NAME` 检查宿主插件。 |
 | 别的目录的会话找不到 | 会话按工作目录分组，位于 `~/.sah/sessions/<cwd-slug>/`。在同一目录运行 `sah`，或设 `SAH_HOME`。 |
 
 ---
@@ -260,11 +296,14 @@ rm -rf build dist
 ## 7. 更新
 
 ```bash
-git pull                     # 如果你跟踪源码
-scheme --script build.scm    # 重新构建
-# 然后把 dist/sah.exe + dist/sah.boot 覆盖到已安装的那一对上
+git pull --recurse-submodules
+git submodule update --init --recursive
+cd sah
+scheme --script build.scm
+# 按安装章节重新整体复制 dist/
 ```
 
+更新 `chez-z3` binding 后应重启 sah，避免当前进程复用已经 import 的 R6RS library。
 配置、system prompt 和会话历史不会被更新影响。
 
 ---

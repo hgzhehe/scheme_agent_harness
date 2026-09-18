@@ -9,6 +9,7 @@ an explicit machine, durable sessions, and reversible plugin composition.
 - 中文: [`../docs/CN/README.md`](../docs/CN/README.md)
 
 ```bash
+git submodule update --init --recursive # once, from the repository root
 scheme --script build.scm          # build the runnable dist/ bundle
 scheme --script sah.ss --tui       # fullscreen interactive UI
 scheme --script sah.ss -- "hello"  # run from source
@@ -21,7 +22,9 @@ shared by every entry point), `src/` split by what a file may know (`util/`
 knows nothing about sah, `core/` owns runtime/plugin concepts, `render/` owns
 all output projections, `extend/` is the customization surface, then
 `fp/ ai/ session/ tools/ agent/ tui/ modes/`), plus `examples/`, `tests/`,
-`bench/`.
+`bench/`, and `plugins/`. The latter contains the ordinary preinstalled
+`scheme-match`, `minikanren`, and `z3` packages; builds copy it to
+`dist/plugins/`.
 
 Platform differences are keyed off the Chez machine type rather than off OS
 tests. `src/util/platform.ss` turns `(machine-type)` into the facts the program

@@ -12,22 +12,8 @@
 (load (string-append test-root "/manifest.ss"))
 (load-sah-sources! test-root sah-source-files)
 
-(define match-package
-  (path-join test-root "plugins" "match"))
-(load (path-join match-package "plugin.ss"))
-(define minikanren-package
-  (path-join test-root "plugins" "minikanren"))
-(load (path-join minikanren-package "plugin.ss"))
-(system-plugin-loaders-set!
- (list
-  (cons
-   'system/match
-   (lambda ()
-     (scheme-match-plugin match-package)))
-  (cons
-   'system/minikanren
-   (lambda ()
-     (minikanren-plugin minikanren-package)))))
+(define bundled-plugin-dir
+  (path-join test-root "plugins"))
 
 (define passed 0)
 (define failed 0)
@@ -94,16 +80,25 @@
     (tools . #f)
     (exclude-tools . #f)))
 
-(define (test-runtime)
+(define (make-test-runtime plugin-dirs)
   (let ((rt (runtime-new test-dir base-config)))
     (install-core-op-handlers! rt)
     (install-core-tools! rt)
     (install-resource-input-handlers! rt)
-    (install-system-plugins! rt)
+    (when (pair? plugin-dirs)
+      (runtime-resource-set!
+       rt 'plugin-dirs plugin-dirs)
+      (load-plugin-packages! rt test-dir))
     (runtime-mount-all-plugins! rt)
     (let ((config (finalize-config rt base-config test-dir)))
       (runtime-config-set! rt config))
     rt))
+
+(define (test-runtime)
+  (make-test-runtime '()))
+
+(define (plugin-test-runtime)
+  (make-test-runtime (list bundled-plugin-dir)))
 
 (check-true
  "default bootstrap explains sah even when the workspace has no source"
@@ -118,25 +113,20 @@
           [,other ""])))
    (and
     (string-contains?
-     "A plugin is a dependency-linked Scheme program" system)
+     "expert coding assistant operating inside sah" system)
     (string-contains?
      "working directory is the user's workspace" system)
-    (string-contains? "Available sah plugins:" system)
     (string-contains?
-     "- scheme-match: Adds the bundled Chez Scheme `match` syntax"
+     "Successful `eval` forms are journaled and replayed"
      system)
     (string-contains?
-     "- minikanren: Adds the canonical miniKanren relational programming language"
+     "Use the `plugin` tool to list, inspect, mount, dispose, or restart"
      system)
     (string-contains?
-     "Plugin instructions for scheme-match:" system)
-    (string-contains?
-     "Plugin instructions for minikanren:" system)
-    (string-contains?
-     "The `eval` tool has the bundled Chez `match` syntax preloaded"
+     "Available tools:"
      system)
-    (string-contains?
-     "Pattern variables use comma" system))))
+    (not
+     (string-contains? "Completion protocol" system)))))
 
 (check
  "model context closes an interrupted tool call before later user input"
@@ -188,12 +178,11 @@
 (let ((package-root (path-join test-root "plugins" "match")))
   (check
    "the bundled match plugin is a self-contained package"
-   '(#t #t #t #t #t #f)
+   '(#t #t #t #t #f)
    (list
     (file-exists? (path-join package-root "plugin.ss"))
     (file-exists? (path-join package-root "DESCRIPTION.md"))
     (file-exists? (path-join package-root "match.ss"))
-    (file-exists? (path-join package-root "PROMPT.md"))
     (file-exists? (path-join package-root "match.LICENSE"))
     (string-contains?
      "src/vendor"
@@ -203,17 +192,42 @@
        (path-join test-root "plugins" "minikanren")))
   (check
    "the bundled minikanren plugin owns a complete submodule package"
-   '(#t #t #t #t #t #t)
+   '(#t #t #t #t #t)
    (list
     (file-exists? (path-join package-root "plugin.ss"))
     (file-exists? (path-join package-root "DESCRIPTION.md"))
-    (file-exists? (path-join package-root "PROMPT.md"))
     (file-exists?
      (path-join package-root "upstream" "mk.scm"))
     (file-exists?
      (path-join package-root "upstream" "LICENSE"))
     (string-contains?
      "sah/plugins/minikanren/upstream"
+     (file->string
+      (path-join test-root ".." ".gitmodules"))))))
+
+(let ((package-root (path-join test-root "plugins" "z3")))
+  (check
+   "the Z3 plugin owns a chez-z3 submodule and an optional Windows runtime"
+   '(#t #t #t #t #t #t #t #t #t)
+   (list
+    (file-exists? (path-join package-root "plugin.ss"))
+    (file-exists? (path-join package-root "DESCRIPTION.md"))
+    (file-exists?
+     (path-join package-root "upstream" "lib" "z3.sls"))
+    (file-exists?
+     (path-join
+      package-root "upstream" "lib" "z3" "raw.sls"))
+    (file-exists?
+     (path-join
+      package-root "upstream" "lib" "z3" "sexpr.sls"))
+    (file-exists?
+     (path-join package-root "native" "ta6nt" "libz3.dll"))
+    (file-exists? (path-join package-root "Z3.LICENSE.txt"))
+    (not
+     (file-exists?
+      (path-join package-root "lib" "z3.sls")))
+    (string-contains?
+     "sah/plugins/z3/upstream"
      (file->string
       (path-join test-root ".." ".gitmodules"))))))
 
@@ -347,11 +361,11 @@
 ;;----------------------------------------------------------------------------
 (section "session scope")
 
-(define rt-scope (test-runtime))
-(define session-a (session-new rt-scope test-dir "test-model"))
-(runtime-session-set! rt-scope session-a)
+(define rt-language (plugin-test-runtime))
+(define session-a (session-new rt-language test-dir "test-model"))
+(runtime-session-set! rt-language session-a)
 (check
- "the system match plugin bootstraps every eval scope"
+ "preinstalled language plugins bootstrap the eval scope"
  '(#t 3 #t (5) 0)
  (list
   (scope-has? (session-scope session-a) 'match)
@@ -364,20 +378,63 @@
    (session-scope session-a)
    '(run* (q) (== q 5)))
   (session-count session-a)))
+(check
+ "the preinstalled Z3 plugin solves inside the session eval scope"
+ '(#t #t "Z3 5.1.0.0" (sat "11"))
+ (list
+  (scope-has? (session-scope session-a) 'z3-version)
+  (scope-has?
+   (session-scope session-a)
+   'make-z3-sexpr-environment)
+  (scope-eval (session-scope session-a) '(z3-version))
+  (scope-eval
+   (session-scope session-a)
+   '(call-with-z3-context
+     (lambda (context)
+       (call-with-z3-solver
+        context
+        (lambda (solver)
+          (let ((x (z3-int-const context 'x)))
+            (z3-solver-assert!
+             solver
+             (z3> x (z3-int context 10)))
+            (let* ((status (z3-solver-check solver))
+                   (model (z3-solver-model solver)))
+              (list
+               status
+               (z3-ast->string
+                (z3-model-eval model x))))))))))))
 (session-eval-form!
- rt-scope session-a
+ rt-language session-a
  '(define (match-sum pair)
     (match pair
       [(,left ,right) (+ left right)])))
 (session-eval-form!
- rt-scope session-a
+ rt-language session-a
  '(define (drinko q)
     (conde
       [(== q 'tea)]
       [(== q 'coffee)])))
+(session-eval-form!
+ rt-language session-a
+ '(define (z3-smallest-over-ten)
+    (call-with-z3-context
+     (lambda (context)
+       (call-with-z3-solver
+        context
+        (lambda (solver)
+          (let ((x (z3-int-const context 'x)))
+            (z3-solver-assert!
+             solver
+             (z3> x (z3-int context 10)))
+            (z3-solver-check solver)
+            (z3-ast->string
+             (z3-model-eval
+              (z3-solver-model solver)
+              x)))))))))
 (let-values (((output error?)
                (runtime-call-tool
-                rt-scope 'eval
+                rt-language 'eval
                 '((code . "(define answer 41)\n(+ answer 1)")))))
   (check "eval writes into the session scope"
          '(#f "42\n" 41)
@@ -385,9 +442,9 @@
                (scope-value (session-scope session-a) 'answer))))
 (define session-a-file (session-file session-a))
 (session-close! session-a)
-(define session-a-loaded (session-load rt-scope session-a-file))
-(check "scope forms using the system match plugin replay on resume"
-       '(42 9 (tea coffee))
+(define session-a-loaded (session-load rt-language session-a-file))
+(check "scope forms using preinstalled language plugins replay on resume"
+       '(42 9 (tea coffee) "11")
        (list
         (scope-eval
          (session-scope session-a-loaded)
@@ -397,34 +454,20 @@
          '(match-sum '(4 5)))
         (scope-eval
          (session-scope session-a-loaded)
-         '(run* (q) (drinko q)))))
-(runtime-session-set! rt-scope session-a-loaded)
-(let ((loaders *system-plugin-loaders*)
-      (loads 0))
-  (dynamic-wind
-    (lambda ()
-      (system-plugin-loaders-set!
-       (map
-        (lambda (item)
-          (cons
-           (car item)
-           (let ((load (cdr item)))
-             (lambda ()
-               (set! loads (+ loads 1))
-               (load)))))
-        loaders)))
-    (lambda ()
-      (reload-resources!
-       rt-scope
-       (runtime-config rt-scope)
-       test-dir))
-    (lambda ()
-      (system-plugin-loaders-set! loaders)))
+         '(run* (q) (drinko q)))
+        (scope-eval
+         (session-scope session-a-loaded)
+         '(z3-smallest-over-ten))))
+(runtime-session-set! rt-language session-a-loaded)
+(reload-resources!
+ rt-language
+ (runtime-config rt-language)
+ test-dir)
   (check
-   "reload rereads system packages and rebuilds the current session scope"
-   '(2 9 (tea coffee) (5))
+   "reload rereads plugin packages and rebuilds the current session scope"
+   '(3 9 (tea coffee) (5) "11")
    (list
-    loads
+    (length (all-plugin-packages rt-language))
     (scope-eval
      (session-scope session-a-loaded)
      '(match-sum '(4 5)))
@@ -433,7 +476,10 @@
      '(run* (q) (drinko q)))
     (scope-eval
      (session-scope session-a-loaded)
-     '(run* (q) (== q 5))))))
+     '(run* (q) (== q 5)))
+    (scope-eval
+     (session-scope session-a-loaded)
+     '(z3-smallest-over-ten))))
 (check "scope forms stay out of model context"
        '()
        (map message-text (session-context-messages session-a-loaded)))
@@ -447,6 +493,8 @@
 (check "an explicit local definition may shadow and mutate an import"
        456
        (scope-value (session-scope session-a-loaded) 'car))
+
+(define rt-scope (test-runtime))
 
 (define branch-session
   (session-new rt-scope test-dir "test-model"))
@@ -957,38 +1005,51 @@
 ;;----------------------------------------------------------------------------
 (section "plugin program")
 
-(define rt-plugin (test-runtime))
+(define rt-packages (plugin-test-runtime))
 (define system-match-slot
-  (runtime-plugin-slot rt-plugin 'scheme-match))
+  (runtime-plugin-slot rt-packages 'scheme-match))
 (define system-minikanren-slot
-  (runtime-plugin-slot rt-plugin 'minikanren))
+  (runtime-plugin-slot rt-packages 'minikanren))
+(define system-z3-slot
+  (runtime-plugin-slot rt-packages 'z3))
 (check
- "the built-in match support is a mounted system plugin"
+ "the preinstalled match package mounts as an ordinary plugin"
  '(mounted
-   ("register-session-bootstrap scheme-match"
-    "register-prompt-fragment scheme-match"))
+   ("register-session-bootstrap scheme-match"))
  (list
   (plugin-slot-state system-match-slot)
   (map
-   (lambda (frame) (frame-show rt-plugin frame))
+   (lambda (frame) (frame-show rt-packages frame))
    (reverse
     (plugin-slot-frames system-match-slot)))))
 (check
- "the canonical minikanren submodule is a mounted system plugin"
+ "the preinstalled miniKanren package mounts as an ordinary plugin"
  '(mounted
    "Adds the canonical miniKanren relational programming language to every session-local `eval` environment."
-   ("register-session-bootstrap minikanren"
-    "register-prompt-fragment minikanren"))
+   ("register-session-bootstrap minikanren"))
  (list
   (plugin-slot-state system-minikanren-slot)
   (plugin-description
    (plugin-slot-definition system-minikanren-slot))
   (map
-   (lambda (frame) (frame-show rt-plugin frame))
+    (lambda (frame) (frame-show rt-packages frame))
    (reverse
     (plugin-slot-frames system-minikanren-slot)))))
+(check
+ "the preinstalled Z3 package mounts as an ordinary plugin"
+ '(mounted
+   "Provides the bundled chez-z3 `(z3)` and `(z3 sexpr)` APIs using an optional packaged or automatically discovered system Z3 runtime."
+   ("register-session-bootstrap z3"))
+ (list
+  (plugin-slot-state system-z3-slot)
+  (plugin-description
+   (plugin-slot-definition system-z3-slot))
+  (map
+   (lambda (frame) (frame-show rt-packages frame))
+   (reverse
+    (plugin-slot-frames system-z3-slot)))))
 
-(define rt-dynamic-plugin (test-runtime))
+(define rt-dynamic-plugin (plugin-test-runtime))
 (define dynamic-plugin-session
   (session-memory rt-dynamic-plugin test-dir "test-model"))
 (runtime-session-set! rt-dynamic-plugin dynamic-plugin-session)
@@ -1001,7 +1062,37 @@
    (list
     error?
     (string-contains? "scheme-match  mounted" output)
-    (string-contains? "minikanren  mounted" output))))
+    (and
+     (string-contains? "minikanren  mounted" output)
+     (string-contains? "z3  mounted" output)))))
+(let-values (((output error?)
+              (runtime-call-tool
+               rt-dynamic-plugin 'plugin
+               '((action . "dispose") (name . "z3")))))
+  (check
+   "the model plugin tool unloads the Z3 session language"
+   '(#f defined #f)
+   (list
+    error?
+    (plugin-slot-state
+     (runtime-plugin-slot rt-dynamic-plugin 'z3))
+    (scope-has?
+     (session-scope dynamic-plugin-session)
+     'z3-version))))
+(let-values (((output error?)
+              (runtime-call-tool
+               rt-dynamic-plugin 'plugin
+               '((action . "mount") (name . "z3")))))
+  (check
+   "the model plugin tool remounts the Z3 session language"
+   '(#f mounted "Z3 5.1.0.0")
+   (list
+    error?
+    (plugin-slot-state
+     (runtime-plugin-slot rt-dynamic-plugin 'z3))
+    (scope-eval
+     (session-scope dynamic-plugin-session)
+     '(z3-version)))))
 (let-values (((output error?)
               (runtime-call-tool
                rt-dynamic-plugin 'plugin
@@ -1050,6 +1141,8 @@
     (scope-value
      (session-scope dynamic-plugin-session)
      'saved-mini-results))))
+
+(define rt-plugin (test-runtime))
 
 (parameterize ((current-runtime rt-plugin)
                (current-owner 'test-file))
@@ -1379,7 +1472,7 @@
   (make-tui-app* rt-command-tui (make-terminal)))
 (check
  "TUI command output is a local transcript entry, not a notice"
- '(#f #t #t #t ())
+ '(#f #t #t ())
  (let* ((notice
          (tui-run-input-body!
           command-tui-app "/plugins"))
@@ -1401,8 +1494,7 @@
      (equal?
       (car (entry-data entry))
       "/plugins"))
-    (string-contains? "minikanren" text)
-    (string-contains? "scheme-match" text)
+    (string-contains? "no plugin programs defined" text)
     (session-context-messages
      (runtime-session rt-command-tui)))))
 (runtime-stop-session! rt-command-tui 'test #f)
@@ -1485,6 +1577,33 @@
   (string=?
    (tui-activity-title activity-tui-app "Working" 1000)
    (tui-activity-title activity-tui-app "Working" 1120))))
+(tui-handle-event! activity-tui-app '(ev message-start))
+(tui-handle-event! activity-tui-app '(ev message-delta "partial reply"))
+(check
+ "TUI keeps live activity visible while the assistant responds"
+ '(responding #t)
+ (let-values (((lines row column)
+               (tui-frame activity-tui-app 80 20)))
+   (list
+    (tui-app-status activity-tui-app)
+    (and
+     (string-contains?
+      "Responding"
+      (string-join lines "\n"))
+     #t))))
+(tui-handle-event! activity-tui-app '(ev agent-settled))
+(check
+ "TUI marks a settled turn done until the next run starts"
+ '(complete #t)
+ (let-values (((lines row column)
+               (tui-frame activity-tui-app 80 20)))
+   (list
+    (tui-app-status activity-tui-app)
+    (and
+     (string-contains?
+      "done"
+      (string-join lines "\n"))
+     #t))))
 (tui-app-active-run-set! activity-tui-app #f)
 
 (define rt-async-tui (test-runtime))
@@ -1660,6 +1779,19 @@
                   . "(define (long-function-name value) (* value value))"))))
           tool-use #f)
     'ansi 24)))
+(check-true
+ "ANSI panel bodies do not copy border glyphs into content"
+ (let ((vertical
+        (string (integer->char #x2502))))
+   (not
+    (exists
+     (lambda (line)
+       (string-contains? vertical line))
+     (render-message-lines
+      rt-host
+      '(msg tool "copyable" eval
+            "first line\nsecond line" #f)
+      'ansi 24)))))
 (check-true
  "ANSI user messages use a padded neutral background block"
  (let ((lines
@@ -1916,7 +2048,7 @@
  (let ((system (assq-ref custom-prompt-loaded 'system)))
    (list
     (string-contains? "Answer in haiku." system)
-    (string-contains? "A plugin is a dependency-linked Scheme program"
+    (string-contains? "Plugins can add tools and session-language bindings"
                       system)
     (string-contains? "- prompt-tool:" system))))
 

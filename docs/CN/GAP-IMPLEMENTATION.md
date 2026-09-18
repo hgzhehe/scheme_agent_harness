@@ -1,7 +1,7 @@
 # sah 当前边界
 
-> 日期：2026-09-16
-> 基线：`main` init baseline
+> 日期：2026-09-18
+> 基线：当前 plugin package baseline
 
 ## 1. 出发点
 
@@ -26,7 +26,8 @@ sah 已经形成自己的 agent harness 内核：
 - plugin mount 有 prepare/apply/rollback transaction；
 - journal、branch、compaction 和 session-local Scheme scope 已统一；
 - TUI、REPL、print、JSON、RPC 共用 Runtime、Session 和 renderer；
-- 当前 `96` 个离线契约测试通过。
+- match、miniKanren、Z3 作为普通 plugin package 自动发现并挂载；
+- 当前 `122` 个离线契约测试通过。
 
 完整不变量见 [CORE-MECHANISMS.md](CORE-MECHANISMS.md)。
 
@@ -60,12 +61,12 @@ metadata 和 scope form，不能恢复一次进行中的 provider/tool effect。
 
 ### 动态层 Reload
 
-单次 plugin mount 已有事务，整批 extension reload 还不是原子替换。该问题的唯一规范和
-实施契约见 [CORDIS-KERNEL.md](CORDIS-KERNEL.md)。
+单次 plugin mount 已有事务，整批 plugin package + extension reload 还不是原子替换。
+该问题的唯一规范和实施契约见 [CORDIS-KERNEL.md](CORDIS-KERNEL.md)。
 
 ### Project Trust
 
-项目 `.sah/extensions` 当前以用户权限执行。最小 trust gate 同样在
+项目 `.sah/plugins` 与 `.sah/extensions` 当前以用户权限执行。最小 trust gate 同样在
 [CORDIS-KERNEL.md](CORDIS-KERNEL.md) 中定义。
 
 ## 4. 新工作的进入条件

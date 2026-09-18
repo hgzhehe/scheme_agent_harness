@@ -10,7 +10,7 @@
 ;;;   dist/sah.exe        copy of the Chez petite runtime
 ;;;   dist/sah.boot       self-contained boot (petite + program, concatenated)
 ;;;   dist/*.dll          runtime sidecars, when required by a Windows build
-;;;   dist/plugins/       bundled, self-contained system plugin packages
+;;;   dist/plugins/       bundled, self-contained plugin packages
 ;;;
 ;;; Run it with:  dist/sah.exe --usage
 ;;;
@@ -47,8 +47,6 @@
 (load (string-append root "/src/util/platform.ss"))
 (load (string-append root "/src/util/path.ss"))
 (load (string-append root "/src/util/misc.ss"))
-(load (string-append root "/plugins/match/plugin.ss"))
-(load (string-append root "/plugins/minikanren/plugin.ss"))
 
 (define (path-list)
   ;; PATH uses ';' on Windows and ':' on POSIX
@@ -196,31 +194,18 @@
                       acc))))))
 
 (define (source-text)
-  (let* ((match-root (path-join root "plugins" "match"))
-         (match-definition
-          (scheme-match-plugin match-root))
-         (minikanren-root
-          (path-join root "plugins" "minikanren"))
-         (minikanren-definition
-          (minikanren-plugin minikanren-root)))
-    (string-append
-     (apply string-append
-            (map (lambda (f)
-                   (string-append
-                    "\n;;; ---- src/" f " ----\n"
-                    (file->string
-                     (path-join root "src" f))))
-                 sah-source-files))
-     "\n(system-plugin-loaders-set!\n"
-     " (list\n"
-     "  (cons 'system/match\n"
-     "        (lambda () '"
-     (format "~s" match-definition)
-     "))\n"
-     "  (cons 'system/minikanren\n"
-     "        (lambda () '"
-     (format "~s" minikanren-definition)
-     "))))\n")))
+  (string-append
+   (apply string-append
+          (map (lambda (f)
+                 (string-append
+                  "\n;;; ---- src/" f " ----\n"
+                  (file->string
+                   (path-join root "src" f))))
+               sah-source-files))
+   "\n(installed-plugin-dir-set!\n"
+   " (path-join\n"
+   "  (dirname (process-executable-path))\n"
+   "  \"plugins\"))\n"))
 
 ;; The generated program contains the compiled code plus the source text. The
 ;; source is evaluated into the interaction environment at startup so plugin

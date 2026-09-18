@@ -30,9 +30,10 @@ hello.scm prints 42.
   (`message-delta` / `thinking-delta`); `(stream . #f)` falls back to one
   blocking request, and so does a stream that yields nothing.
 - **OpenAI-compatible protocols** — both Chat Completions and Responses paths.
-- **Eight tools** — `read`, `write`, `edit`, `ls`, `grep`, `find`, `shell`,
-  `eval`. Which of them are offered is configurable (`tools` /
-  `exclude-tools`, or `--tools` / `--exclude-tools` / `--no-tools`).
+- **Tools** — eight coding tools (`read`, `write`, `edit`, `ls`, `grep`,
+  `find`, `shell`, `eval`) plus the runtime `plugin` management tool. Which
+  ones are offered is configurable (`tools` / `exclude-tools`, or `--tools` /
+  `--exclude-tools` / `--no-tools`).
 - **Extensible** — ordinary Scheme extensions have owner cleanup; plugin
   programs add import/export facades, two-phase mount, retryable rollback,
   dynamic restart, renderers, and widgets. See
@@ -67,6 +68,8 @@ hello.scm prints 42.
 
 - [Chez Scheme](https://cisco.github.io/ChezScheme/) 10.x (developed on 10.5)
 - `curl` (used as the HTTP transport)
+- Git for source use; Linux/macOS need a system Z3 runtime that the binding can
+  discover
 - On Windows: commands run in the shell that launched sah (PowerShell, cmd,
   or Git Bash), so whatever works in your terminal works here
 
@@ -76,6 +79,7 @@ Create a config file `~/.sah/config.scm`:
 
 ```scheme
 ((provider . deepseek)
+ (api . openai-completions)
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-...")
  (model    . "deepseek-flash")
@@ -85,6 +89,7 @@ Create a config file `~/.sah/config.scm`:
 Run from source (all commands are run inside the `sah/` directory):
 
 ```bash
+git submodule update --init --recursive   # once, from the repository root
 cd sah
 scheme --script sah.ss -- "list the files in src"
 scheme --script sah.ss --tui
@@ -153,15 +158,21 @@ evaluated). Keys:
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `provider` | `deepseek` | provider id |
+| `api` | `openai-completions` | wire protocol: `openai-completions` or `openai-responses` |
 | `base-url` | `https://api.deepseek.com` | API base URL |
 | `api-key` | `""` | API key |
 | `model` | `deepseek-flash` | model id |
+| `max-output-tokens` | `8192` | maximum tokens in one model reply |
 | `max-steps` | `1000` | agent loop iteration cap |
+| `stream` | `#t` | read provider replies as SSE |
 | `compact` | `#t` | enable automatic context compaction |
 | `context-window` | `64000` | model context window (tokens) |
 | `reserve-tokens` | `16384` | tokens reserved for the reply before compacting |
 | `keep-recent-tokens` | `20000` | most recent tokens kept verbatim when compacting |
-| `system` | (see below) | system prompt override |
+| `tools` | `#f` | tool allowlist; `#f` means all tools |
+| `exclude-tools` | `#f` | tool denylist applied after the allowlist |
+| `shell` | detected | force `pwsh`, `cmd`, `bash`, or an executable path |
+| `system` | (see below) | custom instructions appended after sah runtime facts |
 
 ### API key
 
@@ -176,6 +187,10 @@ listed highest priority first:
 
 Full precedence (low → high): built-in defaults → `config.scm` →
 `SAH_API_KEY` / `DEEPSEEK_API_KEY` → `--key`.
+
+In the config file, `api-key` may also be `"$ENV_VAR"`, `"${ENV_VAR}"`, or
+`"!command"` and is resolved for each request. `api-key-command` is the
+equivalent explicit command form.
 
 Set the environment variable per shell:
 
@@ -218,14 +233,21 @@ See [`TUTORIAL.md`](TUTORIAL.md) for a step-by-step walkthrough.
 
 ### System prompt
 
-Loaded in order, first match wins; the working directory is appended:
+The default system prompt states only sah host facts: durable Session/`eval`
+semantics, the plugin runtime entry point, currently available tools, and the
+working directory. It does not prescribe an agent personality, workflow, or
+completion ritual.
+
+Optional additional instructions are loaded in order, first match wins:
 
 1. a `system` key in `~/.sah/config.scm`
 2. `~/.sah/SYSTEM.md` (global)
 3. `<cwd>/.sah/SYSTEM.md` (project)
-4. the built-in prompt, whose tool list is generated from the tools actually
-   enabled (`--tools` / `--exclude-tools`); a sample is in
-   [`SYSTEM.md`](../../sah/SYSTEM.md)
+
+When none is configured, no working instructions are appended. Custom
+instructions do not replace the sah runtime description or the tool list,
+which is generated from the tools actually enabled by `--tools` /
+`--exclude-tools`.
 
 ## Tools
 
@@ -239,6 +261,7 @@ Loaded in order, first match wins; the working directory is appended:
 | `find` | `pattern`, `path`?, `limit`? | files whose name matches a glob (`*` any run, `?` one character) |
 | `shell` | `command` | run a command in the shell sah was launched from (PowerShell, cmd, or bash); returns combined stdout/stderr. Empty output → `(no output)` |
 | `eval` | `code` | evaluate one or more Scheme expressions in this process; returns captured output plus printed values |
+| `plugin` | `action`, `name`? | list, inspect, mount, dispose, or restart plugins; changes rebuild the current session's eval scope |
 
 `ls`, `grep` and `find` skip dot-directories (`.git`, …) and the build/cache
 ones (`node_modules`, `target`, `dist`, `build`). `grep` is literal on purpose:
@@ -246,8 +269,9 @@ Chez ships no regexp library, so use `shell` with the real `grep` when you need
 a pattern. One tool result is capped at 20000 characters; past that it is
 truncated with a marker, and `read`'s `offset` is how to get the rest.
 
-`eval` is the point of the project. Because it runs in the same process as the
-agent, definitions persist across turns and the agent can inspect the host:
+`eval` is the point of the project. It runs in a session-local Chez scope, so
+definitions persist across turns and resume, while sah runtime internals remain
+out of scope:
 
 ```
 sah> Compute fact 5
@@ -259,6 +283,38 @@ sah> Now compute fact 40
   <- eval
 815915283247897734345611269596115894272000000000
 ```
+
+## Preinstalled plugins
+
+The source `sah/plugins/` directory and the built `plugins/` directory contain
+three automatically mounted ordinary plugin packages. "Preinstalled" only
+means shipped with sah: the core has no package-specific registration code,
+and user plugins use the same discovery, mount, dispose, and restart lifecycle.
+
+| Plugin | Capability added to session `eval` |
+|--------|------------------------------------|
+| `scheme-match` | Chez `match` syntax |
+| `minikanren` | `run`, `run*`, `fresh`, `conde`, `==`, and the canonical miniKanren implementation |
+| `z3` | the `hgzhehe/chez-z3` `(z3)` and `(z3 sexpr)` APIs |
+
+The Windows x64 bundle may use its packaged Z3 DLL. Other environments
+automatically search `Z3_LIBRARY`, `Z3_HOME`, the `z3` executable on `PATH`,
+and normal dynamic-loader locations. A normal system Z3 package on Linux or
+macOS needs no sah-specific configuration.
+
+```text
+/plugins
+/plugin inspect z3
+/plugin dispose minikanren
+/plugin mount minikanren
+```
+
+The model-facing `plugin` tool performs the same operations. If the current
+session journal contains Scheme definitions that depend on a plugin being
+removed, sah rejects the change and restores the previous plugin set. Packages
+in `<cwd>/.sah/plugins/`, `~/.sah/plugins/`, and the installation `plugins/`
+directory override same-named packages in that order. See
+[`EXTENDING.md`](EXTENDING.md) for package format and lifecycle details.
 
 ## Sessions
 
@@ -272,8 +328,8 @@ full history is still on disk. On a provider "context too long" error sah
 compacts once and retries.
 
 In the REPL, `/compact` compacts manually (optionally `/compact <instructions>`
-to focus the summary). Auto-compaction can be disabled with `"compact": false`
-in `~/.sah/config.scm`.
+to focus the summary). Auto-compaction can be disabled with `(compact . #f)` in
+`~/.sah/config.scm`.
 
 Stored as `SexprL` under `~/.sah/sessions/<cwd-slug>/<ms>_<id>.ss` — one Scheme
 datum per line:
@@ -365,9 +421,9 @@ Inside [`sah/`](../../sah/):
 
 ```
 sah.ss              development entry point; loads src/ and calls main
-build.scm           compiles src/ into dist/sah.exe + dist/sah.boot
-SYSTEM.md           the system prompt (overridable; see core/config.ss)
+build.scm           builds the complete dist/ bundle
 config.example.scm  sample ~/.sah/config.scm
+plugins/            preinstalled ordinary packages: match, minikanren, z3
 src/vendor/         third-party match.ss (+ LICENSE)
 src/fp/             measured-vector.ss: persistent vector with a monoid measure
 src/util/           primitives that know nothing about sah:
@@ -381,31 +437,33 @@ src/core/           the agent's own concepts and infrastructure:
                       runtime.ss runtime, events, and hooks
                       capability.ss owned tools, commands, and input handlers
                       plugin.ss  op algebra and transactional mounts
-                      render.ss  canonical projection, renderers, widgets, export
                       transport.ss  HTTP via curl
                       config.ss  ~/.sah paths, settings, system prompt
+src/render/         canonical plain/ANSI/JSON/session projections and export
 src/extend/         the customization surface:
+                      plugin-packages.ss discovers ordinary plugin packages
                       md.ss      frontmatter parsing
                       skills.ss  SKILL.md discovery + progressive disclosure
                       prompts.ss /name templates ($1, $@, ${N:-default})
-                      loader.ss  loads extensions, skills, prompts
+                      loader.ss  composes plugins, extensions, skills, prompts
                       builtin-commands.ss  the commands sah ships with (incl. /fork)
-src/ai/             chat.ss + providers/openai-compatible.ss
+src/ai/             chat.ss + Chat Completions / Responses providers
 src/session/        log.ss (immutable entry tree) + manager.ss (SexprL recovery/repair)
-                    + host.ss (active-session lifecycle)
+                    + control.ss (active-session lifecycle)
                     + discovery.ss (find/pick) + pi-format.ss (pi JSONL
                     read/write, for --export-pi / --import-pi)
-src/tools/          read.ss write.ss edit.ss ls.ss grep.ss find.ss shell.ss eval.ss
+src/tools/          eight coding tools + the plugin management tool
 src/agent/          machine.ss (explicit control) + agent.ss (effect interpreter)
                     + context.ss + compaction.ss
                     + branch.ss (summarise an abandoned branch)
-src/tui/            terminal.ss + editor.ss + component.ss
+src/tui/            terminal.ss + editor.ss + selector.ss
 src/modes/          cli.ss + oneshot.ss (--export-pi/--import-pi/--fork)
                     + print.ss + repl.ss + tui.ss + rpc.ss
 src/main.ss         entry point
 examples/           extension / skill / prompt-template examples
 tests/run-tests.ss  offline test suite
 bench/              data-structure and scaling measurements
+dist/               runtime, boot, sidecars, and complete plugins/ bundle
 ```
 
 `src/` is split by *what a file is allowed to know*: `util/` knows nothing about

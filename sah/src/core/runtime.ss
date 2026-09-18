@@ -28,7 +28,8 @@
                 '((skills . ())
                   (prompts . ())
                   (extensions . ())
-                  (system-plugins . ()))
+                  (plugin-dirs . ())
+                  (plugin-packages . ()))
                 #f 0))
 
 (define current-runtime (make-parameter #f))

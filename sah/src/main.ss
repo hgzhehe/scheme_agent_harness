@@ -99,8 +99,6 @@
             (install-core-op-handlers! rt)
             (install-core-tools! rt)
             (install-resource-input-handlers! rt)
-            (install-system-plugins! rt)
-            (runtime-mount-all-plugins! rt)
             (let ((base-config
                    (finalize-config rt raw-config cwd)))
               (runtime-config-set! rt base-config)

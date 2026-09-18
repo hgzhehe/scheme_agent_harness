@@ -1,28 +1,34 @@
 # sah 组合与扩展机制
 
-> 日期：2026-09-14
+> 日期：2026-09-18
 > 本文只说明 extension/plugin API 的使用。Cordis 内核的不变量、当前完成度与唯一
 > 实施 gap 见 [CORDIS-KERNEL.md](CORDIS-KERNEL.md)；整个 sah 的底层语义见
 > [CORE-MECHANISMS.md](CORE-MECHANISMS.md)。
 
-## 1. 两种扩展方式
+## 1. 三层扩展方式
 
 sah 支持：
 
 1. 普通 extension：文件 load 时调用 `register-tool!`、`register-hook!` 等；
-2. plugin program：声明 imports/exports，返回一组可 prepare/rollback 的 op。
+2. plugin program：声明 imports/exports，返回一组可 prepare/rollback 的 op；
+3. plugin package：含 `plugin.ss` 的完整目录，加载时自注册 plugin program。
 
 普通 extension 适合本机调试和简单能力。plugin program 是需要组合、卸载和事务保证时的
-正式机制。
+正式机制。plugin package 只负责发现与分发，不新增第二套生命周期。
 
-扩展目录：
+发现目录：
 
 ```text
+<cwd>/.sah/plugins/<name>/plugin.ss
+~/.sah/plugins/<name>/plugin.ss
+<sah-install>/plugins/<name>/plugin.ss
 ~/.sah/extensions/*.ss
 <cwd>/.sah/extensions/*.ss
 ```
 
-每个文件的绝对路径就是 owner。加载失败或 reload 时，该 owner 的动态定义会被清理。
+同名 package 按项目、全局、安装目录的顺序取第一个。plugin package 的目录路径是
+owner；extension 的文件路径是 owner。加载失败或 reload 时，该 owner 的动态定义会
+被清理。
 
 ## 2. 普通 extension
 
@@ -72,7 +78,7 @@ sah 支持：
 - scope op 在 link 阶段建立词法定义；
 - registry op 在完整 prepare 后统一 commit。
 
-extension loader 会在所有文件加载后调用 mount-all。
+resource loader 先加载 plugin packages，再加载 extensions，随后调用 mount-all。
 
 ## 4. Import 与 export
 
@@ -160,6 +166,16 @@ extension loader 会在所有文件加载后调用 mount-all。
 
 这是 widget target 的便捷形式。placement 当前支持 `header`、`above-editor`、
 `below-editor` 和 `footer`。widget 与其他 registry op 一样进入 transaction frame。
+
+### `op-register-session-bootstrap`
+
+```scheme
+(op-register-session-bootstrap 'language-key forms)
+```
+
+把一组 Scheme form 注册为 session language bootstrap。mount、dispose 或 restart 后，
+当前 session 的 eval scope 会从 bootstrap 与 journal 一起重建。`scheme-match`、
+`minikanren` 和 `z3` 都通过这个 op 提供语言能力。
 
 ## 6. 自定义 op
 
@@ -262,16 +278,18 @@ guard/veto hook 的异常按 fail-closed 处理；普通 transform/effect hook �
 `/reload`：
 
 1. dispose mounted plugins；
-2. 清理所有 non-core owner；
-3. 清空动态 op handler、skills、prompts、extension list；
-4. 重新 load extension files；
-5. mount plugin programs；
-6. 重新发现 skills/prompts；
-7. 刷新 generated system prompt；
-8. 重新注册当前 session commands。
+2. 清理旧 plugin package 与 extension owner；
+3. 清空 plugin package、extension、skills 与 prompts 资源记录；
+4. 重新发现并 load plugin packages；
+5. 重新 load extension files；
+6. mount plugin programs；
+7. 重新发现 skills/prompts；
+8. 刷新 generated system prompt；
+9. 从 plugin bootstrap 与当前 journal 重建 session eval scope。
 
-一个 extension 文件 load 失败时，该文件已经注册的工具、hook、command、input handler、
-op handler、renderer、widget 和 plugin definition 都会被删除，其他文件继续加载。
+一个 package 或 extension load 失败时，该 owner 已经注册的工具、hook、command、
+input handler、op handler、renderer、widget 和 plugin definition 都会被删除，其他
+资源继续加载。
 
 运行时也可以用：
 
@@ -303,11 +321,12 @@ binding state。
 
 ## 11. 安全边界
 
-extension 和 eval 都以当前用户权限执行。当前没有 project trust 或 OS sandbox。
+plugin package、extension 和 eval 都以当前用户权限执行。当前没有 project trust 或
+OS sandbox。
 
 因此：
 
-- 不加载不可信 extension；
+- 不加载不可信的项目 plugin package 或 extension；
 - 不把 secret 写进 tracked extension；
 - 不在仓库提交本机代理和 provider 凭据；
 - 对 shell/write/edit 的额外限制应实现为 capability policy，而不是依赖 prompt。

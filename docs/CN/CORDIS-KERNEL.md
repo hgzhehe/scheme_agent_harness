@@ -1,8 +1,8 @@
 # sah 的 Scheme 式 Cordis 内核
 
 > 状态：规范性设计与实施契约
-> 日期：2026-09-16
-> 适用版本：`main` init baseline
+> 日期：2026-09-18
+> 适用版本：当前 plugin package baseline
 
 ## 1. 本文只管什么
 
@@ -99,8 +99,8 @@ export 不是全局 service locator，而是显式词法 facade。
 
 ### 4.1 Owner 清理
 
-extension 文件的绝对路径是 owner。文件加载失败时，它已经注册的 capability、op handler
-和 plugin definition 都会被移除。
+plugin package 目录或 extension 文件的绝对路径是 owner。加载失败时，它已经注册的
+capability、op handler 和 plugin definition 都会被移除。
 
 plugin effect 使用自己的 frame 精确撤销，不靠“恢复一份旧 registry”。
 
@@ -108,6 +108,7 @@ plugin effect 使用自己的 frame 精确撤销，不靠“恢复一份旧 regi
 
 - `sah/src/core/runtime.ss`
 - `sah/src/core/capability.ss`
+- `sah/src/extend/plugin-packages.ss`
 - `sah/src/extend/loader.ss`
 
 ### 4.2 单次 Mount 事务
@@ -143,13 +144,14 @@ restart 记录原 active dependent closure，卸载后按依赖顺序重新 moun
 - command；
 - renderer；
 - widget；
+- session language bootstrap；
 - extension 自定义的 op handler。
 
 新增同类能力时，应继续落到 capability cell 和 op/frame，不新增专用 registry。
 
 ### 4.5 验证
 
-当前离线测试为 `96 passed, 0 failed`。其中直接覆盖：
+当前离线测试为 `122 passed, 0 failed`。其中直接覆盖：
 
 - owner 删除后恢复被遮蔽能力；
 - extension 加载失败后的完整清理；
@@ -158,7 +160,9 @@ restart 记录原 active dependent closure，卸载后按依赖顺序重新 moun
 - apply 失败后的逆序 rollback；
 - rollback 失败后的残余 frame 重试；
 - renderer/widget 的 mount 与 dispose；
-- dependency restart 恢复 dependents。
+- dependency restart 恢复 dependents；
+- ordinary plugin package 的发现、覆盖与 mount；
+- match、miniKanren、Z3 session bootstrap 的 resume、reload 和动态 dispose/mount。
 
 因此，Cordis 的核心不变量已经实现。后续工作不是继续增加插件概念。
 
@@ -170,7 +174,7 @@ restart 记录原 active dependent closure，卸载后按依赖顺序重新 moun
 - 通用反应式 service graph；
 - activation lease 或依赖引用计数；
 - optional dependency、late binding；
-- plugin package manager；
+- 远端 plugin registry、下载器或依赖求解器；
 - 异步 hook/event framework；
 - 通用配置树；
 - 任意 Scheme 副作用自动回滚。
@@ -189,8 +193,8 @@ restart 记录原 active dependent closure，卸载后按依赖顺序重新 moun
 
 ```text
 dispose old plugins
-  -> remove old extension owners
-  -> load new files
+  -> remove old package/extension owners
+  -> discover and load new packages/extensions
   -> mount new plugins
 ```
 
@@ -221,6 +225,7 @@ active layer 保持可用
 
 - `core/runtime.ss`：承载 candidate/active 动态层的最小边界；
 - `core/plugin.ss`：分离 plan、activation、publish；
+- `extend/plugin-packages.ss`：把 package discovery 写入 candidate；
 - `extend/loader.ss`：从破坏式 reload 改为 candidate reload；
 - `tests/run-tests.ss`：增加 fault matrix。
 
@@ -255,14 +260,15 @@ active layer 保持可用
 
 ## 7. 系统收尾：Project Trust
 
-项目 `.sah/extensions` 当前会以用户权限直接执行。最小修复只做加载门控：
+项目 `.sah/plugins` 与 `.sah/extensions` 当前会以用户权限直接执行。最小修复只做
+加载门控：
 
-- 用户级 extension 继续加载；
-- 项目级 extension 先检查 canonical cwd 的 trust 决定；
+- 用户级 package/extension 继续加载；
+- 项目级 package/extension 先检查 canonical cwd 的 trust 决定；
 - 非交互模式必须有确定的 allow/deny 策略；
 - TUI、REPL、print、RPC 共用同一个决定。
 
-本阶段不同时建设 sandbox、权限 DSL 或 package manager。
+本阶段不同时建设 sandbox、权限 DSL 或远端 registry。
 
 ## 8. 开发纪律
 

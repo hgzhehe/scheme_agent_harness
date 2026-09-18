@@ -1,6 +1,6 @@
 ;;; minikanren/plugin.ss -- canonical miniKanren as a session language plugin.
 
-(define (minikanren-plugin package-root)
+(let ((package-root (current-owner)))
   (define (read-forms path)
     (let ((port (open-input-file path)))
       (let loop ((forms '()))
@@ -23,17 +23,11 @@
         (description
          (string-trim
           (file->string
-           (path-join package-root "DESCRIPTION.md"))))
-        (prompt
-         (string-trim
-          (file->string
-           (path-join package-root "PROMPT.md")))))
-    (list
-     'plugin 'minikanren description '() '()
+           (path-join package-root "DESCRIPTION.md")))))
+    (plugin-define!
      (list
-      `(op-register-session-bootstrap
-        'minikanren
-        ',forms)
-      `(op-register-prompt-fragment
-        'minikanren
-        ,prompt)))))
+      'plugin 'minikanren description '() '()
+      (list
+       `(op-register-session-bootstrap
+         'minikanren
+         ',forms))))))

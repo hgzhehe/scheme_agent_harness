@@ -73,60 +73,8 @@
           (complete-interrupted-tool-calls
            (cdr messages)))])))
 
-(define (request-plugin-catalog rt)
-  (let ((plugins
-         (filter
-          (lambda (slot)
-            (eq? (plugin-slot-state slot) 'mounted))
-          (reverse (runtime-plugins rt)))))
-    (if (null? plugins)
-        ""
-        (string-append
-         "Available sah plugins:\n"
-         (apply
-          string-append
-          (map
-           (lambda (slot)
-             (let* ((definition
-                     (plugin-slot-definition slot))
-                    (description
-                     (plugin-description definition)))
-               (string-append
-                "- "
-                (symbol->string
-                 (plugin-name definition))
-                ": "
-                (if (string=? description "")
-                    "No description supplied."
-                    description)
-                "\n")))
-           plugins))))))
-
-(define (request-system-prompt rt config)
-  (let ((base (or (assq-ref config 'system) ""))
-        (fragment-cells
-         (runtime-visible-capability-cells
-          rt 'prompt-fragment)))
-    (string-join
-     (append
-      (list base)
-      (filter
-       (lambda (text) (not (string=? text "")))
-       (list (request-plugin-catalog rt)))
-      (map
-       (lambda (cell)
-         (string-append
-          "Plugin instructions for "
-          (symbol->string (cap-key cell))
-          ":\n"
-          (cap-value cell)))
-       fragment-cells))
-     "\n")))
-
 (define (build-request-messages rt session config)
-  (let ((messages (cons `(msg system
-                              ,(request-system-prompt
-                                rt config))
+  (let ((messages (cons `(msg system ,(assq-ref config 'system))
                         (complete-interrupted-tool-calls
                          (session-context-messages session)))))
     (runtime-run-transform

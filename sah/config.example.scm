@@ -26,9 +26,9 @@
  (stream . #t)              ; read the reply as SSE and render it as it arrives;
                             ; #f sends one blocking request instead
  ;; Tools offered to the model. Built-ins: read write edit ls grep find shell
- ;; eval. `tools` is an allowlist (omit it for all), `exclude-tools` a denylist
- ;; applied after it. The CLI has --tools / --exclude-tools / --no-tools.
- ;; (tools . (read write edit ls grep find shell eval))
+ ;; eval plugin. `tools` is an allowlist (omit it for all), `exclude-tools` a
+ ;; denylist applied after it. The CLI has --tools / --exclude-tools / --no-tools.
+ ;; (tools . (read write edit ls grep find shell eval plugin))
  ;; (exclude-tools . (shell))
  ;; (shell . "pwsh")   ; override the detected shell (pwsh | bash | cmd)
  ;; (system . "You are sah. Be brief.")

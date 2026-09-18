@@ -16,9 +16,10 @@
 7. [会话](#7-会话)
 8. [工具](#8-工具)
 9. [`eval`](#9-eval)
-10. [编译独立可执行文件](#10-编译独立可执行文件)
-11. [卸载](#11-卸载)
-12. [更多](#12-更多)
+10. [预装插件](#10-预装插件)
+11. [编译独立可执行文件](#11-编译独立可执行文件)
+12. [卸载](#12-卸载)
+13. [更多](#13-更多)
 
 ---
 
@@ -26,6 +27,7 @@
 
 - [Chez Scheme](https://cisco.github.io/ChezScheme/) 10.x，且 `scheme` 在 `PATH` 里。
 - `curl` 在 `PATH` 里（sah 用它发 HTTP 请求）。
+- 从源码安装时需要 Git；Linux/macOS 还应安装系统 Z3 包。
 - 一个 DeepSeek API key —— 在 <https://platform.deepseek.com> 的 *API keys*
   页面创建。
 - Windows 上，命令在启动 sah 的那个 shell（PowerShell / cmd / Git Bash）里执行。
@@ -36,12 +38,15 @@
 [`INSTALL.md`](INSTALL.md)，简要版：
 
 ```bash
-cd sah
-scheme --script build.scm          # 生成 dist/sah.exe + dist/sah.boot
+git clone --recurse-submodules https://github.com/hgzhehe/scheme_agent_harness.git
+cd scheme_agent_harness/sah
+scheme --script sah.ss --tui       # 直接从源码运行
+scheme --script build.scm          # 生成完整 dist/ bundle
 ```
 
-然后把 `dist/` 中的全部产物一起复制到一个在 `PATH` 里的目录
-（可执行文件、boot 和构建生成的 Windows 运行时 DLL 必须放在同一目录）。
+已有 checkout 先运行 `git submodule update --init --recursive`。安装编译版时，
+把整个 `dist/` bundle 复制到一个在 `PATH` 里的专用目录；exe、boot、运行时 DLL
+和 `plugins/` 必须保持在一起。
 
 ## 3. 获取 API key
 
@@ -179,11 +184,14 @@ scheme --script sah.ss -- "Reply with exactly: ok"
 ## 6. 交互模式
 
 ```bash
-sah --repl
+sah                 # 交互终端默认进入 TUI
+sah --tui           # 显式进入 TUI
+sah --repl          # 便携行式模式
 ```
 
-输入消息回车即可。运行期间 Ctrl+C 取消当前请求，继续输入并回车会排到下一轮；
-Ctrl-D 退出。`--repl` 每次开新会话；
+在 TUI 中输入消息并回车。运行期间 `Ctrl+C` 取消当前请求；继续输入并回车会排到
+当前请求之后执行；输入区为空时 `Ctrl+D` 退出。`--repl` 是同步行式模式。
+默认都会创建新会话；
 要接着最近一次会话：
 
 ```bash
@@ -217,16 +225,21 @@ EOF
 | `read` | `path` | 返回文件内容 |
 | `write` | `path`、`content` | 写文件，自动建父目录 |
 | `edit` | `path`、`edits:[{oldText,newText}]` | 精确文本替换；每个 `oldText` 必须在原文件里唯一 |
+| `ls` | `path`? | 列出目录 |
+| `grep` | `pattern`、`path`? | 搜索字面字符串 |
+| `find` | `pattern`、`path`? | 按 glob 匹配文件名 |
 | `shell` | `command` | 在你终端所用的 shell 里执行命令（PowerShell / cmd / bash） |
 | `eval` | `code` | 在当前 session scope 中求值 Scheme |
+| `plugin` | `action`、`name`? | 查看并动态挂载、卸载或重启插件 |
 
 修改已有文件请用 `edit` 而不是 `write`：所有替换都针对原文本匹配，这也是能把多处
 改动合并在一次调用里的安全前提。
 
 扩展可以注册更多工具（见 [EXTENDING.md](EXTENDING.md)）。
 
-`bash` 工具把命令写进临时脚本再执行，所以引号、管道、heredoc 都像在真 shell
-里一样。无输出会显示 `(no output)`。
+`shell` 使用启动 sah 的 shell；也可以在配置中用 `(shell . "pwsh")`、
+`(shell . "cmd")` 或 `(shell . "bash")` 显式指定。无输出会显示
+`(no output)`。
 
 ## 9. `eval`
 
@@ -249,12 +262,35 @@ sah> 再算 fact 40
 `eval` 能使用基础 Chez 库，但不会自动看到 sah 的 runtime 内部定义。这个隔离用于
 保证会话状态归属，不是安全沙箱。
 
-## 10. 编译独立可执行文件
+## 10. 预装插件
+
+三个预装插件会自动挂载到 `eval`：
+
+| 插件 | 常用入口 |
+|------|----------|
+| `scheme-match` | `(match value [pattern body ...])` |
+| `minikanren` | `run`、`run*`、`fresh`、`conde`、`==` |
+| `z3` | `(z3)` 与 `(z3 sexpr)` 导出的 Z3 API |
+
+它们是普通插件包，不是写死在核心里的特殊分支。查看和管理：
+
+```text
+/plugins
+/plugin inspect z3
+/plugin dispose minikanren
+/plugin mount minikanren
+```
+
+模型也可以使用 `plugin` 工具执行同样的操作。若会话里的持久 Scheme 定义依赖某个
+插件，卸载会被拒绝并恢复原状态。自定义插件目录和包格式见
+[`EXTENDING.md`](EXTENDING.md)。
+
+## 11. 编译独立可执行文件
 
 ```bash
 cd sah
 scheme --script build.scm
-# -> dist/sah.exe + dist/sah.boot
+# -> runtime + sah.boot + plugins/ + 平台 sidecars
 ```
 
 用 `SAH_RUNTIME=scheme`（默认，完整 Chez Scheme）或 `SAH_RUNTIME=petite`
@@ -264,23 +300,23 @@ scheme --script build.scm
 SAH_RUNTIME=petite scheme --script build.scm
 ```
 
-## 11. 卸载
+## 12. 卸载
 
-删掉两个程序文件，然后可选地删掉数据目录。
+删除安装时整体复制的 bundle 目录，然后可选地删除数据目录。
 
 ```powershell
 # Windows
-Remove-Item "$env:USERPROFILE\bin\sah.exe", "$env:USERPROFILE\bin\sah.boot" -Force
+Remove-Item "$env:LOCALAPPDATA\sah" -Recurse -Force
 Remove-Item "$env:USERPROFILE\.sah" -Recurse -Force   # 可选：配置和会话
 ```
 
 ```bash
 # Linux / macOS
-rm -f ~/.local/bin/sah ~/.local/bin/sah.boot
+rm -rf ~/.local/sah
 rm -rf ~/.sah                                          # 可选
 ```
 
-## 12. 更多
+## 13. 更多
 
 - [`README.md`](README.md) —— 特性、CLI、会话格式
 - [`INSTALL.md`](INSTALL.md) —— 构建 / 安装 / 卸载

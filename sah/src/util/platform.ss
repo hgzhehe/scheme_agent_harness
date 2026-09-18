@@ -30,6 +30,50 @@
 ;; children that way, so it also catches a machine type we do not recognise.
 (define windows? (or (eq? machine-os 'windows) (and (getenv "COMSPEC") #t)))
 
+(define win-get-module-file-name #f)
+
+(when windows?
+  (guard (e (#t #t))
+    (load-shared-object "kernel32.dll")
+    (set! win-get-module-file-name
+          (foreign-procedure
+           "GetModuleFileNameW"
+           (void* void* unsigned-32)
+           unsigned-32))))
+
+(define (utf16-ptr->string ptr)
+  (let loop ((i 0) (acc '()))
+    (let ((c (foreign-ref 'unsigned-16 ptr (* 2 i))))
+      (if (= c 0)
+          (list->string (reverse acc))
+          (loop (+ i 1) (cons (integer->char c) acc))))))
+
+(define (windows-process-executable-path)
+  (and
+   win-get-module-file-name
+   (let loop ((capacity 260))
+     (let ((buffer (foreign-alloc (* 2 capacity))))
+       (let ((length
+              (win-get-module-file-name
+               0 buffer capacity)))
+         (cond
+           ((= length 0)
+            (foreign-free buffer)
+            #f)
+           ((>= length (- capacity 1))
+            (foreign-free buffer)
+            (loop (* capacity 2)))
+           (else
+            (let ((path (utf16-ptr->string buffer)))
+              (foreign-free buffer)
+              path))))))))
+
+(define (process-executable-path)
+  (or (and windows?
+           (windows-process-executable-path))
+      (let ((line (command-line)))
+        (and (pair? line) (car line)))))
+
 (define (run-process-control-command command)
   (guard
     (e (#t #f))

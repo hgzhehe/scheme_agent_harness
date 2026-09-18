@@ -1,18 +1,57 @@
 # 扩展与定制 sah
 
-sah 有三个定制面，全都是普通文件：
+sah 有四个定制面，全都是普通文件或目录：
 
 | 面 | 是什么 | 放在哪 |
 |---|---|---|
+| **plugin package** | 自注册、可挂载与卸载的完整插件包 | sah 安装目录、`~/.sah/plugins/<名称>/`、`<项目>/.sah/plugins/<名称>/` |
 | **extension** | 注册 hook / 工具 / 命令 / renderer / widget 的 Scheme 文件 | `~/.sah/extensions/*.ss`、`<项目>/.sah/extensions/*.ss` |
 | **skill** | 按需加载的 markdown 指令 | `~/.sah/skills/<名称>/SKILL.md`、`<项目>/.sah/skills/...` |
 | **prompt template** | 变成 `/命令` 的 markdown 文件 | `~/.sah/prompts/<名称>.md`、`<项目>/.sah/prompts/<名称>.md` |
 
-同名时项目定义覆盖全局定义。三种都有示例放在
+同名时，项目插件包覆盖全局和预装包；其他项目定义覆盖全局定义。示例放在
 [`sah/examples/`](../../sah/examples/)。其中一个值得为自己装上：
 [`examples/skills/sah-internals/`](../../sah/examples/skills/sah-internals/SKILL.md)
 教 agent sah 自身怎么运作——把它拷到 `~/.sah/skills/`，agent 就会从运行中的系统
 回答关于本 harness 的问题而不是猜，你让它扩展 sah 时它也知道该改哪个文件。
+
+## Plugin package
+
+模型可通过核心 `plugin` 工具执行 `list`、`inspect`、`mount`、`dispose`
+和 `restart`。`/plugin` 命令与该工具共用同一生命周期事务：插件集合改变后，
+当前会话的 eval scope 会立即重建；若 journal 依赖被卸载的语言能力，变更会
+被拒绝并恢复原插件集合。
+
+插件包是一个含 `plugin.ss` 的普通目录。sah 从安装目录、全局目录和项目目录发现
+这些包，加载 `plugin.ss`；包本身通过 `plugin-define!` 注册定义，随后完全进入同一套
+mount / dispose / restart 生命周期。核心不登记插件名称，也不包含 match、miniKanren
+或 Z3 的专用加载代码。
+
+插件可以通过 `op-register-session-bootstrap` 向每个 session 的隔离 Scheme
+环境加入语法、过程或 library import。当前三个预装（system-level）插件只是这个
+普通 package contract 的使用者，核心不认识它们的名字：
+
+| 包目录 | 插件名 | 内容 |
+|--------|--------|------|
+| `plugins/match/` | `scheme-match` | 自包含的 `match.ss`、description 和许可证 |
+| `plugins/minikanren/` | `minikanren` | `miniKanren/miniKanren` submodule，向 `eval` 加入关系式编程能力 |
+| `plugins/z3/` | `z3` | `hgzhehe/chez-z3` submodule，导入 `(z3)` 与 `(z3 sexpr)` |
+
+模型通过 `plugin list/inspect` 按需读取插件状态和 description。构建把完整包复制到
+`dist/plugins/`，但不复制 submodule 的 `.git` 元数据；发行包使用者不需要 Git。
+
+首次拉取或父仓库更新 submodule 指针后运行：
+
+```text
+git pull --recurse-submodules
+git submodule update --init --recursive
+```
+
+`/reload` 会重新发现并加载当前插件包。miniKanren 的源码 bootstrap 会随之重读；
+更新 chez-z3 binding 后应重启 sah，避免 Chez 复用当前进程已经 import 的 R6RS
+library。Z3 runtime 优先使用匹配 Chez machine type 的可选随包文件，否则自动从
+`Z3_LIBRARY`、`Z3_HOME`、`PATH` 中的 `z3` 安装前缀和系统动态库路径发现。正常的
+Linux/macOS 系统 Z3 包不需要 sah 专用配置。
 
 ## Extension
 
@@ -20,30 +59,6 @@ extension 就是一个普通的 Scheme 文件。加载它等于执行它的顶�
 `register-hook!`、`register-tool!`、`register-command!`、`register-*-renderer!`
 或 `register-widget!`。没有 API 对象、没有工厂函数、没有构建步骤、没有类型定义，
 因为扩展语言就是实现语言。
-
-模型可通过核心 `plugin` 工具执行 `list`、`inspect`、`mount`、`dispose`
-和 `restart`。`/plugin` 命令与该工具共用同一生命周期事务：插件集合改变后，
-当前会话的 eval scope 会立即重建；若 journal 依赖被卸载的语言能力，变更会
-被拒绝并恢复原插件集合。
-
-插件还可以通过 `op-register-session-bootstrap` 向每个 session 的隔离 Scheme
-环境加入基础语法，通过 `op-register-prompt-fragment` 向实际发送给模型的 system
-prompt 加入对应说明。内置 `scheme-match` 插件就是这两个 effect 的基准实现：
-它作为完整的 `plugins/match/` 包携带 `plugin.ss`、`DESCRIPTION.md`、
-`match.ss`、`PROMPT.md` 和许可证。description 进入 agent 的已挂载插件目录，
-prompt 进入该插件的模型说明；`eval` 默认具有 `match`，而不引用源码树中的间接路径，
-也不把宿主内部绑定暴露给 session。构建从这个包生成内置 plugin definition，并把
-整个包原样复制到 `dist/plugins/`。
-
-内置 `minikanren` 插件采用同一个 package contract，但把上游
-`miniKanren/miniKanren` 放在 `plugins/minikanren/upstream/` git submodule。
-源码运行时，`/reload` 会重新读取当前 `mk.scm`，事务式重挂插件，再从未改动的
-session journal 重建当前 Scheme scope。首次拉取或父仓库更新 submodule 指针后运行：
-
-```text
-git pull --recurse-submodules
-git submodule update --init --recursive
-```
 
 ```scheme
 ;; ~/.sah/extensions/guard-destructive.ss
@@ -172,7 +187,7 @@ argument-hint: "[关注点]"
 
 - 项目 extension 会以当前用户权限执行；只在你愿意运行其代码的仓库中使用。
 - hook 是同步的；长时间工作应放进 tool，而不是阻塞输入和 agent loop。
-- extension 当前按文件分发，没有 package registry 或版本锁定。
+- plugin package 与 extension 当前按目录/文件分发，没有远端 registry 或版本锁定。
 - 只有通过 capability/plugin op 注册的作用支持 owner 清理；任意顶层 Scheme 副作用
   不受 reload/dispose 管理。
 
@@ -186,9 +201,9 @@ argument-hint: "[关注点]"
 - 启动时会打印 `[sah] extensions: ...`，列出加载成功的每个扩展文件。
 - 抛异常的 hook 会打印 `[sah] hook NAME failed: ...` 然后跳过——所以轮次中间出现
   堆栈，通常是扩展的问题，不是 sah 的。
-- 一切都在启动时加载。`/reload` 会在运行中的会话里重新读取所有扩展文件、重新发现
-  skills 与模板，所以改扩展不用重启。它会先把注册表恢复到内置状态，因此被删掉的
-  扩展（以及它注册的 hook）会真正消失。
+- 一切都在启动时加载。`/reload` 会在运行中的会话里重新发现插件包，重新读取所有
+  extension，并重新发现 skills 与模板。它会先移除旧 owner 和 plugin frame，因此
+  被删除的包、扩展和 hook 会真正消失，然后从 journal 重建当前 eval scope。
 
 ## 内置命令与输入管线
 

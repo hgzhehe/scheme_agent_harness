@@ -16,9 +16,10 @@ first prompt, use the REPL, and understand sessions and tools.
 7. [Sessions](#7-sessions)
 8. [Tools](#8-tools)
 9. [`eval`](#9-eval)
-10. [Build a standalone executable](#10-build-a-standalone-executable)
-11. [Uninstall](#11-uninstall)
-12. [More](#12-more)
+10. [Preinstalled plugins](#10-preinstalled-plugins)
+11. [Build a standalone executable](#11-build-a-standalone-executable)
+12. [Uninstall](#12-uninstall)
+13. [More](#13-more)
 
 ---
 
@@ -26,6 +27,8 @@ first prompt, use the REPL, and understand sessions and tools.
 
 - [Chez Scheme](https://cisco.github.io/ChezScheme/) 10.x with `scheme` on `PATH`.
 - `curl` on `PATH` (sah uses it as the HTTP transport).
+- Git for a source installation; Linux/macOS should also install the system Z3
+  package.
 - A DeepSeek API key — create one at <https://platform.deepseek.com> →
   *API keys*.
 - On Windows, commands run in the shell that launched sah (PowerShell, cmd,
@@ -37,13 +40,16 @@ Two ways: run from source, or install the compiled executable. The executable is
 covered in [`INSTALL.md`](INSTALL.md); the short version:
 
 ```bash
-cd sah
-scheme --script build.scm          # produces dist/sah.exe + dist/sah.boot
+git clone --recurse-submodules https://github.com/hgzhehe/scheme_agent_harness.git
+cd scheme_agent_harness/sah
+scheme --script sah.ss --tui       # run directly from source
+scheme --script build.scm          # produces the complete dist/ bundle
 ```
 
-Then copy every artifact from `dist/` into a directory on `PATH`. The executable
-and boot must stay together and keep their names; Windows runtime DLLs, when
-present, belong beside them.
+For an existing checkout, first run `git submodule update --init --recursive`.
+Install the compiled version by copying the complete `dist/` bundle into a
+dedicated directory on `PATH`; the executable, boot, runtime sidecars, and
+`plugins/` must remain together.
 
 ## 3. Get an API key
 
@@ -182,11 +188,15 @@ You should see a session banner, the reply, and a session file path.
 ## 6. Interactive mode
 
 ```bash
-sah --repl
+sah                 # TUI by default on an interactive terminal
+sah --tui           # explicit TUI
+sah --repl          # portable line mode
 ```
 
-Type a message and press Enter. Ctrl-D (or Ctrl-C twice) to exit. `--repl`
-starts a fresh session; to continue the most recent one:
+In the TUI, type a message and press Enter. `Ctrl+C` cancels the current run;
+submitting more text while it works queues that text for the following turn;
+`Ctrl+D` exits when the editor is empty. `--repl` is synchronous line mode.
+Each mode starts a fresh session unless you continue an existing one:
 
 ```bash
 sah -C "and now refactor it"      # -C = --continue
@@ -219,8 +229,12 @@ to find them via `-C`. `SAH_HOME` changes the root.
 | `read` | `path` | return file contents |
 | `write` | `path`, `content` | write a file, creating parent dirs |
 | `edit` | `path`, `edits:[{oldText,newText}]` | exact-text replacements; each `oldText` must match exactly once |
+| `ls` | `path`? | list a directory |
+| `grep` | `pattern`, `path`? | search for a literal string |
+| `find` | `pattern`, `path`? | match filenames with a glob |
 | `shell` | `command` | run a command in your terminal's shell (PowerShell, cmd, or bash) |
 | `eval` | `code` | evaluate Scheme in the current session scope |
+| `plugin` | `action`, `name`? | inspect and dynamically mount, dispose, or restart plugins |
 
 Use `edit` rather than `write` to change an existing file: all edits are matched
 against the original text, which is also what makes batching several changes into
@@ -228,8 +242,9 @@ one call safe.
 
 Extensions can register more tools (see [EXTENDING.md](EXTENDING.md)).
 
-The `bash` tool runs from a temporary script, so quoting, pipes and heredocs
-behave like a real shell. Empty output is reported as `(no output)`.
+`shell` uses the shell that launched sah. Set `(shell . "pwsh")`,
+`(shell . "cmd")`, or `(shell . "bash")` in the config to override detection.
+Empty output is reported as `(no output)`.
 
 ## 9. `eval`
 
@@ -252,12 +267,36 @@ sah> Now fact 40
 `eval` reaches the base Chez library but does not automatically see sah's
 runtime internals. This is state isolation, not a security sandbox.
 
-## 10. Build a standalone executable
+## 10. Preinstalled plugins
+
+Three plugins are mounted into `eval` by default:
+
+| Plugin | Common entry points |
+|--------|---------------------|
+| `scheme-match` | `(match value [pattern body ...])` |
+| `minikanren` | `run`, `run*`, `fresh`, `conde`, `==` |
+| `z3` | the APIs exported by `(z3)` and `(z3 sexpr)` |
+
+They are ordinary packages, not special cases hardcoded into the core:
+
+```text
+/plugins
+/plugin inspect z3
+/plugin dispose minikanren
+/plugin mount minikanren
+```
+
+The model-facing `plugin` tool performs the same operations. If persistent
+Scheme definitions in the current session depend on a plugin, disposal is
+rejected and the previous plugin set is restored. See
+[`EXTENDING.md`](EXTENDING.md) for package locations and format.
+
+## 11. Build a standalone executable
 
 ```bash
 cd sah
 scheme --script build.scm
-# -> dist/sah.exe + dist/sah.boot
+# -> runtime + sah.boot + plugins/ + platform sidecars
 ```
 
 Choose the runtime with `SAH_RUNTIME=scheme` (default, full Chez Scheme) or
@@ -267,23 +306,23 @@ Choose the runtime with `SAH_RUNTIME=scheme` (default, full Chez Scheme) or
 SAH_RUNTIME=petite scheme --script build.scm
 ```
 
-## 11. Uninstall
+## 12. Uninstall
 
-Remove the two program files, then optionally the data directory.
+Remove the installed bundle directory, then optionally the data directory.
 
 ```powershell
 # Windows
-Remove-Item "$env:USERPROFILE\bin\sah.exe", "$env:USERPROFILE\bin\sah.boot" -Force
+Remove-Item "$env:LOCALAPPDATA\sah" -Recurse -Force
 Remove-Item "$env:USERPROFILE\.sah" -Recurse -Force   # optional: config + sessions
 ```
 
 ```bash
 # Linux / macOS
-rm -f ~/.local/bin/sah ~/.local/bin/sah.boot
+rm -rf ~/.local/sah
 rm -rf ~/.sah                                          # optional
 ```
 
-## 12. More
+## 13. More
 
 - [`README.md`](README.md) — features, CLI, session format
 - [`INSTALL.md`](INSTALL.md) — build / install / uninstall

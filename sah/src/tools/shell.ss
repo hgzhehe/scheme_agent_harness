@@ -41,13 +41,6 @@
                                          (void* unsigned-32 void* void*) int))
     (set! close-handle (foreign-procedure "CloseHandle" (void*) int))))
 
-(define (utf16-ptr->string ptr)
-  (let loop ((i 0) (acc '()))
-    (let ((c (foreign-ref 'unsigned-16 ptr (* 2 i))))
-      (if (= c 0)
-          (list->string (reverse acc))
-          (loop (+ i 1) (cons (integer->char c) acc))))))
-
 ;; parent pid of the process identified by handle h (0x1000 = limited info).
 ;; PROCESS_BASIC_INFORMATION offsets depend on the pointer size, so we verify
 ;; the process-id field matches the pid we expect; if the layout differs (a

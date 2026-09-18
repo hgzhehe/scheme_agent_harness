@@ -28,9 +28,10 @@ hello.scm prints 42.
 - **流式** —— 回应以 SSE 读取并边到边渲染（`message-delta` / `thinking-delta`）；
   `(stream . #f)` 回退成一次阻塞请求，一条什么都没给的流也会自动回退。
 - **OpenAI 兼容协议** —— 支持 Chat Completions 与 Responses 两条 API 路径。
-- **八个工具** —— `read`、`write`、`edit`、`ls`、`grep`、`find`、`shell`、
-  `eval`。其中哪些真正提供给模型是可配的（`tools` / `exclude-tools`，或
-  `--tools` / `--exclude-tools` / `--no-tools`）。
+- **工具** —— 八个编码工具 `read`、`write`、`edit`、`ls`、`grep`、`find`、
+  `shell`、`eval`，以及运行时插件管理工具 `plugin`。其中哪些真正提供给模型是
+  可配的（`tools` / `exclude-tools`，或 `--tools` / `--exclude-tools` /
+  `--no-tools`）。
 - **可扩展** —— 普通 Scheme extension 支持 owner 清理；plugin program 还提供
   import/export facade、两阶段 mount、可重试 rollback、动态 restart，以及
   renderer/widget 注册。见
@@ -61,6 +62,7 @@ hello.scm prints 42.
 
 - [Chez Scheme](https://cisco.github.io/ChezScheme/) 10.x（开发于 10.5）
 - `curl`（作为 HTTP 传输）
+- 从源码使用时需要 Git；Linux/macOS 需要可被自动发现的系统 Z3 runtime
 - Windows 上：命令在启动 sah 的那个 shell 里执行（PowerShell / cmd /
   Git Bash），终端里能用的这里也能用
 
@@ -70,6 +72,7 @@ hello.scm prints 42.
 
 ```scheme
 ((provider . deepseek)
+ (api . openai-completions)
  (base-url . "https://api.deepseek.com")
  (api-key  . "sk-...")
  (model    . "deepseek-flash")
@@ -79,6 +82,7 @@ hello.scm prints 42.
 从源码运行（所有命令都在 `sah/` 目录里执行）：
 
 ```bash
+git submodule update --init --recursive   # 先在仓库根目录执行一次
 cd sah
 scheme --script sah.ss -- "list the files in src"
 scheme --script sah.ss --tui
@@ -145,15 +149,21 @@ sah [options] [--] [prompt | @file ...]
 | 键 | 默认值 | 含义 |
 |----|--------|------|
 | `provider` | `deepseek` | provider id |
+| `api` | `openai-completions` | wire protocol：`openai-completions` 或 `openai-responses` |
 | `base-url` | `https://api.deepseek.com` | API base URL |
 | `api-key` | `""` | API key |
 | `model` | `deepseek-flash` | 模型 id |
+| `max-output-tokens` | `8192` | 单次模型回复的最大 token 数 |
 | `max-steps` | `1000` | agent 循环最大轮数 |
+| `stream` | `#t` | 是否使用 SSE 流式响应 |
 | `compact` | `#t` | 是否开启自动上下文压缩 |
 | `context-window` | `64000` | 模型上下文窗口（token） |
 | `reserve-tokens` | `16384` | 压缩前为回复预留的 token |
 | `keep-recent-tokens` | `20000` | 压缩时逐字保留的最近 token 数 |
-| `system` | 见下 | system prompt 覆盖 |
+| `tools` | `#f` | 工具 allowlist；`#f` 表示全部 |
+| `exclude-tools` | `#f` | 在 allowlist 之后应用的工具 denylist |
+| `shell` | 自动探测 | 强制指定 `pwsh`、`cmd`、`bash` 或可执行文件路径 |
+| `system` | 见下 | 附加到 sah 运行时说明后的自定义指令 |
 
 ### API key
 
@@ -167,6 +177,9 @@ sah 需要 provider 的 API key。三种提供方式，优先级从高到低：
 
 完整优先级（低 → 高）：内置默认 → `config.scm` →
 `SAH_API_KEY` / `DEEPSEEK_API_KEY` → `--key`。
+
+配置文件中的 `api-key` 还可以写成 `"$ENV_VAR"`、`"${ENV_VAR}"` 或
+`"!command"`，在每次请求时解析；`api-key-command` 是命令形式的等价写法。
 
 各 shell 设置环境变量的方式：
 
@@ -208,20 +221,18 @@ echo 'export SAH_API_KEY=sk-xxx' >> ~/.zshrc
 
 ### System prompt
 
-system prompt 由三层组成：
+默认 system prompt 只描述 sah 的宿主事实：Session/`eval` 的持久语义、
+plugin 的运行时入口、当前可用工具和工作目录。它不规定 agent 的人格、工作流
+或完成仪式。
 
-1. sah 固定的运行时契约，包括 Session、plugin、extension、skill 和自省命令；
-2. 可替换的工作指令；
-3. 根据当前 Runtime 生成的工具表和工作目录。
-
-工作指令按顺序加载，先命中者优先：
+需要额外指令时，按顺序加载，先命中者优先：
 
 1. `~/.sah/config.scm` 里的 `system` 键
 2. `~/.sah/SYSTEM.md`（全局）
 3. `<cwd>/.sah/SYSTEM.md`（项目级）
-4. 内置工作指令；样例见 [`SYSTEM.md`](../../sah/SYSTEM.md)
 
-自定义工作指令不会覆盖 sah 的运行时契约或动态工具表。工具表受 `--tools` /
+没有配置时不附加工作指令。自定义指令不会覆盖 sah 的运行时说明或动态工具表。
+工具表受 `--tools` /
 `--exclude-tools` 影响，并在 extension 加载或 `/reload` 后重建。
 
 ## 工具
@@ -236,14 +247,15 @@ system prompt 由三层组成：
 | `find` | `pattern`、`path`?、`limit`? | 按 glob（`*` 任意串、`?` 单字符）匹配文件**名** |
 | `shell` | `command` | 在启动 sah 的终端 shell 里执行命令（PowerShell / cmd / bash）；返回合并后的 stdout/stderr。无输出 → `(no output)` |
 | `eval` | `code` | 在本进程里求值一个或多个 Scheme 表达式；返回捕获的输出和打印的值 |
+| `plugin` | `action`、`name`? | 列出、检查、挂载、卸载或重启插件；变更同步重建当前 session 的 eval scope |
 
 `ls`、`grep`、`find` 会跳过点目录（`.git` 等）以及构建/缓存目录
 （`node_modules`、`target`、`dist`、`build`）。`grep` 是字面匹配是有意为之：
 Chez 不带正则库，需要模式匹配时请用 `shell` 调真正的 `grep`。单个工具的输出上限是
 20000 字符，超出部分会被截断并附上标记；`read` 用 `offset` 取剩下的部分。
 
-`eval` 是这个项目的重点。因为它和 agent 在同一个进程里运行，定义可以跨轮存活，
-agent 也能自省宿主：
+`eval` 是这个项目的重点。它在 session-local Chez scope 中运行，定义可以跨轮和
+resume 存活，但不会看到 sah runtime 的内部绑定：
 
 ```
 sah> 算一下 fact 5
@@ -255,6 +267,34 @@ sah> 再算 fact 40
   <- eval
 815915283247897734345611269596115894272000000000
 ```
+
+## 预装插件
+
+源码树的 `sah/plugins/` 和发行包的 `plugins/` 当前提供三个自动挂载的普通插件包。
+“预装”只表示随 sah 分发；核心没有为它们写专用注册代码，用户插件也走同一套发现、
+mount、dispose 和 restart 机制。
+
+| 插件 | 给 session `eval` 增加的能力 |
+|------|-------------------------------|
+| `scheme-match` | Chez `match` 语法 |
+| `minikanren` | `run`、`run*`、`fresh`、`conde`、`==` 等 miniKanren 能力 |
+| `z3` | `hgzhehe/chez-z3` 的 `(z3)` 与 `(z3 sexpr)` API |
+
+`z3` 在 Windows x64 发行包中可使用随包 DLL；其他环境会自动查找
+`Z3_LIBRARY`、`Z3_HOME`、`PATH` 中的 `z3` 或系统动态库。Linux/macOS 上正常安装
+Z3 系统包即可，无需修改 sah 配置。
+
+```text
+/plugins
+/plugin inspect z3
+/plugin dispose minikanren
+/plugin mount minikanren
+```
+
+模型也能调用 `plugin` 工具完成同样的操作。若当前会话 journal 中的 Scheme 定义
+依赖将被卸载的插件，sah 会拒绝变更并恢复原插件集合。项目
+`<cwd>/.sah/plugins/`、全局 `~/.sah/plugins/`、安装目录 `plugins/` 依次覆盖同名
+包。包格式和生命周期见 [`EXTENDING.md`](EXTENDING.md)。
 
 ## 会话
 
@@ -352,9 +392,9 @@ EOF
 
 ```
 sah.ss              开发入口；加载 src/ 并调用 main
-build.scm           把 src/ 编译成 dist/sah.exe + dist/sah.boot
-SYSTEM.md           system prompt（可覆盖，见 core/config.ss）
+build.scm           构建完整 dist/ bundle
 config.example.scm  ~/.sah/config.scm 样例
+plugins/            预装的普通插件包：match、minikanren、z3
 src/vendor/         第三方 match.ss（含 LICENSE）
 src/fp/             measured-vector.ss：带 monoid measure 的持久向量
 src/util/           对 sah 一无所知的底层原语：
@@ -368,31 +408,33 @@ src/core/           agent 自身的概念与基础设施：
                       runtime.ss runtime、事件与 hook
                       capability.ss  tool/command/input 所有权
                       plugin.ss  op algebra 与事务挂载
-                      render.ss  canonical projection、renderer、widget、导出
                       transport.ss  curl 发 HTTP
                       config.ss  ~/.sah 路径、设置、system prompt
+src/render/         plain/ANSI/JSON/会话导出的 canonical projection
 src/extend/         定制面：
+                      plugin-packages.ss 发现并加载普通插件包
                       md.ss      frontmatter 解析
                       skills.ss  SKILL.md 发现 + 渐进披露
                       prompts.ss /名称模板（$1、$@、${N:-默认}）
-                      loader.ss  加载扩展、技能、模板
+                      loader.ss  组合插件、扩展、技能与模板
                       builtin-commands.ss  内置命令（含 /fork）
-src/ai/             chat.ss + providers/openai-compatible.ss
+src/ai/             chat.ss + Chat Completions / Responses provider
 src/session/        log.ss（不可变 entry 树）+ manager.ss（SexprL、恢复/repair）
-                    + host.ss（active session 生命周期）
+                    + control.ss（active session 生命周期）
                     + discovery.ss（查找/选择）+ pi-format.ss（读写 pi 的
                     JSONL，供 --export-pi / --import-pi 使用）
-src/tools/          read.ss write.ss edit.ss ls.ss grep.ss find.ss shell.ss eval.ss
+src/tools/          八个编码工具 + plugin 运行时管理工具
 src/agent/          machine.ss（显式控制）+ agent.ss（effect interpreter）
                     + context.ss + compaction.ss
                     + branch.ss（为被放弃的分支生成摘要）
-src/tui/            terminal.ss + editor.ss + component.ss
+src/tui/            terminal.ss + editor.ss + selector.ss
 src/modes/          cli.ss + oneshot.ss（--export-pi/--import-pi/--fork）
                     + print.ss + repl.ss + tui.ss + rpc.ss
 src/main.ss         入口
 examples/           扩展 / 技能 / 提示模板 示例
 tests/run-tests.ss  离线测试套件
 bench/              数据结构与规模测量
+dist/               构建产物：runtime、boot、DLL 和完整 plugins/
 ```
 
 `src/` 按“一个文件被允许知道什么”分层：`util/` 对 sah 一无所知，`core/` 只知道 agent

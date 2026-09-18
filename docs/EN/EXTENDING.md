@@ -1,19 +1,65 @@
 # Extending and customizing sah
 
-sah has three customization surfaces, all of them plain files:
+sah has four customization surfaces, all of them plain files or directories:
 
 | surface | what it is | where it lives |
 |---|---|---|
+| **plugin package** | a self-registering, mountable complete plugin package | the sah installation, `~/.sah/plugins/<name>/`, `<project>/.sah/plugins/<name>/` |
 | **extension** | a Scheme file that registers hooks, tools, commands, renderers, and widgets | `~/.sah/extensions/*.ss`, `<project>/.sah/extensions/*.ss` |
 | **skill** | markdown instructions, loaded on demand | `~/.sah/skills/<name>/SKILL.md`, `<project>/.sah/skills/...` |
 | **prompt template** | a markdown file that becomes a `/command` | `~/.sah/prompts/<name>.md`, `<project>/.sah/prompts/<name>.md` |
 
-A project definition overrides a global one of the same name.
-Copies of all three are in [`sah/examples/`](../../sah/examples/). One of them is
+A project plugin package overrides a global or preinstalled package of the same
+directory name; other project definitions override global definitions. Examples
+are in [`sah/examples/`](../../sah/examples/). One of them is
 worth installing for its own sake: [`examples/skills/sah-internals/`](../../sah/examples/skills/sah-internals/SKILL.md)
 teaches the agent how sah itself works — copy it to `~/.sah/skills/` and the
 agent can answer questions about this harness from the running system instead of
 guessing, and can find the right source file when you ask it to extend sah.
+
+## Plugin packages
+
+The model-facing `plugin` tool supports `list`, `inspect`, `mount`, `dispose`,
+and `restart`. `/plugin` uses the same lifecycle transaction: a plugin change
+immediately rebuilds the current eval scope, and a journal that depends on a
+removed language capability rejects the change and restores the previous
+plugin set.
+
+Plugin packages are ordinary directories containing `plugin.ss`. Sah discovers
+them in its installation, global, and project plugin directories. Each package
+registers itself with `plugin-define!` and then uses the same mount, dispose,
+and restart lifecycle. The core knows no plugin names and contains no
+match-, miniKanren-, or Z3-specific loader.
+
+Plugins may use `op-register-session-bootstrap` to add syntax, procedures, or
+library imports to every session's isolated Scheme language. The three
+preinstalled (system-level) plugins are ordinary users of this package
+contract; the core knows none of their names:
+
+| Package directory | Plugin | Contents |
+|-------------------|--------|----------|
+| `plugins/match/` | `scheme-match` | self-contained `match.ss`, description, and license |
+| `plugins/minikanren/` | `minikanren` | the `miniKanren/miniKanren` submodule and its relational language |
+| `plugins/z3/` | `z3` | the `hgzhehe/chez-z3` submodule, importing `(z3)` and `(z3 sexpr)` |
+
+The model reads plugin state and descriptions on demand through `plugin
+list/inspect`. The build copies complete packages into `dist/plugins/` without
+nested submodule `.git` metadata, so a built bundle does not need Git.
+
+After the first clone or a parent-repository submodule update:
+
+```text
+git pull --recurse-submodules
+git submodule update --init --recursive
+```
+
+`/reload` re-discovers and loads current plugin packages. It rereads
+miniKanren's source bootstrap; restart sah after updating the chez-z3 binding
+so Chez cannot reuse an R6RS library already imported by the process. The Z3
+runtime prefers an optional artifact matching the Chez machine type, then
+searches `Z3_LIBRARY`, `Z3_HOME`, the `z3` installation on `PATH`, and normal
+dynamic-loader locations. A normal Linux or macOS system Z3 package needs no
+sah-specific configuration.
 
 ## Extensions
 
@@ -22,35 +68,6 @@ calls `register-hook!`, `register-tool!`, `register-command!`,
 `register-*-renderer!`, or `register-widget!`. There is no API object, factory,
 build step, or type definition because the extension language is the
 implementation language.
-
-The model-facing `plugin` tool supports `list`, `inspect`, `mount`, `dispose`,
-and `restart`. `/plugin` uses the same lifecycle transaction: a plugin change
-immediately rebuilds the current eval scope, and a journal that depends on a
-removed language capability rejects the change and restores the previous
-plugin set.
-
-Plugins may also use `op-register-session-bootstrap` to extend every
-session's isolated Scheme language and `op-register-prompt-fragment` to add
-the corresponding guidance to the system prompt actually sent to the model.
-The built-in `scheme-match` plugin is the reference implementation: it makes
-`plugins/match/` a complete package containing `plugin.ss`, `match.ss`,
-`DESCRIPTION.md`, `PROMPT.md`, and its license. The description enters the
-agent's mounted-plugin catalog and the prompt becomes that plugin's model
-instructions. It makes `match` available to `eval` without an indirect
-source-tree path or exposure of host internals. The build derives the built-in
-plugin definition from this package and copies the whole package into
-`dist/plugins/`.
-
-The built-in `minikanren` plugin uses the same package contract and keeps
-`miniKanren/miniKanren` at `plugins/minikanren/upstream/` as a git submodule.
-In a source run, `/reload` rereads the current `mk.scm`, transactionally
-remounts the plugin, and rebuilds the current Scheme scope from the unchanged
-session journal. After the first clone or a parent-repository submodule update:
-
-```text
-git pull --recurse-submodules
-git submodule update --init --recursive
-```
 
 ```scheme
 ;; ~/.sah/extensions/guard-destructive.ss
@@ -187,8 +204,8 @@ the first non-empty line.
   them in repositories whose code you are willing to run.
 - Hooks are synchronous. Put long-running work in a tool instead of blocking
   input and the agent loop.
-- Extensions are distributed as files; there is no package registry or version
-  lock.
+- Plugin packages and extensions are distributed as directories/files; there
+  is no remote registry or version lock.
 - Only effects registered through capabilities or plugin ops have owner
   cleanup. Arbitrary top-level Scheme side effects are unmanaged.
 
@@ -202,11 +219,10 @@ The dynamic-composition guarantees and atomic-reload boundary are specified in
 - Startup prints `[sah] extensions: ...` for every extension file it loaded.
 - Hooks that raise print `[sah] hook NAME failed: ...` and are skipped, so a
   stack trace in the middle of a turn is usually an extension, not sah.
-- Everything is loaded at startup. `/reload` re-reads every extension file and
-  re-discovers skills and prompts in a running session, so you can iterate on an
-  extension without restarting. It restores the registries to their built-in
-  state first, so a deleted extension (and a hook it registered) really
-  disappears.
+- Everything is loaded at startup. `/reload` re-discovers plugin packages,
+  re-reads every extension, and re-discovers skills and prompts. It removes old
+  owners and plugin frames first, so deleted packages, extensions, and hooks
+  really disappear, then rebuilds the current eval scope from the journal.
 
 ## Built-in commands and the input pipeline
 
