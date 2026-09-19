@@ -1,297 +1,159 @@
-# sah 组合与扩展机制
+# sah Plugin 设计与开发
 
 > 日期：2026-09-18
-> 本文只说明 extension/plugin API 的使用。Cordis 内核的不变量、当前完成度与唯一
-> 实施 gap 见 [CORDIS-KERNEL.md](CORDIS-KERNEL.md)；整个 sah 的底层语义见
-> [CORE-MECHANISMS.md](CORE-MECHANISMS.md)。
 
-## 1. 三层扩展方式
+本文是 plugin package 作者的接口规范。运行时事务语义见
+[CORDIS-KERNEL.md](CORDIS-KERNEL.md)，入门示例见 [EXTENDING.md](EXTENDING.md)。
 
-sah 支持：
+## 1. 包结构
 
-1. 普通 extension：文件 load 时调用 `register-tool!`、`register-hook!` 等；
-2. plugin program：声明 imports/exports，返回一组可 prepare/rollback 的 op；
-3. plugin package：含 `plugin.ss` 的完整目录，加载时自注册 plugin program。
+每个 package 是自包含目录：
 
-普通 extension 适合本机调试和简单能力。plugin program 是需要组合、卸载和事务保证时的
-正式机制。plugin package 只负责发现与分发，不新增第二套生命周期。
+```text
+my-plugin/
+  plugin.ss
+  DESCRIPTION.md
+  lib/
+  vendor/
+```
 
-发现目录：
+入口固定为 `plugin.ss`。代码、prompt、动态库定位逻辑和第三方源码应放在 package
+目录内。package 不应依赖仓库中与自己无关的相对路径。
+
+发现顺序：
 
 ```text
 <cwd>/.sah/plugins/<name>/plugin.ss
 ~/.sah/plugins/<name>/plugin.ss
 <sah-install>/plugins/<name>/plugin.ss
-~/.sah/extensions/*.ss
-<cwd>/.sah/extensions/*.ss
 ```
 
-同名 package 按项目、全局、安装目录的顺序取第一个。plugin package 的目录路径是
-owner；extension 的文件路径是 owner。加载失败或 reload 时，该 owner 的动态定义会
-被清理。
+同名 package 只加载优先级最高的一份。
 
-## 2. 普通 extension
+## 2. 定义 Plugin
 
 ```scheme
-(register-tool!
- 'hello
- "Return a greeting."
- (schema '((name "string" "Name")))
- (lambda (args)
-   (string-append "hello " (assq-ref args 'name))))
-
-(register-hook!
- 'before-agent-start
- (lambda (text session config)
-   (cons 'inject "Project extension loaded.")))
-```
-
-同名工具或命令会遮蔽旧定义。extension 被清理后，旧定义重新出现。
-
-普通 extension 的顶层任意副作用不受 sah 管理。只有通过 runtime registration API
-产生的能力能按 owner 自动清理。
-
-## 3. Plugin program
-
-```scheme
-(plugin project-facts
+(plugin hello
+  "Adds a greeting tool."
   (imports)
-  (exports codename)
-  (op-define 'codename "PINEAPPLE")
+  (exports greeting)
+  (op-define 'greeting "hello")
   (op-register-tool
-   'codename
-   "Return the project codename."
-   (schema '())
-   (lambda (args) codename))
-  (op-register-hook
-   'before-agent-start
-   (lambda (text session config)
-     (cons 'inject "Use the project codename when relevant."))))
+   'hello
+   "Return a greeting."
+   (schema '((name "string" "Name")))
+   (lambda (args)
+     (string-append greeting " " (assq-ref args 'name)))))
 ```
 
-含义：
+`plugin` 只声明：
 
-- `imports` 是 plugin dependency；
-- `exports` 是唯一对 dependents 可见的 binding facade；
-- body form 在 plugin local scope 中求值；
-- 每个 body form 必须得到一个已注册的 op datum；
-- scope op 在 link 阶段建立词法定义；
-- registry op 在完整 prepare 后统一 commit。
+- 名称；
+- 可选描述；
+- 依赖 plugin；
+- 对依赖者公开的 binding；
+- 一组 op form。
 
-resource loader 先加载 plugin packages，再加载 extensions，随后调用 mount-all。
+body form 在 plugin scope 中求值，结果必须是 op datum。
 
-## 4. Import 与 export
+## 3. Scope 与依赖
+
+`imports` 按名字链接已经定义的 plugin。依赖的 export 通过只读词法 facade 进入当前
+scope；未导出的 binding 不可见。
+
+`op-define` 在当前 plugin scope 建立 binding：
 
 ```scheme
-(plugin base
+(plugin settings
   (imports)
-  (exports port)
-  (op-define 'port 8080)
-  (op-define 'secret "private"))
-
-(plugin consumer
-  (imports base)
   (exports endpoint)
-  (op-define 'endpoint
-             (string-append "localhost:"
-                            (number->string port))))
+  (op-define 'endpoint "service-v1"))
 ```
 
-`consumer` 能看到 `port`，看不到 `secret`。
+不要用进程全局变量在 plugin 之间传递状态。共享值通过 export/import，动态能力通过
+Runtime capability。
 
-规则：
+## 4. 注册动态能力
 
-- missing dependency：link error；
-- dependency cycle：link error；
-- 两个 import 导出同名 binding：link error；
-- 声明 export 但本层没有定义：link error；
-- 对 imported binding 执行 `set!`：scope error；
-- 本层 `define` 同名 binding：允许显式遮蔽。
-
-## 5. 内置 op
-
-### `op-define`
+### Tool
 
 ```scheme
-(op-define 'name value)
+(op-register-tool NAME DESCRIPTION PARAMETERS HANDLER)
 ```
 
-在 plugin local scope 中定义 binding。undo kind 是 `scope`，dispose 时丢弃整个 scope。
+handler 接收解析后的参数 alist，返回字符串或可格式化值。
 
-### `op-register-tool`
+### Hook
 
 ```scheme
-(op-register-tool name description schema handler)
+(op-register-hook STAGE PROCEDURE)
 ```
 
-注册 runtime tool。frame 记录 owner，dispose 时只移除该 owner 的那一层定义。
+stage、参数和返回协议由 `core/runtime.ss` 的 `hook-specs` 定义。hook 同步执行，应保持
+短小；耗时工作放进 tool。
 
-### `op-register-hook`
+### Command
 
 ```scheme
-(op-register-hook stage handler)
+(op-register-command NAME DESCRIPTION HANDLER)
 ```
 
-注册 hook，handle 是 hook token。
+handler 接收命令余下的文本，返回真值表示已经处理。
 
-### `op-register-command`
+### Renderer 与 Widget
 
 ```scheme
-(op-register-command name description handler)
+(op-register-renderer TARGET KEY PROCEDURE)
+(op-register-widget PLACEMENT KEY PROCEDURE)
 ```
 
-注册 slash command。
+renderer 返回逻辑行列表或 `#f`。失败时显示层记录诊断并回退内置 renderer。
 
-### `op-register-renderer`
+### Session Bootstrap
 
 ```scheme
-(op-register-renderer target key
-  (lambda (value format width)
-    ...))
+(op-register-session-bootstrap KEY FORMS)
 ```
 
-`target` 是 `message`、`entry`、`event` 或 `widget`。renderer 返回逻辑行列表；返回
-`#f` 时继续使用内置 renderer。异常会记录并回退，不会中断 agent。
+`FORMS` 是 Scheme datum 列表。它们进入每个 session 的独立 `eval` scope，并在 scope
+重建时先于 journal form 求值。
 
-同一 `target/key` 的后注册定义遮蔽旧定义。dispose 当前 plugin 后，旧 renderer
-重新可见。
+## 5. 自定义 Op
 
-### `op-register-widget`
-
-```scheme
-(op-register-widget 'footer 'build-status
-  (lambda (context format width)
-    (list "build: clean")))
-```
-
-这是 widget target 的便捷形式。placement 当前支持 `header`、`above-editor`、
-`below-editor` 和 `footer`。widget 与其他 registry op 一样进入 transaction frame。
-
-### `op-register-session-bootstrap`
+package 可在定义 plugin 前注册 handler：
 
 ```scheme
-(op-register-session-bootstrap 'language-key forms)
-```
-
-把一组 Scheme form 注册为 session language bootstrap。mount、dispose 或 restart 后，
-当前 session 的 eval scope 会从 bootstrap 与 journal 一起重建。`scheme-match`、
-`minikanren` 和 `z3` 都通过这个 op 提供语言能力。
-
-## 6. 自定义 op
-
-```scheme
-(define (op-register-cache name value)
-  (list 'op-register-cache name value))
-
 (op-register-handler!
  'op-register-cache
  'registry
-
- ;; requires
- (lambda (op rt scope owner)
-   #f)
-
- ;; prepare
- (lambda (op rt scope owner)
-   (lookup-old-cache-value (cadr op)))
-
- ;; apply
- (lambda (op rt scope owner prepared)
-   (install-cache-value! (cadr op) (caddr op))
-   (cadr op))
-
- ;; rollback
- (lambda (op rt scope owner prepared handle)
-   (restore-cache-value! handle prepared))
-
- ;; optional show
- (lambda (op)
-   (format "register-cache ~a" (cadr op))))
+ requires
+ prepare
+ apply
+ rollback
+ show)
 ```
 
-`prepare` 必须在不改变外部状态的情况下收集 inverse 所需信息。整个 dependency subgraph
-的所有 op 都 prepare 成功后，apply 才开始。
-
-自定义 op kind 在 runtime 中必须唯一。extension unload 会删除其拥有的 handler。
-
-## 7. Mount 与失败
+签名：
 
 ```scheme
-(plugin-mount! 'project-facts)
-(plugin-list)
-(plugin-frames 'project-facts)
-(plugin-restart! 'project-facts)
-(plugin-dispose! 'project-facts)
+(requires op rt scope owner)
+(prepare op rt scope owner)
+(apply op rt scope owner prepared)
+(rollback op rt scope owner prepared handle)
+(show op)
 ```
 
-正常状态：
+约束：
 
-```text
-defined -> linking -> linked -> committing -> mounted
-mounted -> disposing -> defined
-```
+1. `prepare` 只验证并收集材料；
+2. `apply` 返回精确 handle；
+3. `rollback` 只撤销该 handle；
+4. 不能可靠撤销的作用不声明为可卸载 op；
+5. handler 名称在 Runtime 中必须唯一。
 
-失败状态：
+## 6. 生命周期
 
-```text
-transaction-failed
-dispose-failed
-```
-
-这两个状态都保留未清理 frame。再次调用 `plugin-dispose!` 会继续尝试。
-
-mount 期间的 `plugin-op` 和 `plugin-mount` event 会缓冲到整个事务提交之后。观察者不会
-看到最终回滚掉的半成品安装。
-
-restart 会先 dispose 目标以及当前 active dependents，再恢复原 active closure。这样
-dependency 更新不会留下仍标记为 mounted、却引用旧 scope/frame 的 dependent。
-
-## 8. Hook 约定
-
-常用返回形状：
-
-```scheme
-;; before-agent-start
-(cons 'prompt "replacement")
-(cons 'inject "additional user context")
-
-;; input
-'handled
-(list 'transform "new input")
-
-;; tool-call
-(cons 'block "reason")
-(cons 'args new-args)
-
-;; tool-result
-(list new-output new-error?)
-
-;; veto hooks
-(cons 'cancel "reason")
-```
-
-guard/veto hook 的异常按 fail-closed 处理；普通 transform/effect hook 按 fail-open 处理。
-具体策略以 `hook-specs` 为准。
-
-## 9. Reload
-
-`/reload`：
-
-1. dispose mounted plugins；
-2. 清理旧 plugin package 与 extension owner；
-3. 清空 plugin package、extension、skills 与 prompts 资源记录；
-4. 重新发现并 load plugin packages；
-5. 重新 load extension files；
-6. mount plugin programs；
-7. 重新发现 skills/prompts；
-8. 刷新 generated system prompt；
-9. 从 plugin bootstrap 与当前 journal 重建 session eval scope。
-
-一个 package 或 extension load 失败时，该 owner 已经注册的工具、hook、command、
-input handler、op handler、renderer、widget 和 plugin definition 都会被删除，其他
-资源继续加载。
-
-运行时也可以用：
+package 被发现后，其 plugin 默认挂载。运行时入口：
 
 ```text
 /plugins
@@ -299,34 +161,25 @@ input handler、op handler、renderer、widget 和 plugin definition 都会被�
 /plugin mount NAME
 /plugin dispose NAME
 /plugin restart NAME
+/reload
 ```
 
-这些命令是调试和运维入口，不改变 plugin transaction 的底层语义。
+模型侧 `plugin` tool 使用同一套操作。
 
-## 10. Session eval 与 plugin scope
+dispose 会先处理依赖目标的 active plugin。restart 会恢复操作前 active 的 dependent
+closure。影响 session bootstrap 的变更会重建当前 `eval` scope；journal 无法重放时，
+变更被拒绝并恢复原 plugin 集合。
 
-两者使用不同 root：
+## 7. 设计检查
 
-- plugin scope 可以看到 sah extension DSL；
-- session eval scope 只从 Chez Scheme language root 开始。
+一个 package 完成前应确认：
 
-session 中的 durable definition 会进入 journal：
-
-```scheme
-(scope-form ID PARENT TS (define answer 42))
-```
-
-它不会发送给模型。branch 时只重放当前 path，因此不同会话分支可以有不同的 Scheme
-binding state。
-
-## 11. 安全边界
-
-plugin package、extension 和 eval 都以当前用户权限执行。当前没有 project trust 或
-OS sandbox。
-
-因此：
-
-- 不加载不可信的项目 plugin package 或 extension；
-- 不把 secret 写进 tracked extension；
-- 不在仓库提交本机代理和 provider 凭据；
-- 对 shell/write/edit 的额外限制应实现为 capability policy，而不是依赖 prompt。
+- 目录脱离源码树其他位置仍然完整；
+- 所有依赖都写在 `imports`；
+- 所有跨 plugin binding 都写在 `exports`；
+- 每个外部作用都有 prepare、handle 和 rollback；
+- dispose 后没有残留 capability；
+- restart 后依赖闭包状态正确；
+- session bootstrap 可与已有 journal 重放；
+- package 加载失败不会留下定义或 op handler；
+- 本机凭据、代理和调试配置不在 package 中。

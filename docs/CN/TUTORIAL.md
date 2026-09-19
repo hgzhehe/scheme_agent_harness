@@ -235,7 +235,7 @@ EOF
 修改已有文件请用 `edit` 而不是 `write`：所有替换都针对原文本匹配，这也是能把多处
 改动合并在一次调用里的安全前提。
 
-扩展可以注册更多工具（见 [EXTENDING.md](EXTENDING.md)）。
+plugin package 可以注册更多工具（见 [EXTENDING.md](EXTENDING.md)）。
 
 `shell` 使用启动 sah 的 shell；也可以在配置中用 `(shell . "pwsh")`、
 `(shell . "cmd")` 或 `(shell . "bash")` 显式指定。无输出会显示

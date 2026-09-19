@@ -108,10 +108,10 @@ Chez 装在别处，用 `SAH_RUNTIME_EXE=/path/to/scheme` 指定可执行文件�
    `.git` 元数据。
 
 生成的程序还会**嵌入源码文本**，并在启动时把它求值进 interaction environment，
-供之后加载的 plugin program 使用 sah 的 extension DSL。session `eval` 使用独立的
-Chez language root，不会继承这些 runtime 内部绑定。
+供之后加载的 plugin package 使用 sah 的 package API 和 op 构造子。session `eval`
+使用独立的 Chez language root，不会继承这些 runtime 内部绑定。
 
-可执行文件从 interaction environment 进入，使 `load` 进来的 extension 与显式创建的
+可执行文件从 interaction environment 进入，使加载的 plugin package 与显式创建的
 runtime 处于同一个顶层世界；动态能力仍由 runtime record 持有，而不是由全局注册表持有。
 
 > 如果有一个正在运行的 `sah.exe` 占着文件（Windows 会锁住可执行文件），构建会

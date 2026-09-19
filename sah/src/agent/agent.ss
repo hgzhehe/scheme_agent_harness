@@ -98,7 +98,7 @@
             rt id name
             (if (string? blocked)
                 blocked
-                (format "blocked by extension: ~s" blocked))
+                (format "blocked by hook: ~s" blocked))
             #t)
            (let-values (((output error?)
                          (runtime-call-tool rt name args)))

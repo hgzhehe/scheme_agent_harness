@@ -27,7 +27,7 @@
                 '() '() '() #f 0))
 
 (define current-runtime (make-parameter #f))
-(define current-owner (make-parameter 'extension))
+(define current-owner (make-parameter 'runtime))
 
 ;; One local agent run owns one cancellation cell. It is dynamically scoped,
 ;; not stored in Runtime or Session, so it cannot become a second machine state.
@@ -109,7 +109,7 @@
 
 (define (require-runtime)
   (or (current-runtime)
-      (error 'runtime "no current runtime at this extension boundary")))
+      (error 'runtime "no current runtime at this dynamic boundary")))
 
 (define (current-session)
   (let ((rt (current-runtime)))
@@ -235,15 +235,6 @@
    (runtime-capabilities rt 'subscriber))
   event)
 
-(define (subscribe! proc)
-  (runtime-subscribe! (require-runtime) proc))
-
-(define (unsubscribe! token)
-  (runtime-unsubscribe! (require-runtime) token))
-
-(define (emit event)
-  (runtime-emit! (require-runtime) event))
-
 ;;----------------------------------------------------------------------------
 ;; Hooks
 ;;----------------------------------------------------------------------------
@@ -347,16 +338,3 @@
               (cdr result))
              (else
               (loop (cdr hooks)))))))))
-
-(define (register-hook! stage proc)
-  (runtime-register-hook!
-   (require-runtime) (current-owner) stage proc))
-
-(define (unregister-hook! token)
-  (runtime-unregister-hook! (require-runtime) token))
-
-(define (hooks-for stage)
-  (runtime-hooks-for (require-runtime) stage))
-
-(define (veto-reason stage . args)
-  (apply runtime-veto-reason (require-runtime) stage args))

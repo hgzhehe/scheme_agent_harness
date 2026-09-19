@@ -48,8 +48,7 @@
    "- Plugins can add tools and session-language bindings. Use the `plugin` "
    "tool to list, inspect, mount, dispose, or restart them. Plugin changes "
    "rebuild the current eval scope.\n"
-   "- Extensions, skills, and prompt templates may add capabilities or "
-   "context.\n"
+   "- Skills and prompt templates provide discoverable context.\n"
    "- The working directory is the user's workspace and may not contain the "
    "sah source tree.\n"))
 

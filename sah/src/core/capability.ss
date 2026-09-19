@@ -97,33 +97,6 @@
           (not (memq name deny)))))
      (runtime-all-tools rt))))
 
-(define (register-tool! name description parameters handler)
-  (runtime-register-tool!
-   (require-runtime) (current-owner)
-   name description parameters handler))
-
-(define (unregister-tool! name)
-  (let* ((rt (require-runtime))
-         (owner (current-owner))
-         (cell
-          (find
-           (lambda (cell)
-             (and (eq? (cap-kind cell) 'tool)
-                  (equal? (cap-owner cell) owner)
-                  (eq? (cap-key cell) name)))
-           (runtime-capability-cells rt))))
-    (and cell
-         (runtime-remove-capability! rt (cap-token cell)))))
-
-(define (all-tools)
-  (runtime-all-tools (require-runtime)))
-
-(define (find-tool name)
-  (runtime-find-tool (require-runtime) name))
-
-(define (call-tool name args)
-  (runtime-call-tool (require-runtime) name args))
-
 ;;----------------------------------------------------------------------------
 ;; Schemas
 ;;----------------------------------------------------------------------------
@@ -220,30 +193,6 @@
                   'handled))
                 ((command-handler command) args)))))))
 
-(define (register-command! name description handler)
-  (runtime-register-command!
-   (require-runtime) (current-owner)
-   name description handler))
-
-(define (unregister-command! name)
-  (let* ((rt (require-runtime))
-         (owner (current-owner))
-         (cell
-          (find
-           (lambda (cell)
-             (and (eq? (cap-kind cell) 'command)
-                  (equal? (cap-owner cell) owner)
-                  (eq? (cap-key cell) name)))
-           (runtime-capability-cells rt))))
-    (and cell
-         (runtime-remove-capability! rt (cap-token cell)))))
-
-(define (all-commands)
-  (runtime-all-commands (require-runtime)))
-
-(define (find-command name)
-  (runtime-find-command (require-runtime) name))
-
 (define (runtime-register-input-handler! rt owner proc)
   (runtime-add-capability!
    rt owner 'input-handler #f proc))
@@ -311,10 +260,3 @@
       ((eq? command-result 'handled) 'handled)
       ((string? command-result) command-result)
       (else 'handled))))
-
-(define (register-input-handler! proc)
-  (runtime-register-input-handler!
-   (require-runtime) (current-owner) proc))
-
-(define (process-input text)
-  (runtime-process-input (require-runtime) text))

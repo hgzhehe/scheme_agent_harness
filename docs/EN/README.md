@@ -34,9 +34,9 @@ hello.scm prints 42.
   `find`, `shell`, `eval`) plus the runtime `plugin` management tool. Which
   ones are offered is configurable (`tools` / `exclude-tools`, or `--tools` /
   `--exclude-tools` / `--no-tools`).
-- **Extensible** — ordinary Scheme extensions have owner cleanup; plugin
-  programs add import/export facades, two-phase mount, retryable rollback,
-  dynamic restart, renderers, and widgets. See
+- **Dynamic composition** — plugin packages provide owner cleanup,
+  import/export facades, two-phase mount, retryable rollback, dynamic restart,
+  renderers, and widgets. See
   [EXTENDING.md](EXTENDING.md).
 - **Complete session lifecycle** — Runtime owns new, resume, switch,
   fork, clone, and model/thinking restoration for every frontend.
@@ -440,12 +440,12 @@ src/core/           the agent's own concepts and infrastructure:
                       transport.ss  HTTP via curl
                       config.ss  ~/.sah paths, settings, system prompt
 src/render/         canonical plain/ANSI/JSON/session projections and export
-src/extend/         the customization surface:
+src/extend/         plugin packages, text resources, and built-in commands:
                       plugin-packages.ss discovers ordinary plugin packages
                       md.ss      frontmatter parsing
                       skills.ss  SKILL.md discovery + progressive disclosure
                       prompts.ss /name templates ($1, $@, ${N:-default})
-                      loader.ss  composes plugins, extensions, skills, prompts
+                      loader.ss  composes plugins, skills, and prompts
                       builtin-commands.ss  the commands sah ships with (incl. /fork)
 src/ai/             chat.ss + Chat Completions / Responses providers
 src/session/        log.ss (immutable entry tree) + manager.ss (SexprL recovery/repair)
@@ -460,7 +460,7 @@ src/tui/            terminal.ss + editor.ss + selector.ss
 src/modes/          cli.ss + oneshot.ss (--export-pi/--import-pi/--fork)
                     + print.ss + repl.ss + tui.ss + rpc.ss
 src/main.ss         entry point
-examples/           extension / skill / prompt-template examples
+examples/           skill and prompt-template examples
 tests/run-tests.ss  offline test suite
 bench/              data-structure and scaling measurements
 dist/               runtime, boot, sidecars, and complete plugins/ bundle
@@ -468,7 +468,7 @@ dist/               runtime, boot, sidecars, and complete plugins/ bundle
 
 `src/` is split by *what a file is allowed to know*: `util/` knows nothing about
 sah, `core/` knows the agent's concepts and nothing about modes or tools,
-`extend/` is everything reachable from a customization file, and the rest is
+`extend/` owns plugin-package and text-resource loading, and the rest is
 layered by role (ai → session → tools → agent → modes → main). Files are loaded
 in that order (`sah.ss`, `build.scm`). Tool files define data; bootstrap installs
 the built-ins explicitly into a runtime.

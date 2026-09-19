@@ -67,7 +67,7 @@
             (loop next (cdr ps)))))))
 
 ;; Sorted entries of a directory ([] when it does not exist), so that discovery
-;; order is stable everywhere it is used (extensions, skills, prompts, sessions)
+;; order is stable everywhere it is used (plugins, skills, prompts, sessions)
 (define (dir-entries dir)
   (guard (e (#t '()))
     (if (file-exists? dir) (sort-strings (directory-list dir)) '())))

@@ -32,9 +32,8 @@ hello.scm prints 42.
   `shell`、`eval`，以及运行时插件管理工具 `plugin`。其中哪些真正提供给模型是
   可配的（`tools` / `exclude-tools`，或 `--tools` / `--exclude-tools` /
   `--no-tools`）。
-- **可扩展** —— 普通 Scheme extension 支持 owner 清理；plugin program 还提供
-  import/export facade、两阶段 mount、可重试 rollback、动态 restart，以及
-  renderer/widget 注册。见
+- **动态组合** —— plugin package 提供 owner 清理、import/export facade、
+  两阶段 mount、可重试 rollback、动态 restart，以及 renderer/widget 注册。见
   [EXTENDING.md](EXTENDING.md)。
 - **完整会话生命周期** —— Runtime 统一 new、resume、switch、fork、clone、
   model/thinking 状态恢复；所有前端共享同一套生命周期。
@@ -233,7 +232,7 @@ plugin 的运行时入口、当前可用工具和工作目录。它不规定 age
 
 没有配置时不附加工作指令。自定义指令不会覆盖 sah 的运行时说明或动态工具表。
 工具表受 `--tools` /
-`--exclude-tools` 影响，并在 extension 加载或 `/reload` 后重建。
+`--exclude-tools` 影响，并在 plugin package 加载或 `/reload` 后重建。
 
 ## 工具
 
@@ -411,12 +410,12 @@ src/core/           agent 自身的概念与基础设施：
                       transport.ss  curl 发 HTTP
                       config.ss  ~/.sah 路径、设置、system prompt
 src/render/         plain/ANSI/JSON/会话导出的 canonical projection
-src/extend/         定制面：
+src/extend/         资源与内置命令：
                       plugin-packages.ss 发现并加载普通插件包
                       md.ss      frontmatter 解析
                       skills.ss  SKILL.md 发现 + 渐进披露
                       prompts.ss /名称模板（$1、$@、${N:-默认}）
-                      loader.ss  组合插件、扩展、技能与模板
+                      loader.ss  组合插件、技能与模板
                       builtin-commands.ss  内置命令（含 /fork）
 src/ai/             chat.ss + Chat Completions / Responses provider
 src/session/        log.ss（不可变 entry 树）+ manager.ss（SexprL、恢复/repair）
@@ -431,14 +430,14 @@ src/tui/            terminal.ss + editor.ss + selector.ss
 src/modes/          cli.ss + oneshot.ss（--export-pi/--import-pi/--fork）
                     + print.ss + repl.ss + tui.ss + rpc.ss
 src/main.ss         入口
-examples/           扩展 / 技能 / 提示模板 示例
+examples/           技能 / 提示模板示例
 tests/run-tests.ss  离线测试套件
 bench/              数据结构与规模测量
 dist/               构建产物：runtime、boot、DLL 和完整 plugins/
 ```
 
 `src/` 按“一个文件被允许知道什么”分层：`util/` 对 sah 一无所知，`core/` 只知道 agent
-自身概念、不认识 mode 和工具，`extend/` 是定制文件能碰到的全部，其余按职责分层
+自身概念、不认识 mode 和工具，`extend/` 负责 plugin package 与文本资源，其余按职责分层
 （ai → session → tools → agent → modes → main）。加载顺序即此顺序（`sah.ss`、
 `build.scm`）。工具文件只定义 datum，由 bootstrap 显式安装。
 
@@ -446,8 +445,8 @@ dist/               构建产物：runtime、boot、DLL 和完整 plugins/
 
 - [`CORE-MECHANISMS.md`](CORE-MECHANISMS.md) —— sah 的当前核心语义：datum、
   显式 machine/kont、effect/frame、journal/cursor、scope/env，以及它们如何汇合
-- [`CORDIS-KERNEL.md`](CORDIS-KERNEL.md) —— Scheme 式 Cordis 动态组合内核、当前
-  完成度、原子 reload 实施契约与收口条件
+- [`CORDIS-KERNEL.md`](CORDIS-KERNEL.md) —— plugin owner、op/frame、事务与
+  生命周期语义
 - [`DEVELOPMENT.md`](DEVELOPMENT.md) —— 模块边界、数据规范、测试与演进纪律
 - [`GAP-IMPLEMENTATION.md`](GAP-IMPLEMENTATION.md) —— 当前已知行为边界
 

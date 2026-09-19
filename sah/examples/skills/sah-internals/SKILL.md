@@ -1,6 +1,6 @@
 ---
 name: sah-internals
-description: Inspect and change sah itself from its current source and runtime behavior. Use for sah architecture, debugging, extension, build, or maintenance work.
+description: Inspect and change sah itself from its current source and runtime behavior. Use for sah architecture, debugging, plugins, build, or maintenance work.
 ---
 # sah internals
 
@@ -29,7 +29,7 @@ Use the public commands:
 
 The active tool set has no built-in inspection command. Read
 `core/capability.ss`, the effective `tools`/`exclude-tools` config, and loaded
-extension sources.
+plugin packages.
 
 Runtime events are observable output; hooks may transform or veto behavior.
 Do not infer durable state from TUI text or events. Read the session journal or
@@ -61,14 +61,14 @@ rollback leaves retryable residual frames.
 | `sah/src/ai/` | provider adapters and chat protocol |
 | `sah/src/tools/` | built-in tool definitions |
 | `sah/src/render/` | text/JSON projections and renderer dispatch |
-| `sah/src/extend/` | extensions, skills, prompts and built-in commands |
+| `sah/src/extend/` | plugin packages, skills, prompts and built-in commands |
 | `sah/src/tui/`, `sah/src/modes/` | frontend state and drivers |
 
 ## Normative docs
 
 - `docs/CN/CORE-MECHANISMS.md`: sah's complete core invariants;
 - `docs/CN/CORDIS-KERNEL.md`: dynamic composition and atomic reload contract;
-- `docs/CN/DESIGN-COMPOSITION.md`: plugin and extension API;
+- `docs/CN/DESIGN-COMPOSITION.md`: plugin package API;
 - `docs/CN/DEVELOPMENT.md`: modification rules and module boundaries;
 - `docs/CN/GAP-IMPLEMENTATION.md`: current verified boundaries, not a roadmap.
 

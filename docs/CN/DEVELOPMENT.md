@@ -42,7 +42,7 @@
 | `agent/context.ss` | provider context projection |
 | `agent/compaction.ss` | compaction policy 与 summary |
 | `extend/plugin-packages.ss` | 普通 plugin package 发现与加载 |
-| `extend/` 其余文件 | extension、skills、prompts、commands |
+| `extend/` 其余文件 | plugin package、skills、prompts、commands |
 | `plugins/` | 预装的普通 package；核心不登记其名称 |
 | `tools/` | 内置 tool datum |
 | `tui/` | terminal、editor、selector |
@@ -94,7 +94,7 @@
 (runtime-switch-session! rt session reason)
 ```
 
-extension/tool 边界可以使用：
+plugin package/tool 边界可以使用：
 
 ```scheme
 (require-runtime)
@@ -106,7 +106,7 @@ extension/tool 边界可以使用：
 
 ## 5. 新增 Capability
 
-先判断现有 kind 能否表达。大多数扩展能力应落在：
+先判断现有 kind 能否表达。大多数动态能力应落在：
 
 ```text
 tool command input-handler hook subscriber op-handler renderer
@@ -124,7 +124,7 @@ tool command input-handler hook subscriber op-handler renderer
 (runtime-remove-capability! rt token)
 ```
 
-整个扩展、会话或动态层撤销使用：
+整个 plugin owner、会话或动态层撤销使用：
 
 ```scheme
 (runtime-remove-owner! rt owner)
@@ -325,13 +325,13 @@ context overflow 异常必须能被 `context-overflow?` 分类，由 Machine 决
 | plugin renderer、widget、event sink | `render/dispatch.ss` |
 | whole-session export | `render/session.ss` |
 
-注册入口：
+plugin op：
 
 ```scheme
-(register-message-renderer! role proc)
-(register-entry-renderer! kind proc)
-(register-event-renderer! kind proc)
-(register-widget! placement key proc)
+(op-register-renderer 'message role proc)
+(op-register-renderer 'entry kind proc)
+(op-register-renderer 'event kind proc)
+(op-register-widget placement key proc)
 ```
 
 renderer 必须纯观察，失败时允许回退。JSON 是协议投影；不要把主题逻辑放进 JSON。
@@ -357,23 +357,24 @@ TUI 局部状态可以 mutable，但不得复制核心事实。
 
 不要重新引入通用 component framework，除非至少两个独立组件确实共享生命周期协议。
 
-## 15. Extension Reload
+## 15. Plugin Package Reload
 
-每个 extension 文件 owner 是规范化绝对路径。
+每个 plugin package 的 owner 是规范化包目录。
 
 加载失败：
 
 ```text
 remove owned plugin slots
   -> remove owner capabilities
+  -> do not publish package
   -> report stderr
 ```
 
-reload 不保存 registry baseline，也不按 kind 重置。删除动态 owner 后，被遮蔽的核心
-capability 自动恢复。
+reload 不保存 registry baseline，也不按 kind 重置。删除 package owner 后，被遮蔽的
+核心 capability 自动恢复。
 
-当前整批 reload 仍是破坏式替换。原子 candidate reload 的实现边界和验收只在
-[CORDIS-KERNEL.md](CORDIS-KERNEL.md) 中维护，本节不另建路线。
+当前整批 reload 是破坏式替换，不承诺失败后恢复旧 package 集合。单个 plugin
+mount/dispose/restart 的事务与恢复语义见 [CORDIS-KERNEL.md](CORDIS-KERNEL.md)。
 
 本机 provider、代理 URL、API key 和调试配置禁止进入 tracked 文件。
 
@@ -385,7 +386,7 @@ capability 自动恢复。
 C:\chezscheme\ta6nt\bin\ta6nt\scheme.exe --script sah\tests\run-tests.ss
 ```
 
-当前基线为 124 个测试。每个测试应对应跨模块不变量或真实故障，不以数量代替设计。
+当前基线为 125 个测试。每个测试应对应跨模块不变量或真实故障，不以数量代替设计。
 
 构建：
 
@@ -404,7 +405,7 @@ scheme --script sah\build.scm
 提交前：
 
 ```text
-tests 124/124
+tests 125/125
 source usage smoke
 standalone build smoke
 git diff --check

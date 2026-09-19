@@ -195,7 +195,7 @@
 
 ;; The generated program contains the compiled code plus the source text. The
 ;; source is evaluated into the interaction environment at startup so plugin
-;; programs loaded later can resolve sah's extension DSL. Session `eval` uses a
+;; packages loaded later can resolve sah's package API. Session `eval` uses a
 ;; separate Chez language root and does not inherit these internal bindings.
 (define (combined-source)
   (let ((code (source-text)))
@@ -216,8 +216,8 @@
      "(suppress-greeting #t)\n"
      ;; Run the program from the INTERACTION environment, not from the compiled
      ;; bindings. Loading a file evaluates into the interaction environment;
-     ;; entering through the same environment keeps extension DSL procedures
-     ;; and the explicit runtime object in one top-level world. Falls back to
+     ;; entering through the same environment keeps package API procedures and
+     ;; the explicit runtime object in one top-level world. Falls back to
      ;; the compiled `main` if that lookup fails.
      "(scheme-start (lambda fns\n"
      "  (let ((m (guard (e (#t #f)) (eval 'main (interaction-environment)))))\n"

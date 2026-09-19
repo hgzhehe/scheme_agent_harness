@@ -1,7 +1,7 @@
 # sah 当前边界
 
 > 日期：2026-09-18
-> 基线：当前 plugin package baseline
+> 基线：当前实现
 
 ## 1. 出发点
 
@@ -27,7 +27,7 @@ sah 已经形成自己的 agent harness 内核：
 - journal、branch、compaction 和 session-local Scheme scope 已统一；
 - TUI、REPL、print、JSON、RPC 共用 Runtime、Session 和 renderer；
 - match、miniKanren、Z3 作为普通 plugin package 自动发现并挂载；
-- 当前 `122` 个离线契约测试通过。
+- 当前 `125` 个离线契约测试通过。
 
 完整不变量见 [CORE-MECHANISMS.md](CORE-MECHANISMS.md)。
 
@@ -42,7 +42,7 @@ Machine 的 effect driver 仍是同步解释器，但 TUI 在后台线程运行�
 用户在忙碌期间提交的 follow-up。Ctrl+D 不等待运行完成即可退出。
 
 `run-control` 不是 Runtime 或 Session 状态，也不复制 Machine。纯 Scheme 的第三方工具若
-永久阻塞且不注册取消处理器，仍不能被安全抢占；这是 extension 自己的协作边界。
+永久阻塞且不注册取消处理器，仍不能被安全抢占；这是 plugin tool 自己的协作边界。
 
 ### 单进程 Session Writer
 
@@ -61,13 +61,12 @@ metadata 和 scope form，不能恢复一次进行中的 provider/tool effect。
 
 ### 动态层 Reload
 
-单次 plugin mount 已有事务，整批 plugin package + extension reload 还不是原子替换。
-该问题的唯一规范和实施契约见 [CORDIS-KERNEL.md](CORDIS-KERNEL.md)。
+单次 plugin mount 已有事务，整批 plugin package reload 还不是原子替换。
+当前 reload 流程见 [CORDIS-KERNEL.md](CORDIS-KERNEL.md)。
 
 ### Project Trust
 
-项目 `.sah/plugins` 与 `.sah/extensions` 当前以用户权限执行。最小 trust gate 同样在
-[CORDIS-KERNEL.md](CORDIS-KERNEL.md) 中定义。
+项目 `.sah/plugins` 当前以用户权限执行，只应从可信项目加载。
 
 ## 4. 新工作的进入条件
 

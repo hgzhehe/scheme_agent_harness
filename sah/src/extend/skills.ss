@@ -73,8 +73,6 @@
   (list (path-join cwd ".sah" "skills")
         (path-join (sah-home) "skills")))
 
-;; Called once at startup; extensions are loaded first so they could register
-;; additional skill directories later if they want to.
 (define (load-skills! rt cwd)
   (runtime-resource-set!
    rt 'skills

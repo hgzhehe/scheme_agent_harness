@@ -117,12 +117,12 @@ and the version label differ. Override the executable path with
    submodule `.git` metadata.
 
 The generated program also **embeds the source text** and evaluates it into the
-interaction environment at startup so plugin programs loaded later can use
-sah's extension DSL. Session `eval` uses a separate Chez language root and does
-not inherit these runtime internals.
+interaction environment at startup so plugin packages loaded later can use
+sah's package API and op constructors. Session `eval` uses a separate Chez
+language root and does not inherit these runtime internals.
 
-The executable enters through the interaction environment so loaded extensions
-and the explicitly constructed runtime share one top-level world. Dynamic
+The executable enters through the interaction environment so loaded plugin
+packages and the explicitly constructed runtime share one top-level world. Dynamic
 capabilities are still owned by the runtime record, not by global registries.
 
 > The build aborts early if a running `sah.exe` holds the file (Windows locks

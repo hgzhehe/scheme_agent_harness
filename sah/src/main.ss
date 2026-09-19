@@ -61,10 +61,7 @@
             (session-id session)
             (assq-ref config 'model))
     (printf "[sah] log=~a~%"
-            (or (session-file session) "(memory)"))
-    (when (pair? (all-extensions rt))
-      (printf "[sah] extensions: ~a~%"
-              (string-join (all-extensions rt) " ")))))
+            (or (session-file session) "(memory)"))))
 
 (define (run-selected-mode mode rt prompt)
   (case mode

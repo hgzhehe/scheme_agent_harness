@@ -4,22 +4,6 @@
   (runtime-add-capability!
    rt owner 'renderer (cons target key) proc))
 
-(define (register-renderer! target key proc)
-  (runtime-register-renderer!
-   (require-runtime) (current-owner) target key proc))
-
-(define (register-message-renderer! role proc)
-  (register-renderer! 'message role proc))
-
-(define (register-entry-renderer! kind proc)
-  (register-renderer! 'entry kind proc))
-
-(define (register-event-renderer! kind proc)
-  (register-renderer! 'event kind proc))
-
-(define (register-widget! placement key proc)
-  (register-renderer! 'widget (cons placement key) proc))
-
 (define (invoke-renderer renderer value output-format width)
   (guard
     (error

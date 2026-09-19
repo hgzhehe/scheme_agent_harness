@@ -556,7 +556,7 @@
   #t)
 
 ;;----------------------------------------------------------------------------
-;; Extension boundary
+;; Package definition API
 ;;----------------------------------------------------------------------------
 
 (define (op-register-handler!
@@ -566,20 +566,6 @@
          kind undo requires prepare apply rollback show))
 (define (plugin-define! definition)
   (runtime-define-plugin! (require-runtime) definition))
-(define (plugin-mount! name)
-  (runtime-mount-plugin! (require-runtime) name))
-(define (plugin-dispose! name)
-  (runtime-dispose-plugin! (require-runtime) name))
-(define (plugin-restart! name)
-  (runtime-restart-plugin! (require-runtime) name))
-(define (plugin-list)
-  (runtime-plugin-list (require-runtime)))
-(define (plugin-frames name)
-  (let* ((rt (require-runtime))
-         (slot (runtime-plugin-slot rt name)))
-    (and slot
-         (map (lambda (frame) (frame-show rt frame))
-              (plugin-slot-frames slot)))))
 
 (define-syntax plugin
   (syntax-rules (imports exports)

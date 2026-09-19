@@ -2,7 +2,7 @@
 
 > 状态：规范性设计
 > 日期：2026-09-18
-> 适用版本：当前 plugin package baseline
+> 适用版本：当前实现
 
 ## 1. 当前内核
 
@@ -99,7 +99,7 @@ Runtime 的当前形状是：
 
 ### 4.1 两种 root scope
 
-`root-scope` 服务插件程序。它能看到 sah 的扩展 DSL 和 `op-*` 构造子。
+`root-scope` 服务 plugin package。它能看到 sah 的 package API 和 `op-*` 构造子。
 
 `session-root-scope` 服务会话 `eval`。它基于 Chez Scheme 环境，但不自动暴露 sah
 内部绑定。
@@ -108,7 +108,7 @@ Runtime 的当前形状是：
 
 ### 4.2 Parameter 的边界
 
-`current-runtime` 与 `current-owner` 只在 extension、tool handler 等动态边界使用。
+`current-runtime` 与 `current-owner` 只在 plugin package、tool handler 等动态边界使用。
 核心调用显式传递 `rt`。
 
 `current-session` 不保存独立值，而是从 `current-runtime` 读取活动 Session，因此不会
@@ -141,15 +141,15 @@ tool、command、hook、subscriber、input handler、op handler、renderer 和 w
 出现：
 
 ```text
-extension/read
+plugin/read
 core/read
 ```
 
-因此扩展覆盖内置工具后即使加载失败，核心工具仍能恢复，不需要 registry snapshot。
+因此 plugin 覆盖内置工具后即使加载失败，核心工具仍能恢复，不需要 registry snapshot。
 
 ### 5.2 Owner 清理
 
-extension load failure、session stop、plugin rollback 和 reload 使用同一种删除语义。
+package load failure、session stop、plugin rollback 和 reload 使用同一种删除语义。
 系统不再按 capability kind 分别维护 cleanup 代码。
 
 ## 6. Session 与 Journal
@@ -343,24 +343,23 @@ Plugin 把 Cordis 式动态组合压成 Scheme datum。一个名字只对应一�
 2. 全部 effect 先 prepare，再按依赖顺序 apply；
 3. 失败时逆序 rollback，清理失败则保留 residual frame。
 
-dispose 先处理 active dependents，restart 恢复原 active closure。详细 op/frame 语义、
-当前完成度和原子 reload 契约只在
-[CORDIS-KERNEL.md](CORDIS-KERNEL.md) 中维护。
+dispose 先处理 active dependents，restart 恢复原 active closure。详细 op/frame 与
+生命周期语义见 [CORDIS-KERNEL.md](CORDIS-KERNEL.md)。
 
-## 10. Extension 与 Resource
+## 10. Plugin Package 与 Resource
 
-extension 文件的 owner 是其绝对路径。加载失败时：
+plugin package 的 owner 是包目录。加载失败时：
 
 ```text
 dispose owned plugin slots
   -> remove every capability with this owner
-  -> do not publish extension path
+  -> do not publish package path
 ```
 
-plugin package 的 owner 是包目录。sah 按项目、全局、安装目录的优先级发现
-`<name>/plugin.ss`，包通过 `plugin-define!` 自注册；核心不登记 package 名称。
+sah 按项目、全局、安装目录的优先级发现 `<name>/plugin.ss`，包通过
+`plugin-define!` 自注册；核心不登记 package 名称。
 
-plugin dirs/packages、skills、prompts、extensions 使用 Runtime.resources 的同一资源表，
+plugin dirs/packages、skills、prompts 使用 Runtime.resources 的同一资源表，
 不各自建立可变字段。项目级资源优先于用户级和安装目录资源。它们当前仍以本机用户
 权限执行；project trust 是已知边界。
 
@@ -427,7 +426,7 @@ parse config
   -> runtime-new
   -> install core op handlers/tools/input handlers
   -> finalize config
-  -> discover plugin packages and extensions
+  -> discover plugin packages
   -> mount plugins, then discover skills/prompts
   -> create or load session
   -> Runtime.session := session

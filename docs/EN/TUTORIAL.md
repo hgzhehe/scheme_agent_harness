@@ -240,7 +240,7 @@ Use `edit` rather than `write` to change an existing file: all edits are matched
 against the original text, which is also what makes batching several changes into
 one call safe.
 
-Extensions can register more tools (see [EXTENDING.md](EXTENDING.md)).
+Plugin packages can register more tools (see [EXTENDING.md](EXTENDING.md)).
 
 `shell` uses the shell that launched sah. Set `(shell . "pwsh")`,
 `(shell . "cmd")`, or `(shell . "bash")` in the config to override detection.

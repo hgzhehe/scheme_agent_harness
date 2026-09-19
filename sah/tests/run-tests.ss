@@ -1991,63 +1991,71 @@
 ;;----------------------------------------------------------------------------
 (section "resources and manifest")
 
-(define broken-extension-cwd (path-join test-dir "broken-extension"))
-(define broken-extension-dir
-  (path-join broken-extension-cwd ".sah" "extensions"))
-(ensure-dir! broken-extension-dir)
+(define broken-package-cwd (path-join test-dir "broken-package"))
+(define broken-package-root
+  (path-join broken-package-cwd ".sah" "plugins"))
+(define broken-package-dir
+  (path-join broken-package-root "broken"))
+(ensure-dir! broken-package-dir)
 (string->file
- (path-join broken-extension-dir "broken.ss")
- "(register-tool! 'read \"broken read\" (schema '()) (lambda (args) \"broken\"))\n(op-register-handler! 'op-leaked 'registry (lambda args #f) (lambda args #f) (lambda args #t) (lambda args #t))\n(plugin leaked (imports) (exports value) (op-define 'value 1))\n(error 'extension \"deliberate load failure\")\n")
-(define rt-broken-extension (test-runtime))
-(load-extensions! rt-broken-extension broken-extension-cwd)
-(check "failed extension load removes every owned definition"
-       (list core-read-description #f #f '())
+ (path-join broken-package-dir "plugin.ss")
+ "(op-register-handler! 'op-leaked 'registry (lambda args #f) (lambda args #f) (lambda args #t) (lambda args #t))\n(plugin leaked (imports) (exports value) (op-define 'value 1))\n(error 'plugin-package \"deliberate load failure\")\n")
+(define rt-broken-package (test-runtime))
+(runtime-resource-set!
+ rt-broken-package 'plugin-dirs (list broken-package-root))
+(load-plugin-packages! rt-broken-package broken-package-cwd)
+(check "failed plugin package load removes every owned definition"
+       (list #f #f '())
        (list
-        (tool-description
-         (runtime-find-tool rt-broken-extension 'read))
-        (and (runtime-plugin rt-broken-extension 'leaked) #t)
+        (and (runtime-plugin rt-broken-package 'leaked) #t)
         (guard (error (#t #f))
-          (runtime-op-handler rt-broken-extension '(op-leaked))
+          (runtime-op-handler rt-broken-package '(op-leaked))
           #t)
-        (all-extensions rt-broken-extension)))
+        (all-plugin-packages rt-broken-package)))
 
-(define prompt-extension-cwd (path-join test-dir "prompt-extension"))
-(define prompt-extension-dir
-  (path-join prompt-extension-cwd ".sah" "extensions"))
-(ensure-dir! prompt-extension-dir)
+(define prompt-plugin-cwd (path-join test-dir "prompt-plugin"))
+(define prompt-plugin-root
+  (path-join prompt-plugin-cwd ".sah" "plugins"))
+(define prompt-plugin-dir
+  (path-join prompt-plugin-root "prompt-tool"))
+(ensure-dir! prompt-plugin-dir)
 (string->file
- (path-join prompt-extension-dir "prompt.ss")
- "(register-tool! 'prompt-tool \"Visible after extension loading.\" (schema '()) (lambda (args) \"ok\"))\n")
-(define rt-prompt (runtime-new prompt-extension-cwd base-config))
+ (path-join prompt-plugin-dir "plugin.ss")
+ "(plugin prompt-tool \"Adds one prompt-visible tool.\" (imports) (exports) (op-register-tool 'prompt-tool \"Visible after plugin loading.\" (schema '()) (lambda (args) \"ok\")))\n")
+(define rt-prompt (runtime-new prompt-plugin-cwd base-config))
 (install-core-op-handlers! rt-prompt)
 (install-core-tools! rt-prompt)
 (install-resource-input-handlers! rt-prompt)
+(runtime-resource-set!
+ rt-prompt 'plugin-dirs (list prompt-plugin-root))
 (define prompt-config
-  (finalize-config rt-prompt base-config prompt-extension-cwd))
+  (finalize-config rt-prompt base-config prompt-plugin-cwd))
 (runtime-config-set! rt-prompt prompt-config)
 (define prompt-config-loaded
-  (load-resources rt-prompt prompt-config prompt-extension-cwd))
-(check-true "generated system prompt is refreshed after extension tools load"
+  (load-resources rt-prompt prompt-config prompt-plugin-cwd))
+(check-true "generated system prompt is refreshed after plugin tools load"
             (string-contains?
              "- prompt-tool:"
              (assq-ref prompt-config-loaded 'system)))
 
 (define rt-custom-prompt
   (runtime-new
-   prompt-extension-cwd
+   prompt-plugin-cwd
    (alist-merge base-config '((system . "Answer in haiku.")))))
 (install-core-op-handlers! rt-custom-prompt)
 (install-core-tools! rt-custom-prompt)
 (install-resource-input-handlers! rt-custom-prompt)
+(runtime-resource-set!
+ rt-custom-prompt 'plugin-dirs (list prompt-plugin-root))
 (define custom-prompt-config
   (finalize-config
    rt-custom-prompt
    (runtime-config rt-custom-prompt)
-   prompt-extension-cwd))
+   prompt-plugin-cwd))
 (runtime-config-set! rt-custom-prompt custom-prompt-config)
 (define custom-prompt-loaded
   (load-resources
-   rt-custom-prompt custom-prompt-config prompt-extension-cwd))
+   rt-custom-prompt custom-prompt-config prompt-plugin-cwd))
 (check
  "custom instructions preserve sah contract and dynamic tools"
  '(#t #t #t)

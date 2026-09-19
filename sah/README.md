@@ -36,4 +36,4 @@ in `build.scm` follows that convention too.
 See the docs above for CLI, configuration, tools and the session format;
 `../docs/CN/CORE-MECHANISMS.md` covers the current kernel design, and
 `../docs/CN/CORDIS-KERNEL.md` defines the dynamic composition kernel while
-`../docs/CN/DESIGN-COMPOSITION.md` documents its extension API.
+`../docs/CN/DESIGN-COMPOSITION.md` documents its plugin package API.

@@ -1,44 +1,4 @@
-;;; loader.ss -- construct the runtime's dynamic resource layer.
-;;;
-;;; Extension registrations are tagged with the extension path as owner. Reload
-;;; removes non-core owners and disposes plugin frames; no registry snapshots are
-;;; kept anywhere.
-
-(define (extension-dirs cwd)
-  (list (path-join (sah-home) "extensions")
-        (path-join cwd ".sah" "extensions")))
-
-(define (extension-files cwd)
-  (apply append
-         (map (lambda (dir)
-                (map (lambda (file) (path-join dir file))
-                     (filter (lambda (file) (string-suffix? ".ss" file))
-                             (dir-entries dir))))
-              (extension-dirs cwd))))
-
-(define (all-extensions rt)
-  (runtime-resource rt 'extensions))
-
-(define (load-extensions! rt cwd)
-  (let ((loaded '()))
-    (for-each
-     (lambda (path)
-       (guard
-         (error
-          (#t
-           (runtime-remove-plugin-owner! rt path)
-           (runtime-remove-owner! rt path)
-           (fprintf
-            (current-error-port)
-            "[sah] extension ~a failed to load: ~a~%"
-            path (err->string error))))
-         (parameterize ((current-runtime rt)
-                        (current-owner path))
-           (load path))
-         (set! loaded (cons path loaded))))
-     (extension-files cwd))
-    (runtime-resource-set! rt 'extensions (reverse loaded)))
-  (all-extensions rt))
+;;; loader.ss -- compose plugin packages, skills, and prompt templates.
 
 (define (system-with-skills rt config cwd)
   (let ((base
@@ -51,7 +11,6 @@
 
 (define (load-resources rt config cwd)
   (load-plugin-packages! rt cwd)
-  (load-extensions! rt cwd)
   (runtime-mount-all-plugins! rt)
   (load-skills! rt cwd)
   (load-prompts! rt cwd)
@@ -124,9 +83,7 @@
   (runtime-dispose-all-plugins! rt)
   (for-each
    (lambda (owner) (runtime-remove-owner! rt owner))
-   (append
-    (all-plugin-packages rt)
-    (all-extensions rt)))
+   (all-plugin-packages rt))
   (let ((next (load-resources rt config cwd)))
     (runtime-rebuild-session-scope! rt)
     next))

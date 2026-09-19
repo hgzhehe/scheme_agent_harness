@@ -1,9 +1,7 @@
 ;;; builtin-commands.ss -- the commands sah has out of the box.
 ;;;
-;;; These live in the extend layer, next to the registry they register into, and
-;;; not in a mode: they are capabilities, so print mode gets them too.
-;;; They are registered after extensions load, so a built-in always wins a name
-;;; clash (the last registration of a name wins).
+;;; These live in the resource layer, next to the registries they use, and not
+;;; in a mode: they are capabilities, so print mode gets them too.
 ;;;
 ;;; Handlers close over the session and config, and may call into the agent layer
 ;;; (compaction, branch summaries) at run time.
@@ -252,15 +250,16 @@
      rt owner 'help "List commands, templates and skills."
      (lambda (args) (print-help rt) #f))
     (runtime-register-command!
-     rt owner 'reload "Reload extensions, skills and prompts."
+     rt owner 'reload "Reload plugins, skills and prompts."
      (lambda (args) (reload-command rt) #f)))
   rt)
 
 (define (reload-command rt)
   (reload-resources! rt (runtime-config rt) (runtime-cwd rt))
   (let ((n (lambda (l) (number->string (length l)))))
-    (printf "reloaded ~a extension~a, ~a skill~a, ~a template~a~%"
-            (n (all-extensions rt)) (if (= 1 (length (all-extensions rt))) "" "s")
+    (printf "reloaded ~a plugin package~a, ~a skill~a, ~a template~a~%"
+            (n (all-plugin-packages rt))
+            (if (= 1 (length (all-plugin-packages rt))) "" "s")
             (n (all-skills rt)) (if (= 1 (length (all-skills rt))) "" "s")
             (n (all-prompts rt)) (if (= 1 (length (all-prompts rt))) "" "s"))))
 
