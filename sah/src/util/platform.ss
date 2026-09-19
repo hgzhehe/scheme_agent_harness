@@ -71,8 +71,108 @@
 (define (process-executable-path)
   (or (and windows?
            (windows-process-executable-path))
+      (and (eq? machine-os 'unix)
+           (unix-process-executable-path))
       (let ((line (command-line)))
         (and (pair? line) (car line)))))
+
+;; --- locating our own image ------------------------------------------------
+;;
+;; argv[0] cannot answer "where am I": a boot executable reports the program
+;; name as "" and starts the real arguments at element 1, so
+;; (dirname (car (command-line))) is "." and a bundle would look for its
+;; `plugins/` beside the working directory instead of beside itself. Ask the
+;; kernel instead; argv[0] above stays as the last resort because a
+;; `scheme --script` run really does put the script path there.
+
+(define readlink-procedure
+  (and (eq? machine-os 'unix)
+       (guard (e (#t #f))
+         ;; #f means the current process. libc is already mapped, and naming it
+         ;; portably is impossible -- the soname differs per libc (libc.so.6
+         ;; for glibc, libc.so for musl).
+         (load-shared-object #f)
+         (foreign-procedure "readlink" (string void* size_t) ssize_t))))
+
+;; procfs spellings of "this process's image", in the order worth trying.
+(define image-link-paths
+  '("/proc/self/exe"      ; Linux
+    "/proc/curproc/file"  ; FreeBSD, DragonFly
+    "/proc/curproc/exe")) ; NetBSD
+
+(define (foreign-bytes->string buffer length)
+  ;; Paths reach us as UTF-8 bytes; decode them, and fall back to one character
+  ;; per byte if the bytes are not valid UTF-8.
+  (let ((bytes (make-bytevector length)))
+    (let loop ((i 0))
+      (unless (= i length)
+        (bytevector-u8-set! bytes i (foreign-ref 'unsigned-8 buffer i))
+        (loop (+ i 1))))
+    (guard (e (#t
+               (let loop ((i 0) (acc '()))
+                 (if (= i length)
+                     (list->string (reverse acc))
+                     (loop (+ i 1)
+                           (cons (integer->char (bytevector-u8-ref bytes i))
+                                 acc))))))
+      (utf8->string bytes))))
+
+(define (read-image-link path)
+  ;; readlink(2) returns the byte count, truncates at `size`, and does not
+  ;; terminate the result.
+  (and readlink-procedure
+       (let loop ((size 256))
+         (let ((buffer (foreign-alloc size)))
+           (let ((length (readlink-procedure path buffer size)))
+             (cond
+               ((< length 0) (foreign-free buffer) #f)
+               ((>= length size) (foreign-free buffer) (loop (* size 2)))
+               (else
+                (let ((resolved (foreign-bytes->string buffer length)))
+                  (foreign-free buffer)
+                  resolved))))))))
+
+;; _NSGetExecutablePath lives in libSystem, which the runtime is linked
+;; against, so the (load-shared-object #f) above is enough to resolve it.
+(define ns-get-executable-path
+  (and (eq? machine-os 'macos)
+       (guard (e (#t #f))
+         (foreign-procedure "_NSGetExecutablePath" (void* void*) int))))
+
+(define (c-string-length buffer)
+  (let loop ((i 0))
+    (if (= 0 (foreign-ref 'unsigned-8 buffer i)) i (loop (+ i 1)))))
+
+(define (macos-process-executable-path)
+  ;; int _NSGetExecutablePath(char *buf, uint32_t *bufsize): 0 on success, -1
+  ;; with *bufsize set to the size needed when the buffer is too small.
+  (and ns-get-executable-path
+       (let loop ((size 1024))
+         (let ((buffer (foreign-alloc size))
+               (size-cell (foreign-alloc 4)))
+           (foreign-set! 'unsigned-32 size-cell 0 size)
+           (let ((status (ns-get-executable-path buffer size-cell)))
+             (cond
+               ((= status 0)
+                (let ((path
+                       (foreign-bytes->string
+                        buffer (c-string-length buffer))))
+                  (foreign-free buffer)
+                  (foreign-free size-cell)
+                  path))
+               (else
+                (let ((needed (foreign-ref 'unsigned-32 size-cell 0)))
+                  (foreign-free buffer)
+                  (foreign-free size-cell)
+                  (and (> needed size) (loop needed))))))))))
+
+(define (unix-process-executable-path)
+  (or (let loop ((paths image-link-paths))
+        (if (null? paths)
+            #f
+            (or (read-image-link (car paths))
+                (loop (cdr paths)))))
+      (macos-process-executable-path)))
 
 (define (terminate-process-tree! process-id)
   (when (and process-id (integer? process-id))
