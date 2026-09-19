@@ -14,14 +14,17 @@
           (mutable running?)
           (mutable active-run)
           (mutable pending)
-          (mutable animation-frame)))
+          (mutable animation-frame)
+          (mutable entry-lines-width)
+          (mutable entry-lines-cache)))
 
 (define (make-tui-app* rt terminal)
   (make-tui-app
    rt terminal (make-editor)
    (new-run-control) (make-mutex)
    '() '()
-   "" "" #f 'idle #f #f #f #t #f '() -1))
+   "" "" #f 'idle #f #f #f #t #f '() -1
+   0 (make-eqv-hashtable)))
 
 (define (tui-enqueue! app event)
   (with-mutex (tui-app-event-lock app)
@@ -223,6 +226,25 @@
        (tui-app-animation-frame-set! app frame)
        #t))))
 
+;; A frame paints the whole transcript, but an entry never changes once it is in
+;; the journal -- only the tail moves. Re-rendering every entry on every frame is
+;; what made a long session slow: ~200 entries cost ~20 ms, and a streaming reply
+;; repaints once per delta, so the UI fell further behind its own output the
+;; longer the reply ran. Cache each entry's lines, keyed by id (unique per entry
+;; for the life of a session), and drop the cache when the width changes.
+(define (entry-render-lines app rt entry width)
+  (let ((cache (tui-app-entry-lines-cache app))
+        (current-width (tui-app-entry-lines-width app)))
+    (let ((hit (and (eqv? width current-width)
+                    (hashtable-ref cache (entry-id entry) #f))))
+      (or (and hit (cdr hit))
+          (let ((lines (render-entry-lines rt entry 'ansi width)))
+            (when (not (eqv? width current-width))
+              (hashtable-clear! cache)
+              (tui-app-entry-lines-width-set! app width))
+            (hashtable-set! cache (entry-id entry) (cons width lines))
+            lines)))))
+
 (define (tui-transcript-lines app width)
   (let* ((now (now-ms))
          (rt (tui-app-rt app))
@@ -241,7 +263,7 @@
                      app "Thinking" now)
                     "Thinking")
                 (text-content-lines
-                 (tui-app-thinking app))
+                 (sanitize-controls (tui-app-thinking app)))
                 width
                 ansi-bright-black
                 ansi-dim)
@@ -268,8 +290,8 @@
                           thinking-entry))
                    thinking
                    '())
-               (render-entry-lines
-                rt entry 'ansi width)
+               (entry-render-lines
+                app rt entry width)
                (list "")))
             entries)))
          (stream
@@ -280,8 +302,8 @@
                 (ansi-bold
                  (ansi-bright-blue "Assistant")))
                (render-markdown-ansi-lines
-                (tui-app-streaming app) width)))))
-    (append
+                (sanitize-controls (tui-app-streaming app))
+                width)))))    (append
      base
      (if insert-thinking? '() thinking)
      stream
@@ -751,7 +773,14 @@
             (lambda ()
               (let loop ()
                 (when (tui-app-running? app)
-                  (let* ((event? (tui-process-event! app))
+                  (let* ((event?
+                          ;; Drain the queue before painting. A streaming reply
+                          ;; posts one event per delta, and repainting once per
+                          ;; delta is how the UI fell behind its own output.
+                          (let drain ((seen? #f))
+                            (if (tui-process-event! app)
+                                (drain #t)
+                                seen?)))
                          (key
                           (and
                            (not event?)
