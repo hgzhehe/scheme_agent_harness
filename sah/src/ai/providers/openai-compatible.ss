@@ -49,11 +49,11 @@
                     (parameters . ,parameters))))]
     [,other (error 'tool->openai (format "bad tool: ~s" other))]))
 
-(define (build-chat-request model messages tools)
+(define (build-chat-request model messages tools max-output)
   `((model . ,model)
     (messages . ,(list->vector (map message->openai messages)))
     (tools . ,(list->vector (map tool->openai tools)))
-    (max_tokens . 8192)
+    (max_tokens . ,max-output)
     (stream . #f)))
 
 ;;----------------------------------------------------------------------------
@@ -200,7 +200,9 @@
           (runtime-run-transform
            rt 'before-provider-request
            (alist-merge (build-chat-request (assq-ref config 'model)
-                                             messages tools)
+                                            messages tools
+                                            (or (assq-ref config 'max-output-tokens)
+                                                8192))
                         (list (cons 'stream stream?)))
            (lambda (proc payload)
              (let ((result (proc payload config)))

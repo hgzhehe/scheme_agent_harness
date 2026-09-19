@@ -252,12 +252,30 @@
               (tool (car (runtime-active-tools rt)))
               (request
                (build-chat-request
-                "m" '((msg user "hi")) (list tool)))
+                "m" '((msg user "hi")) (list tool) 8192))
               (function
                (assq-ref
                 (vector-ref (assq-ref request 'tools) 0)
                 'function)))
          (assq-ref function 'name)))
+
+;; The chat-completions payload took `max_tokens` from a constant while the
+;; Responses one read the config, so `max-output-tokens` was silently ignored on
+;; the provider that DeepSeek actually uses.
+(check "chat-completions carries the configured output budget"
+       4096
+       (let ((rt (test-runtime)))
+         (assq-ref
+          (read-json-string
+           (call-with-values
+               (lambda ()
+                 (build-request
+                  rt
+                  (alist-merge (runtime-config rt)
+                               '((max-output-tokens . 4096)))
+                  '((msg user "hi")) '() #f))
+             (lambda (url headers body) body)))
+          'max_tokens)))
 
 (check "provider headers are read from config"
        '(("User-Agent" . "test-client") ("X-Test" . "yes"))
