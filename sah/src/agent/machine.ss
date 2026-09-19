@@ -6,6 +6,16 @@
 (define (machine-await effect next)
   `(await ,effect (next ,next)))
 
+;; A reasoning model can spend the entire max-output-tokens budget thinking and
+;; then be cut off (finish_reason "length") with no content and no tool call.
+;; Settling there ends the turn on an empty assistant message: the user waits
+;; minutes, sees nothing, and has to retype the turn. Say what happened instead.
+(define truncated-reply-message
+  (string-append
+   "the model was cut off by max-output-tokens without producing any output "
+   "(reasoning used the whole budget); raise max-output-tokens, lower the "
+   "thinking level, or send the turn again"))
+
 (define (machine-step state)
   (match state
     [(done . ,rest) state]
@@ -65,7 +75,10 @@
         (match reply
           [(msg assistant ,content ,calls ,stop ,usage)
            (if (null? calls)
-               `(done ,reply)
+               (if (and (eq? stop 'length)
+                        (blank-text? content))
+                   `(failed ,truncated-reply-message)
+                   `(done ,reply))
                `(tools ,step ,limit ,calls))]
           [,other
            `(failed
