@@ -17,6 +17,108 @@
 (define (ansi-user-message text)
   (ansi "38;2;212;212;212;48;2;52;53;65" text))
 
+;; Content arrives from anywhere: a compiled program's stdout, a `cat` of a
+;; binary, a progress bar, a model that echoed an escape sequence. Only the SGR
+;; sequences sah's own renderers emit may reach the terminal; every other
+;; control character has to go before a frame is painted.
+;;
+;; BEL is the loud one -- Konsole, and any terminal configured to notify on the
+;; bell, raises a desktop notification per repaint, so one byte in a transcript
+;; turns into notification spam -- while CR rewrites the line and a stray ESC
+;; starts a sequence that can retitle the window, clear the screen, or answer a
+;; clipboard request (OSC 52). Tabs are expanded to their stops because the
+;; width arithmetic below counts them as one column while the terminal moves to
+;; the next tab stop, which is what makes a tabbed line overflow its panel.
+(define (sanitize-controls text)
+  (let ((out '()))
+    (define (emit! ch) (set! out (cons ch out)))
+    ;; `out` is reversed, so emitting in order is what keeps the result in order.
+    (define (emit-chars! chars) (for-each emit! chars))
+    (let loop ((chars (string->list text)) (column 0))
+      (if (null? chars)
+          (list->string (reverse out))
+          (let ((ch (car chars)))
+            (cond
+              ((char=? ch #\esc)
+               (let ((next (and (pair? (cdr chars)) (cadr chars))))
+                 (cond
+                   ((and next (char=? next #\[))
+                    (let-values (((params rest)
+                                  (sgr-sequence-params (cdr chars))))
+                      (if params
+                          (begin
+                            (emit-chars!
+                             (string->list
+                              (string-append esc "[" params "m")))
+                            (loop rest column))
+                          ;; not SGR: drop the ESC and the CSI body with it, so
+                          ;; none of it echoes as text
+                          (loop (csi-tail (cddr chars)) column))))
+                   ;; OSC and friends are string sequences that end at BEL or
+                   ;; ST; sah never emits one and a terminal that receives one
+                   ;; acts on it, so drop the whole thing
+                   ((and next (memv next string-sequence-introducers))
+                    (loop (string-sequence-tail (cddr chars)) column))
+                   ;; a lone ESC, or one that starts nothing: drop it and rescan
+                   (else (loop (cdr chars) column)))))
+              ((char=? ch #\newline)
+               (emit! ch)
+               (loop (cdr chars) 0))
+              ((char=? ch #\tab)
+               (let ((width (- 8 (modulo column 8))))
+                 (let fill ((i 0))
+                   (if (< i width)
+                       (begin (emit! #\space) (fill (+ i 1)))
+                       (loop (cdr chars) (+ column width))))))
+              ((let ((n (char->integer ch)))
+                 (or (< n 32) (= n 127)))
+               (loop (cdr chars) column))
+              (else
+               (emit! ch)
+               (loop (cdr chars) (+ column 1)))))))))
+
+;; -> (values PARAMS REST). PARAMS is the parameter text when `chars` starts
+;; with the body of an SGR sequence (ESC [ digits-and-semicolons m); otherwise
+;; PARAMS is #f and REST is untouched.
+(define (sgr-sequence-params chars)
+  (if (and (pair? chars) (char=? (car chars) #\[))
+      (let loop ((cs (cdr chars)) (params '()) (n 0))
+        (cond
+          ((null? cs) (values #f chars))
+          ((char=? (car cs) #\m)
+           (values (list->string (reverse params)) (cdr cs)))
+          ((and (< n 24)
+                (or (char-numeric? (car cs)) (char=? (car cs) #\;)))
+           (loop (cdr cs) (cons (car cs) params) (+ n 1)))
+          (else (values #f chars))))
+      (values #f chars)))
+
+;; Skip a CSI sequence's body, up to and including its final byte (0x40-0x7e).
+(define (csi-tail chars)
+  (cond
+    ((null? chars) '())
+    ((<= #x40 (char->integer (car chars)) #x7e) (cdr chars))
+    (else (csi-tail (cdr chars)))))
+
+;; ESC ] (OSC), ESC P (DCS), ESC X (SOS), ESC ^ (PM) and ESC _ (APC) each open a
+;; string sequence that ends at BEL or ST (ESC \).
+(define string-sequence-introducers (list #\] #\P #\X #\^ #\_))
+
+(define (string-sequence-tail chars)
+  ;; `chars` starts after the introducer. Skip to the terminator, but give up
+  ;; after 512 characters: content that merely looked like a sequence must not
+  ;; eat the rest of the output.
+  (let loop ((cs chars) (n 0))
+    (cond
+      ((null? cs) '())
+      ((>= n 512) cs)
+      ((char=? (car cs) #\esc)
+       (if (and (pair? (cdr cs)) (char=? (cadr cs) #\\))
+           (cddr cs)
+           (loop (cdr cs) (+ n 1))))
+      ((char=? (car cs) #\alarm) (cdr cs))
+      (else (loop (cdr cs) (+ n 1))))))
+
 (define (combining-codepoint? n)
   (or (and (>= n #x0300) (<= n #x036f))
       (and (>= n #x1ab0) (<= n #x1aff))
@@ -394,19 +496,33 @@
             (else (string (car chars))))
           out)))))
 
+(define (clean-content content)
+  (if (string? content) (sanitize-controls content) content))
+
+;; Tool arguments carry model-written text too (a `write` body, a shell command),
+;; so they get the same treatment before they are drawn.
+(define (clean-value value)
+  (cond ((string? value) (sanitize-controls value))
+        ((pair? value)
+         (cons (clean-value (car value)) (clean-value (cdr value))))
+        (else value)))
+
 (define (message-view message)
   (match message
     [(msg user ,content)
-     `(view user "User" ,content () #f)]
+     `(view user "User" ,(clean-content content) () #f)]
     [(msg system ,content)
-     `(view system "System" ,content () #f)]
+     `(view system "System" ,(clean-content content) () #f)]
     [(msg assistant ,content ,calls ,stop ,usage)
-     `(view assistant "Assistant" ,content ,calls #f)]
+     `(view assistant "Assistant"
+            ,(clean-content content)
+            ,(clean-value calls)
+            #f)]
     [(msg tool ,id ,name ,content ,error?)
      `(view tool
             ,(format "Tool ~a~a"
                      name (if error? " [error]" ""))
-            ,content () ,(and error? #t))]
+            ,(clean-content content) () ,(and error? #t))]
     [,other
      `(view unknown "Unknown" ,(format "~s" other) () #f)]))
 
