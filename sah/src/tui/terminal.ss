@@ -128,7 +128,12 @@
              output-handle
              (bitwise-ior output-mode #x0004))))
         (guard (e (#t #t))
-          (system "stty -echo -icanon min 1 time 0")))
+          ;; -isig matters: without it Ctrl-C is a signal rather than a byte, so
+          ;; it kills the process before the TUI can cancel the run and restore
+          ;; the terminal, leaving the cursor hidden, bracketed paste on and
+          ;; echo off. The app binds Ctrl-C itself. -ixon keeps Ctrl-S from
+          ;; freezing the display.
+          (system "stty -echo -icanon min 1 time 0 -isig -ixon")))
     (tui-terminal-previous-lines-set! terminal '())
     (tui-terminal-cursor-row-set! terminal 0)
     (tui-terminal-viewport-top-set! terminal 0)
