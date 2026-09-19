@@ -14,7 +14,7 @@
 | [Chez Scheme](https://cisco.github.io/ChezScheme/) 10.x | `scheme` 必须在 `PATH` 里。开发于 10.5。 |
 | `curl` | 作为 HTTP 传输；必须在 `PATH` 里。 |
 | Git | 仅源码检出与更新需要；发行包运行时不需要。 |
-| Z3 runtime | Windows x64 包可使用随包 DLL；其他平台安装系统 Z3 包即可自动发现。 |
+| Z3 runtime | Windows x64 包可使用随包 DLL；其他平台需要 Z3 **5.1.0** 运行时（见 [Z3 版本](#z3-版本)）。 |
 | Git Bash（仅 Windows） | 可选；`shell` 工具跟随启动 sah 的 shell（PowerShell、cmd 或 bash）。 |
 | `petite`/`scheme` 的 boot 文件 | Chez 自带；`build.scm` 会自动定位。 |
 
@@ -39,6 +39,46 @@ git submodule update --init --recursive
 ```
 
 构建出的 `dist/` 会包含插件所需文件，使用发行包时不需要 Git 或 submodule。
+
+### Z3 版本
+
+`z3` 插件包装的是 `hgzhehe/chez-z3`，它的 raw FFI 是按 **Z3 5.1.0** 的 C API
+（805 个条目）生成的，版本契约记录在 `sah/plugins/z3/upstream/VERSIONS.md`。
+请装匹配的 5.1.0 运行时；发行版仓库里的包可能落后于它 —— 例如 Arch 的 `z3`
+目前是 4.16.0。
+
+插件按以下顺序查找动态库：
+
+1. `$Z3_LIBRARY`；
+2. `library-candidates($Z3_HOME)`；
+3. 从 `PATH` 上找到的 `z3` 可执行文件推出 `prefix`（即可执行文件的祖父目录），
+   再试 `library-candidates(prefix)`，也就是
+   `prefix/{,bin,lib,lib64}/libz3.so*`；
+4. 裸 `libz3.so`，交给平台自己的加载器解析。
+
+所以免 root 安装 5.1.0 的办法是把官方发布包解到 `~/.local/opt`，并把两个名字
+放到加载器本来就会探测的位置：
+
+```bash
+cd /tmp
+curl -LO https://github.com/Z3Prover/z3/releases/download/z3-5.1.0/z3-5.1.0-x64-glibc-2.39.zip
+unzip -q z3-5.1.0-x64-glibc-2.39.zip
+mv z3-5.1.0-x64-glibc-2.39 ~/.local/opt/z3-5.1.0
+ln -sf ~/.local/opt/z3-5.1.0/bin/z3         ~/.local/bin/z3
+ln -sf ~/.local/opt/z3-5.1.0/bin/libz3.so   ~/.local/lib/libz3.so
+z3 --version   # Z3 version 5.1.0 - 64 bit
+```
+
+这样第 3 步会在 `PATH` 上找到 `~/.local/bin/z3`，推出 prefix `~/.local`，进而
+加载 `~/.local/lib/libz3.so` —— 不需要任何环境变量。glibc 资源请选等于或低于
+本机 glibc 版本的那个。插件也支持按 Chez machine type 携带内置库，放在
+`plugins/z3/native/<machine-type>/`（Windows x64 随包的是 `ta6nt`）。
+
+验证插件已加载：
+
+```bash
+sah --no-session "/plugin inspect z3"     # state: mounted
+```
 
 ---
 
@@ -287,7 +327,7 @@ rm -rf build dist
 | `shell` 用了 cmd 而不是 bash（或相反） | 它跟随启动 sah 的 shell。从你想要的终端启动 sah，或在 `~/.sah/config.scm` 里设 `shell`（如 `(shell . "bash")`）。 |
 | 编译版里 `-c` / `-h` / `--help` 没用 | 这些被 Chez 运行时吃掉了。用 `-C`/`--continue` 和 `-H`/`--usage`。 |
 | `/plugins` 为空或缺少预装插件 | 安装时漏掉了 `plugins/`，或源码仓库未初始化 submodule。整体复制 `dist/`，或运行 `git submodule update --init --recursive`。 |
-| Z3 插件加载失败 | Windows x64 发行包应携带 `plugins/z3/native/ta6nt/libz3.dll`；其他平台安装 Z3 系统包。特殊布局可设 `Z3_LIBRARY` 或 `Z3_HOME`。 |
+| Z3 插件加载失败 | Windows x64 发行包应携带 `plugins/z3/native/ta6nt/libz3.dll`；其他平台请安装 Z3 **5.1.0** 运行时（见 [Z3 版本](#z3-版本)）。特殊布局才需要设 `Z3_LIBRARY` 或 `Z3_HOME`。 |
 | `eval` 看不到 sah 自己的函数 | 这是刻意的 session scope 隔离；用 `plugin` 工具、`/plugins` 或 `/plugin inspect NAME` 检查宿主插件。 |
 | 别的目录的会话找不到 | 会话按工作目录分组，位于 `~/.sah/sessions/<cwd-slug>/`。在同一目录运行 `sah`，或设 `SAH_HOME`。 |
 

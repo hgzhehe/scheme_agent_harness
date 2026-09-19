@@ -15,7 +15,7 @@ This document covers source preparation, building, installation, and updates.
 | [Chez Scheme](https://cisco.github.io/ChezScheme/) 10.x | `scheme` must be on `PATH`. Developed on 10.5. |
 | `curl` | Used as the HTTP transport; must be on `PATH`. |
 | Git | Required only to fetch and update source; a built bundle does not need it. |
-| Z3 runtime | The Windows x64 bundle may use its packaged DLL; other platforms can use a normal system Z3 package. |
+| Z3 runtime | The Windows x64 bundle may use its packaged DLL; other platforms use a system Z3 **5.1.0** runtime (see [Z3 version](#z3-version)). |
 | Git Bash (Windows only) | Optional; the `shell` tool follows whatever launched sah (PowerShell, cmd, or bash). |
 | `petite`/`scheme` boot files | Shipped with Chez; `build.scm` locates them automatically. |
 
@@ -42,6 +42,47 @@ git submodule update --init --recursive
 
 The built `dist/` bundle contains the plugin files and does not require Git or
 submodules at runtime.
+
+### Z3 version
+
+The `z3` plugin wraps `hgzhehe/chez-z3`, whose raw FFI is generated for the
+**Z3 5.1.0** C API (805 entries). The version contract is recorded in
+`sah/plugins/z3/upstream/VERSIONS.md`. Install a matching 5.1.0 runtime; a
+distro package may lag behind it — Arch's `z3` is 4.16.0, for example.
+
+The plugin looks for the shared library in this order:
+
+1. `$Z3_LIBRARY`;
+2. `library-candidates($Z3_HOME)`;
+3. `library-candidates(prefix)` for the `z3` executable found on `PATH`, where
+   `prefix` is the executable's grandparent directory and the candidates are
+   `prefix/{,bin,lib,lib64}/libz3.so*`;
+4. bare `libz3.so`, resolved by the platform's own loader.
+
+So the no-root way to install 5.1.0 is to unpack the official release into
+`~/.local/opt` and put both names on the paths the loader already probes:
+
+```bash
+cd /tmp
+curl -LO https://github.com/Z3Prover/z3/releases/download/z3-5.1.0/z3-5.1.0-x64-glibc-2.39.zip
+unzip -q z3-5.1.0-x64-glibc-2.39.zip
+mv z3-5.1.0-x64-glibc-2.39 ~/.local/opt/z3-5.1.0
+ln -sf ~/.local/opt/z3-5.1.0/bin/z3         ~/.local/bin/z3
+ln -sf ~/.local/opt/z3-5.1.0/bin/libz3.so   ~/.local/lib/libz3.so
+z3 --version   # Z3 version 5.1.0 - 64 bit
+```
+
+Step 3 then finds `~/.local/bin/z3` on `PATH`, derives the prefix `~/.local`,
+and loads `~/.local/lib/libz3.so` — no environment variable required. Pick the
+glibc asset that matches or is older than your system's glibc. The plugin may
+also carry a bundled library per Chez machine type in
+`plugins/z3/native/<machine-type>/` (Windows x64 ships `ta6nt`).
+
+Verify the plugin loaded:
+
+```bash
+sah --no-session "/plugin inspect z3"     # state: mounted
+```
 
 ---
 
@@ -301,7 +342,7 @@ rm -rf build dist
 | `shell` runs cmd instead of bash (or vice versa) | It follows the shell that launched sah. Run sah from the terminal you want, or set `shell` in `~/.sah/config.scm` (e.g. `(shell . "bash")`). |
 | `-c` / `-h` / `--help` do nothing useful in the compiled exe | The Chez runtime consumes those. Use `-C`/`--continue` and `-H`/`--usage`. |
 | `/plugins` is empty or a preinstalled plugin is missing | `plugins/` was not installed, or source submodules were not initialized. Copy the complete `dist/` bundle, or run `git submodule update --init --recursive`. |
-| The Z3 plugin fails to load | A Windows x64 bundle should contain `plugins/z3/native/ta6nt/libz3.dll`; on other platforms install the system Z3 package. Set `Z3_LIBRARY` or `Z3_HOME` only for unusual layouts. |
+| The Z3 plugin fails to load | A Windows x64 bundle should contain `plugins/z3/native/ta6nt/libz3.dll`; on other platforms install the Z3 **5.1.0** runtime (see [Z3 version](#z3-version)). Set `Z3_LIBRARY` or `Z3_HOME` only for unusual layouts. |
 | `eval` cannot see sah's own functions | This is intentional session-scope isolation. Use the `plugin` tool, `/plugins`, or `/plugin inspect NAME` for host plugin introspection. |
 | Sessions from another directory are missing | Sessions are grouped by working directory under `~/.sah/sessions/<cwd-slug>/`. Run `sah` from the same directory, or set `SAH_HOME`. |
 
