@@ -279,6 +279,45 @@
            [,other #f])))
 
 ;;----------------------------------------------------------------------------
+(section "process image")
+
+;; A boot executable reports its program name as "" -- (command-line) is
+;; ("" arg ...), not (path arg ...) -- so the path of the running image cannot
+;; come from argv[0]. Getting this wrong made a built bundle look for
+;; `plugins/` beside the working directory instead of beside itself, which is
+;; also why the bundle only worked when started from the source tree.
+(check-true
+ "the process image path is absolute, not a bare or empty name"
+ (let ((path (process-executable-path)))
+   (and (string? path)
+        (> (string-length path) 1)
+        (if windows?
+            (char=? (string-ref path 1) #\:)
+            (char=? (string-ref path 0) #\/)))))
+
+(check-true
+ "the process image is the runtime, never the script"
+ (let ((path (process-executable-path)))
+   (and (file-exists? path)
+        (not (string-suffix? ".ss" path)))))
+
+;; A `plugins/` directory in the working directory is not a sah location: only
+;; `<cwd>/.sah/plugins` and `<sah-home>/plugins` are. Reading the image path out
+;; of an argv[0] that a boot executable does not carry turned "./plugins" into
+;; the install location, which both hid the bundle's real plugins and ran
+;; whatever a checked-out project happened to keep there.
+(define plugin-dir-probe
+  (path-join (temp-dir) (string-append "sah-plugins-" (short-id))))
+(ensure-dir! (path-join plugin-dir-probe ".sah" "plugins"))
+(ensure-dir! (path-join plugin-dir-probe "plugins" "bystander"))
+(check "plugin discovery reads <cwd>/.sah/plugins and ignores ./plugins"
+       '(#t #f)
+       (let ((dirs (default-plugin-dirs plugin-dir-probe)))
+         (list
+          (and (member (path-join plugin-dir-probe ".sah" "plugins") dirs) #t)
+          (and (member (path-join plugin-dir-probe "plugins") dirs) #t))))
+
+;;----------------------------------------------------------------------------
 (section "persistent journal")
 
 (define vector-sample
@@ -830,6 +869,29 @@
        '("done" ("go" "" "tool-ok" "done"))
        (list (assistant-text machine-reply)
              (map message-text (session-messages machine-session-value))))
+
+;; A reasoning model can spend the whole max-output-tokens budget thinking and
+;; be cut off (finish_reason "length") with no content and no tool call. Settling
+;; there ends the turn on an empty assistant message, so the user waits minutes,
+;; sees nothing, and has to retype the turn.
+(define (resume-committed reply)
+  (match (machine-resume `(committed 1 8 ,reply)
+                         '(effect-result ok #t))
+    [(done . ,rest) 'done]
+    [(failed . ,rest) 'failed]
+    [,other other]))
+
+(check "a reply truncated with nothing to show fails instead of settling"
+       'failed
+       (resume-committed
+        '(msg assistant "" () length ((input . 1) (output . 8192)))))
+(check "a truncated reply that did produce content still settles"
+       'done
+       (resume-committed
+        '(msg assistant "half a file" () length ((input . 1) (output . 8192)))))
+(check "an empty reply that stopped normally still settles"
+       'done
+       (resume-committed '(msg assistant "" () stop ())))
 (check "machine lifecycle reaches settled"
        #t
        (and (member '(ev agent-start) machine-events)
@@ -1987,6 +2049,93 @@
                      (assq-ref datum 'success)))))
                (string-split
                 (get-output-string output) "\n"))))
+
+;;----------------------------------------------------------------------------
+(section "transcript frame cache")
+
+;; A frame paints the whole transcript, and a streaming reply repaints once per
+;; delta, so re-rendering every entry each frame made a long session slower the
+;; longer it ran. Entries never change once journalled, so their lines are
+;; cached; a warm frame must be identical to a cold one, and a width change has
+;; to invalidate rather than re-use.
+(define cache-app (make-tui-app* rt-machine #f))
+(define cache-cold (tui-transcript-lines cache-app 100))
+(define cache-warm (tui-transcript-lines cache-app 100))
+(check "a cached transcript frame equals a fresh one"
+       #t
+       (equal? cache-cold cache-warm))
+(check "a width change invalidates the cached transcript"
+       #t
+       (equal? (tui-transcript-lines cache-app 90)
+               (tui-transcript-lines (make-tui-app* rt-machine #f) 90)))
+
+;;----------------------------------------------------------------------------
+(section "terminal content sanitation")
+
+;; Tool results are arbitrary bytes: a compiled program's stdout, a cat of a
+;; binary, a progress bar. BEL is the loud one -- a terminal configured to
+;; notify on the bell (Konsole's default) raises a desktop notification per
+;; repaint, so one byte in a transcript became thousands of notifications --
+;; while CR rewrites the line and ESC starts a sequence that can retitle the
+;; window, clear the screen, or answer a clipboard request (OSC 52).
+(define (count-char ch text)
+  (let loop ((cs (string->list text)) (n 0))
+    (cond ((null? cs) n)
+          ((char=? (car cs) ch) (loop (cdr cs) (+ n 1)))
+          (else (loop (cdr cs) n)))))
+
+(define (has-text? needle text)
+  (if (string-contains? needle text) #t #f))
+
+(define probe-bel (string (integer->char 7)))
+(define probe-tab (string (integer->char 9)))
+(define probe-dirty
+  (string-append
+   "out" probe-bel "put"
+   "cr\r\n"
+   "tab" probe-tab "x"
+   "clear" esc "[2J"
+   "title" esc "]0;evil" probe-bel
+   "clip" esc "]52;c;cGF3bmVk" probe-bel
+   "nul" (string (integer->char 0))
+   "del" (string (integer->char 127))
+   "keep" esc "[31m" "red" esc "[0m"))
+(define probe-clean (sanitize-controls probe-dirty))
+
+(check "sanitizing drops BEL, CR, NUL and DEL from content"
+       '(#f #f #f #f)
+       (list (has-text? probe-bel probe-clean)
+             (has-text? (string (integer->char 13)) probe-clean)
+             (has-text? (string (integer->char 0)) probe-clean)
+             (has-text? (string (integer->char 127)) probe-clean)))
+
+(check "sanitizing drops whole sequences, not just their ESC"
+       '(#f #f #f)
+       (list (has-text? (string-append esc "[2J") probe-clean)
+             (has-text? "]0;evil" probe-clean)
+             (has-text? "]52;" probe-clean)))
+
+(check "sanitizing keeps the SGR sequences sah itself speaks"
+       '(#t #t #t)
+       (list (has-text? (string-append esc "[31m") probe-clean)
+             (has-text? (string-append esc "[0m") probe-clean)
+             (has-text? "red" probe-clean)))
+
+(check "sanitizing expands a tab to its tab stop"
+       #t
+       (has-text? "tab     x" probe-clean))
+
+;; The regression that matters: nothing a tool returns reaches the terminal as a
+;; control character, whichever renderer draws it.
+(define probe-entry
+  `(message 1 #f 0 (msg tool "c1" shell ,probe-dirty #f)))
+(define probe-lines
+  (string-join (render-entry-lines rt-host probe-entry 'ansi 80) "\n"))
+(check "a tool result with a bell renders without one"
+       '(0 #t #t)
+       (list (count-char (integer->char 7) probe-lines)
+             (has-text? "red" probe-lines)
+             (has-text? (string-append esc "[31m") probe-lines)))
 
 ;;----------------------------------------------------------------------------
 (section "resources and manifest")
