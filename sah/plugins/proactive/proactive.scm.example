@@ -1,0 +1,22 @@
+;;; proactive.scm.example -- jobs the proactive plugin arms at session start.
+;;;
+;;; Copy to ~/.sah/proactive.scm (or <workspace>/.sah/proactive.scm) and edit.
+;;; Each form is (kind ms text) or (kind name ms text):
+;;;
+;;;   every    repeat forever, first fire after MS
+;;;   after    fire once, then the job is gone
+;;;   note     like after, but only journals a line -- it never wakes the agent
+;;;
+;;; A text payload is delivered to the agent as its own turn, so keep these
+;;; short and self-contained: the agent wakes with no idea what you were doing.
+
+;; Look at the build every 5 minutes and fix it if it broke.
+(every "build-watch" 300000
+       "Run the build. If it is red, find the cause and fix it. If it is green, reply with just: green.")
+
+;; Once, shortly after the session starts: pick up where the journal left off.
+(after 5000
+       "Summarize the open threads in this session and say which one you would continue.")
+
+;; A pure journal marker: no turn, just a line the model sees later.
+(note 60000 "checkpoint: an hour of work has gone by")

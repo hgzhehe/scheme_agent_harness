@@ -71,12 +71,12 @@
 (define (handler-show h) (list-ref h 6))
 
 (define (runtime-register-op-handler!
-         rt owner kind undo requires prepare apply rollback . show)
+         rt owner kind undo requires prepare apply-op rollback . show)
   (when (runtime-capability rt 'op-handler kind)
     (error 'plugin (format "duplicate op handler: ~a" kind)))
   (runtime-add-capability!
    rt owner 'op-handler kind
-   (list 'op-handler undo requires prepare apply rollback
+   (list 'op-handler undo requires prepare apply-op rollback
          (and (pair? show) (car show)))))
 
 (define (runtime-op-handler rt op)
@@ -559,11 +559,15 @@
 ;; Package definition API
 ;;----------------------------------------------------------------------------
 
+;; NOTE: the two handlers are named apply-op/rollback rather than apply/rollback
+;; because this function *calls* Chez's apply. A parameter named apply shadows
+;; it, and the call below would then invoke the op's own apply handler instead
+;; of registering anything -- which is exactly what used to happen here.
 (define (op-register-handler!
-         kind undo requires prepare apply rollback . show)
+         kind undo requires prepare apply-op rollback . show)
   (apply runtime-register-op-handler!
          (require-runtime) (current-owner)
-         kind undo requires prepare apply rollback show))
+         kind undo requires prepare apply-op rollback show))
 (define (plugin-define! definition)
   (runtime-define-plugin! (require-runtime) definition))
 

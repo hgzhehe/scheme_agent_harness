@@ -528,7 +528,8 @@
  test-dir)
   (check
    "reload rereads plugin packages and rebuilds the current session scope"
-   '(3 9 (tea coffee) (5) "11")
+   ;; count of packages shipped in plugins/ (match, minikanren, z3, proactive)
+   '(4 9 (tea coffee) (5) "11")
    (list
     (length (all-plugin-packages rt-language))
     (scope-eval
@@ -2154,6 +2155,108 @@
        (list (count-char (integer->char 7) probe-lines)
              (has-text? "red" probe-lines)
              (has-text? (string-append esc "[31m") probe-lines)))
+
+;;----------------------------------------------------------------------------
+(section "custom ops")
+
+;; A package can extend the op algebra itself with op-register-handler!, which
+;; is how a plugin gets its own effects rolled back on dispose. This used to be
+;; impossible: op-register-handler! named one of its parameters `apply`, which
+;; shadowed Chez's apply inside its body, so it called the op's *apply handler*
+;; with the registration arguments instead of registering anything. The tests
+;; below fail unless the handler really lands in the algebra.
+
+(define op-probe-rollbacks '())
+
+;; An op constructor, the way the kernel defines op-register-tool and friends.
+;; It has to be a *top-level* definition: a loaded plugin.ss defines its
+;; constructors at the top level so they land in the interaction environment,
+;; which is the runtime root scope and the parent of every plugin scope. The
+;; package body below names it, and the body form is evaluated at mount.
+(define (op-probe-op) (list 'op-probe-op))
+
+;; Spelled as a list rather than a call to (op-probe), because this test wants
+;; the raw op, not a package body.
+(define (probe-scope) (make-runtime-root-scope))
+
+(let ((rt-custom (test-runtime)))
+  (parameterize ((current-runtime rt-custom) (current-owner 'test-custom-op))
+    ;; The argument order is the kernel's: KIND UNDO REQUIRES PREPARE APPLY
+    ;; ROLLBACK, with SHOW as the rest argument. UNDO is the undo *strategy*,
+    ;; 'registry for a capability handle that rollback deletes -- the same value
+    ;; the kernel passes for its own registry ops. requires and prepare take
+    ;; (op rt scope owner); apply adds the prepared value and returns the handle;
+    ;; rollback adds the handle; show takes the op alone.
+    (op-register-handler!
+     'op-probe-op 'registry
+     (lambda (op rt scope owner) '())                  ; requires: no dependencies
+     (lambda (op rt scope owner) 'prepared-value)      ; prepare -> value
+     (lambda (op rt scope owner prepared)               ; apply -> handle
+       'handle)
+     (lambda (op rt scope owner prepared handle)        ; rollback
+       (set! op-probe-rollbacks (cons handle op-probe-rollbacks))
+       #f)
+     (lambda (op) "probe-op")))                          ; show
+
+  (check-true "op-register-handler! actually installs the handler"
+              (runtime-capability rt-custom 'op-handler 'op-probe-op))
+  (check "the custom op is now part of the runtime's algebra"
+         '(#t "probe-op")
+         (list (and (guard (error (#t #f))
+                      (runtime-op-handler rt-custom '(op-probe-op))
+                      #t))
+               (op-show rt-custom '(op-probe-op))))
+  (check "prepare, apply and rollback round trip through the custom op"
+         ;; The third value is the undo *strategy* the handler registered
+         ;; ('registry), which is what a dispose follows to delete the handle;
+         ;; frame-prepared is the prepared value the first element already shows.
+         '(prepared-value handle registry)
+         (let* ((scope (probe-scope))
+                (prepared
+                 (prepare-op rt-custom 'test-custom-op scope '(op-probe-op)))
+                (frame (apply-prepared! rt-custom scope prepared)))
+           (rollback-frame! rt-custom scope 'test-custom-op frame)
+           (list (prepared-value prepared)
+                 (frame-handle frame)
+                 (prepared-undo prepared))))
+  (check "rollback receives the handle apply returned"
+         '(handle)
+         op-probe-rollbacks)
+  (check-error "a duplicate op handler is refused"
+               "duplicate op handler"
+               (lambda ()
+                 (parameterize ((current-runtime rt-custom)
+                                (current-owner 'test-custom-op))
+                   (op-register-handler! 'op-probe-op 'registry
+                                         (lambda args #f) (lambda args #f)
+                                         (lambda args #f) (lambda args #f)))))
+
+  ;; The point of the API: a package body may name it (op-probe-op is defined at
+  ;; the top level above, where a loaded plugin.ss defines its constructors).
+  (parameterize ((current-runtime rt-custom) (current-owner 'test-custom-pkg))
+    (plugin-define!
+     (list 'plugin 'custom-op-package "Uses a custom op." '() '()
+           '((op-probe-op)))))
+  (runtime-mount-plugin! rt-custom 'custom-op-package)
+  (check "a package that uses a custom op mounts and shows its effect"
+         '(mounted "probe-op")
+         (list
+          (plugin-slot-state
+           (runtime-plugin-slot rt-custom 'custom-op-package))
+          (op-show rt-custom
+                   (frame-op
+                    (car (plugin-slot-frames
+                          (runtime-plugin-slot rt-custom 'custom-op-package)))))))
+
+  ;; And it is reversible like every other capability the package owns.
+  (runtime-dispose-plugin! rt-custom 'custom-op-package)
+  (check "disposing the package rolls its custom effect back"
+         '(#f 2)
+         (list
+          (and (plugin-slot-active?
+                (runtime-plugin-slot rt-custom 'custom-op-package))
+               #t)
+          (length op-probe-rollbacks))))
 
 ;;----------------------------------------------------------------------------
 (section "resources and manifest")
