@@ -92,6 +92,15 @@
   (parameterize ((current-runtime rt))
     (proactive-control! action name ms text)))
 
+;; The event surface needs the runtime bound too (proactive-on! and friends look
+;; it up), so the same wrapper shape applies.
+(define (on! rt channel handler)
+  (parameterize ((current-runtime rt)) (proactive-on! channel handler)))
+(define (off! rt channel)
+  (parameterize ((current-runtime rt)) (proactive-off! channel)))
+(define (signal! rt channel value)
+  (parameterize ((current-runtime rt)) (proactive-signal! channel value)))
+
 (define (events-of rt)
   (let ((seen '()))
     (runtime-subscribe!
@@ -202,6 +211,110 @@
 (check "a pausing callback does not replay jobs queued behind it"
        '(1 1)
        (list replay-victim replay-pauser))
+
+;;----------------------------------------------------------------------------
+(printf "~%== events ==~%")
+
+;; A pure event. Nobody is parked on the producer side, so the handler is called
+;; with #f in the continuation slot -- that is what distinguishes it from a
+;; handoff.
+(control rt 'clear #f #f #f)
+(define pure-events '())
+(on! rt 'ping
+               (lambda (value k)
+                 (set! pure-events (cons (list value k) pure-events))))
+(signal! rt 'ping "hello")
+(check-true "a signalled event reaches its handler"
+            (wait-until (lambda () (pair? pure-events)) 2000))
+(check "a signal carries no continuation"
+       '("hello" #f)
+       (let ((event (car pure-events)))
+         (list (car event) (and (cadr event) 'continuation))))
+(check-true "dispatching emits an event the renderer can see"
+            (member '(ev proactive-event ping signal) (seen-events)))
+
+;; A signalled event outside a callback: proactive-signal! is reachable from the
+;; session scope, where there is no scheduler state yet.
+(check "the session-level wrapper signals"
+       #t
+       (string? (session-eval-form! rt session
+                                    '(proactive-signal! "ping" "from-session"))))
+(check-true "the second signal is dispatched too"
+            (wait-until (lambda () (>= (length pure-events) 2)) 2000))
+
+;; A handoff. The producer parks and its continuation travels through the queue
+;; as data; the consumer resumes it from inside its own stack.
+(define handoff-log '())
+(define (ho-consumer value k)
+  (set! handoff-log (cons (list 'consumer-got value) handoff-log))
+  ;; Continue the producer's stack from inside the consumer's own.
+  (k (list 'ack-for (cadr value))))
+(define (ho-producer)
+  (set! handoff-log (cons 'producer-start handoff-log))
+  (let ((reply (proactive-handoff! 'ch (list 'payload 42))))
+    (set! handoff-log (cons (list 'producer-resumed reply) handoff-log))))
+(on! rt 'ch ho-consumer)
+(control rt 'after 'ho-producer 10 ho-producer)
+(check-true "the producer resumed"
+            (wait-until (lambda () (assq 'producer-resumed handoff-log)) 2000))
+(check "the consumer saw the value, and the producer got the reply"
+       '((producer-resumed (ack-for 42))
+         (consumer-got (payload 42))
+         producer-start)
+       handoff-log)
+(check-true "a handoff is reported as one, not as a signal"
+            (member '(ev proactive-event ch handoff) (seen-events)))
+
+;; A parked producer with nobody listening must not wait forever in silence.
+(control rt 'clear #f #f #f)
+(define orphan-reply #f)
+(control rt 'after 'orphan 10
+         (lambda ()
+           (set! orphan-reply (proactive-handoff! 'nobody-home 'lost))))
+(check-true "an unhandled handoff says so instead of hanging silently"
+            (wait-until
+             (lambda ()
+               (exists (lambda (entry)
+                         (and (eq? (entry-kind entry) 'custom-message)
+                              (string-contains? "no handler is installed"
+                                                (entry-field entry 5))))
+                       (log-path (session-log session) #f)))
+             2000))
+
+;; Deregistering a channel stops dispatch.
+(control rt 'clear #f #f #f)
+(define after-off (length pure-events))
+(check "removing a handler reports success"
+       "proactive handler removed from ping"
+       (off! rt 'ping))
+(check "removing an unknown handler reports the miss"
+       "no proactive handler on ping"
+       (off! rt 'ping))
+(signal! rt 'ping "ignored")
+;; Give the scheduler time to have dispatched it if it were going to.
+(sleep-ms 300)
+(check "an event on a deregistered channel is not dispatched to the old handler"
+       after-off
+       (length pure-events))
+
+;; Several events queued at once are dispatched oldest-first, one per pass.
+(control rt 'clear #f #f #f)
+(define ordered '())
+(on! rt 'seq (lambda (value k) (set! ordered (cons value ordered))))
+(for-each (lambda (n) (signal! rt 'seq n)) '(1 2 3 4 5))
+(check-true "five queued signals all arrive"
+            (wait-until (lambda () (= 5 (length ordered))) 2000))
+(check "queued events dispatch in order"
+       '(1 2 3 4 5)
+       (reverse ordered))
+
+;; Everything above is registrations the package owns; clear must reset the
+;; queues, and the report must show the listener table.
+(check-true "the report lists the installed channels"
+            (string-contains? "listening on: seq"
+                              (control rt 'list #f #f #f)))
+(off! rt 'seq)
+(control rt 'clear #f #f #f)
 
 ;;----------------------------------------------------------------------------
 (printf "~%== autonomous turns ==~%")

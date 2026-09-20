@@ -199,14 +199,21 @@
 
 ;; Claim at most ONE due job, advancing or dropping it in the same breath.
 ;;
-;; Exactly one, because of call/cc: firing a job is the last thing a scheduler
+;; Exactly one, because of call/cc. Firing a job is the last thing a scheduler
 ;; pass does (see proactive-run-scheduler), so a callback that pauses captures a
-;; continuation whose only remaining work is "go back to the loop". If a pass
-;; claimed a whole *list* of due jobs instead and then fired them in a for-each,
-;; a paused callback's continuation would carry the jobs still queued behind it,
-;; and resuming would fire them a second time. That is a real bug this shape
-;; exists to prevent: with a long enough stall two timers come due in one pass,
-;; and the resume then replays the second one.
+;; continuation whose only remaining work is "go back to the loop".
+;;
+;; The alternative -- claiming the whole due list and firing it in a for-each --
+;; is measurably wrong, because a continuation captured inside a for-each DOES
+;; re-run the elements queued behind it. Verified directly:
+;;
+;;   (for-each (lambda (x) ... (call/cc (lambda (k) (set! saved k))) ...)
+;;             '(a b c))
+;;   ;; then invoking (saved 'resume):
+;;   body calls: (a b c b c)
+;;
+;; So with a long enough stall two timers come due in one pass, the earlier one
+;; pauses, and resuming it fires the later one a second time.
 (define (proactive-claim-due! st)
   (with-mutex (proactive-state-lock st)
     (let ((now (now-ms)))
