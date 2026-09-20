@@ -219,9 +219,13 @@
     s))
 
 (define (session-rebuild-scope! rt s)
-  (session-scope-set!
-   s (session-scope-from-log rt (session-id s) (session-log s)))
-  s)
+  ;; Returns the forms that could not be replayed, for the plugin-set probe.
+  (let-values (((scope skipped)
+                (session-scope-build
+                 rt (session-id s) (session-log s)
+                 report-unreplayed-scope-form)))
+    (session-scope-set! s scope)
+    skipped))
 
 (define (session-eval-form! rt s form)
   ;; Evaluation and journaling are one transaction. Besides the explicit
@@ -453,18 +457,46 @@
            [,other '()])))
       entries))))
 
-(define (session-scope-from-log rt label log)
+(define (session-scope-forms rt log)
+  (append
+   (apply
+    append
+    (runtime-visible-capabilities rt 'session-bootstrap))
+   (session-scope-replay-forms log)))
+
+(define (report-unreplayed-scope-form form reason)
+  (fprintf (current-error-port)
+           "[sah] scope form not replayed: ~s -- ~a~%"
+           form reason))
+
+;; One replay, into a fresh layer. A form that cannot replay is handed to REPORT
+;; and stepped over: the alternative is a journal that can never be opened again
+;; because a plugin was edited since. -> (values SCOPE SKIPPED)
+(define (session-scope-build rt label log report)
   (let ((scope
          (scope-layer (runtime-session-root-scope rt) 'session label)))
-    (scope-replay!
-     scope
-     (append
-      (apply
-       append
-       (runtime-visible-capabilities
-        rt 'session-bootstrap))
-      (session-scope-replay-forms log)))
+    (let-values (((_ skipped)
+                  (scope-replay!
+                   scope (session-scope-forms rt log) report)))
+      (values scope skipped))))
+
+(define (session-scope-from-log rt label log)
+  (let-values (((scope _)
+                (session-scope-build
+                 rt label log report-unreplayed-scope-form)))
     scope))
+
+;; The forms this journal cannot replay, silently: the plugin-set change in
+;; extend/loader.ss asks for this before and after a change, because a form that
+;; was already un-replayable must not read as "the session still needs the plugin
+;; being changed" -- that would make every dispose fail from a session whose
+;; journal holds one stale form.
+(define (session-scope-skips rt s)
+  (let-values (((_ skipped)
+                (session-scope-build
+                 rt (session-id s) (session-log s)
+                 (lambda (form reason) #f))))
+    skipped))
 
 (define (session-load rt path)
   (let-values (((raw health recovery)

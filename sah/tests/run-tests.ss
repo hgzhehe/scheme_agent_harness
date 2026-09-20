@@ -1231,6 +1231,36 @@
 
 (define rt-plugin (test-runtime))
 
+;; A journal can already hold a form that cannot replay: a plugin edited since, a
+;; host name that is gone, an import the session no longer carries. Replaying is
+;; then best effort -- the forms that can replay do, the rest are reported -- and
+;; that already-broken form must not read as "this session still needs the plugin
+;; being changed", or no dispose could ever succeed from such a session.
+(define rt-stale (plugin-test-runtime))
+(define stale-session (session-memory rt-stale test-dir "test-model"))
+(runtime-session-set! rt-stale stale-session)
+(session-eval-form! rt-stale stale-session '(define stale-ok 7))
+(session-eval-form!
+ rt-stale stale-session '(define stale-mini (run* (q) (== q 5))))
+;; Take miniKanren out from under the journal without the probe, so the journal is
+;; left with a durable form that cannot be replayed.
+(runtime-dispose-plugin! rt-stale 'minikanren)
+(session-rebuild-scope! rt-stale stale-session)
+(check "a session replays what it can and steps over the rest"
+       '(7 #f)
+       (list (scope-value (session-scope stale-session) 'stale-ok)
+             (scope-has? (session-scope stale-session) 'stale-mini)))
+(check "an un-replayable form does not block an unrelated plugin change"
+       '(#f #f)
+       (let-values (((output error?)
+                     (runtime-call-tool
+                      rt-stale 'plugin
+                      '((action . "dispose") (name . "z3")))))
+         (list error?
+               (string-contains?
+                "current session depends on the previous plugin set"
+                output))))
+
 (parameterize ((current-runtime rt-plugin)
                (current-owner 'test-file))
   (plugin left

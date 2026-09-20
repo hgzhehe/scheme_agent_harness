@@ -29,8 +29,10 @@
    (filter plugin-slot-active? (reverse (runtime-plugins rt)))))
 
 (define (runtime-rebuild-session-scope! rt)
-  (when (runtime-session rt)
-    (session-rebuild-scope! rt (runtime-session rt))))
+  ;; Returns the forms the rebuild could not replay, for the probe below.
+  (if (runtime-session rt)
+      (session-rebuild-scope! rt (runtime-session rt))
+      '()))
 
 (define (runtime-restore-plugin-set! rt names)
   (for-each
@@ -43,13 +45,21 @@
    names)
   (runtime-rebuild-session-scope! rt))
 
-;; Plugin state and the active eval language change together. If replaying the
-;; current journal under the new plugin set fails, restore the previous set.
+;; Plugin state and the active eval language change together. The session scope is
+;; rebuilt under the new set, and a form that stops replaying *because of the
+;; change* is the evidence that the session still needs the plugin (its language,
+;; its bootstrap, a name it put in the host) -- so the change is rolled back.
+;;
+;; What counts is the change in what cannot be replayed, not failure as such: a
+;; journal can already hold forms that cannot replay (a plugin edited since, a
+;; host name that is gone), and treating those as evidence would make every
+;; dispose fail from such a session. See scope-replay! for the other half.
 (define (runtime-change-plugin! rt action name)
   (let ((slot (runtime-plugin-slot rt name)))
     (unless slot
       (error 'plugin (format "not defined: ~a" name)))
-    (let ((before (runtime-active-plugin-names rt)))
+    (let ((before (runtime-active-plugin-names rt))
+          (skips-before (runtime-rebuild-session-scope! rt)))
       (guard
         (change-error
          (#t
@@ -76,7 +86,18 @@
            (runtime-restart-plugin! rt name))
           (else
            (error 'plugin (format "unknown action: ~a" action))))
-        (runtime-rebuild-session-scope! rt)
+        (let* ((skips-after (runtime-rebuild-session-scope! rt))
+               (lost
+                (filter
+                 (lambda (item) (not (member item skips-before)))
+                 skips-after)))
+          (unless (null? lost)
+            (error
+             'plugin
+             "~a ~a leaves ~a durable form~a of this session un-replayable: ~s"
+             action name (length lost)
+             (if (= 1 (length lost)) "" "s")
+             (map car lost))))
         (plugin-slot-state slot)))))
 
 (define (reload-resources! rt config cwd)

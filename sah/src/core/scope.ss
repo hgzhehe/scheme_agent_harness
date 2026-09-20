@@ -134,15 +134,35 @@
   (or (exists (lambda (name) (not (memq name after))) before)
       (exists (lambda (name) (not (memq name before))) after)))
 
-(define (scope-replay! s forms)
-  (for-each
-   (lambda (form)
-     (guard (e (#t
-                (error
-                 'scope
-                 (format
-                  "cannot replay ~s: ~a"
-                  form (err->string e)))))
-       (scope-eval s form)))
-   forms)
-  s)
+(define (scope-replay! s forms . maybe-report)
+  ;; Replaying a durable form can fail for a reason the journal cannot describe:
+  ;; the form was recorded against an environment that has since changed -- a
+  ;; plugin's session bootstrap edited, an import dropped, a host name that is
+  ;; gone. Raising there (which is what this used to do on the first failure) made
+  ;; a journal unopenable for good: one stale form bricked the whole session.
+  ;;
+  ;; REPORT receives the form and the reason and the replay carries on, so the
+  ;; caller decides what an un-replayable form means:
+  ;;   - rebuilding a session's scope: warn, and keep the rest;
+  ;;   - the plugin-set change probe (extend/loader.ss): compare the list before
+  ;;     and after the change, because only a form that stops replaying *because*
+  ;;     of the change is evidence that the session still needs that plugin.
+  ;; Without a REPORT the replay stays strict.
+  ;; -> (values SCOPE (list (form reason) ...))
+  (let ((report (and (pair? maybe-report) (car maybe-report))))
+    (let loop ((rest forms) (skipped '()))
+      (if (null? rest)
+          (values s (reverse skipped))
+          (let ((form (car rest)))
+            (guard (e (#t
+                       (let ((reason (err->string e)))
+                         (if report
+                             (begin
+                               (report form reason)
+                               (loop (cdr rest)
+                                     (cons (list form reason) skipped)))
+                             (error 'scope
+                                    (format "cannot replay ~s: ~a"
+                                            form reason))))))
+              (scope-eval s form)
+              (loop (cdr rest) skipped)))))))
