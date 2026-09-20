@@ -1511,14 +1511,14 @@
     (string-append esc "[<64;20;10M"))
    (current-output-port)
    #f #f #f #f
-   '() 0 0 0 0))
+   '() 0 0 #f 0 0))
 (define wheel-down-terminal
   (make-tui-terminal
    (open-input-string
     (string-append esc "[<65;20;10M"))
    (current-output-port)
    #f #f #f #f
-   '() 0 0 0 0))
+   '() 0 0 #f 0 0))
 (check "SGR mouse wheel up is decoded"
        'scroll-up
        (terminal-read-key wheel-up-terminal))
@@ -1593,7 +1593,7 @@
    (open-input-string "")
    main-screen-output
    #f #t #f #f
-   '() 0 0 0 0))
+   '() 0 0 #f 0 0))
 (terminal-render!
  main-screen-terminal
  '("one" "two" "three")
@@ -1607,6 +1607,74 @@
  '("one" "two changed" "three")
  (tui-terminal-previous-lines
   main-screen-terminal))
+
+;; A difference frame writes only the lines that differ and leaves the cursor
+;; alone unless the rewrite is big enough to span a terminal refresh. Rewriting
+;; an unchanged line and hiding the cursor around it is what read as a caret that
+;; never stops blinking (Konsole has no synchronized updates, so the pair is
+;; drawn on screen).
+(define skip-output (open-output-string))
+(define skip-terminal
+  (make-tui-terminal
+   (open-input-string "") skip-output #f #t #f #f
+   '() 0 0 #f 0 0))
+(tui-terminal-viewport-top-set! skip-terminal 0)
+(terminal-render-difference!
+ skip-terminal '("l1" "l2" "l3") 1 0 1 100 10)
+(get-output-string skip-output)   ; discard it: get-output-string resets the port
+(terminal-render-difference!
+ skip-terminal '("l1" "l2 changed" "l3") 1 0 1 100 10)
+(define skip-frame (get-output-string skip-output))
+(check "an unchanged line is left alone and the cursor is not touched"
+       '(#t #f #f #f)
+       (list (string-contains? "l2 changed" skip-frame)
+             (string-contains? "l3" skip-frame)
+             (string-contains? (string-append esc "[?25l") skip-frame)
+             (string-contains? (string-append esc "[?25h") skip-frame)))
+
+;; The caret should not blink at all: the TUI asks the terminal for a steady
+;; cursor and restores the profile's own style on the way out, and no render
+;; hides or shows it (`?25l`/`?25h` is what read as flashing on a terminal
+;; without synchronized updates).
+(define steady-output (open-output-string))
+(define steady-terminal
+  (make-tui-terminal
+   (open-input-string "") steady-output #f #t #f #f
+   '() 0 0 #f 0 0))
+(terminal-render! steady-terminal '("a" "b") 0 0)
+(terminal-render! steady-terminal '("a" "b changed") 0 0)
+(check "no render hides or shows the cursor"
+       #f
+       (string-contains? (string-append esc "[?25l")
+                         (get-output-string steady-output)))
+(check "the TUI asks for a steady cursor and restores the profile's"
+       '(#t #t)
+       (list (string-contains? (string-append esc "[2 q")
+                               terminal-enter-sequence)
+             (string-contains? (string-append esc "[0 q")
+                               terminal-leave-sequence)))
+
+;; A frame whose lines run past the bottom of the screen scrolls, and a scroll
+;; moves the lines already written: leaving an unchanged one alone would show its
+;; predecessor's text, so every line in a scrolling suffix is written.
+(define scroll-output (open-output-string))
+(define scroll-terminal
+  (make-tui-terminal
+   (open-input-string "") scroll-output #f #t #f #f
+   '() 0 0 #f 0 0))
+(tui-terminal-previous-lines-set! scroll-terminal '("l1" "l2" "l3" "l4"))
+(tui-terminal-viewport-top-set! scroll-terminal 0)
+(tui-terminal-cursor-row-set! scroll-terminal 3)
+(terminal-render-difference!
+ scroll-terminal
+ '("l1" "l2" "l3 changed" "l4" "l5")
+ 2 0 2 100 3)
+(check "a scrolling frame writes every line in its suffix"
+       '(#t #t #t)
+       (let ((frame (get-output-string scroll-output)))
+         (list (string-contains? "l3 changed" frame)
+               (string-contains? "l4" frame)
+               (string-contains? "l5" frame))))
 
 (define selector
   (make-selector
@@ -1660,10 +1728,13 @@
      #t))))
 (check-true
  "TUI activity title advances with elapsed time"
+ ;; The step is a whole second: the elapsed field and the spinner both have
+ ;; one-second resolution now, because a tenth-of-a-second field repainted the
+ ;; whole frame (cursor included) ten times a second.
  (not
   (string=?
    (tui-activity-title activity-tui-app "Working" 1000)
-   (tui-activity-title activity-tui-app "Working" 1120))))
+   (tui-activity-title activity-tui-app "Working" 2100))))
 (tui-handle-event! activity-tui-app '(ev message-start))
 (tui-handle-event! activity-tui-app '(ev message-delta "partial reply"))
 (check

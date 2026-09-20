@@ -7,6 +7,7 @@
           (mutable saved-output-mode)
           (mutable previous-lines)
           (mutable cursor-row)
+          (mutable cursor-column)
           (mutable viewport-top)
           (mutable previous-width)
           (mutable previous-height)))
@@ -94,18 +95,25 @@
      (current-output-port)
      interactive?
      #f #f #f
-     '() 0 0 0 0)))
+     '() 0 0 #f 0 0)))
 
 (define (terminal-write! terminal text)
   (put-string (tui-terminal-output terminal) text)
   (flush-output-port (tui-terminal-output terminal)))
 
+;; A steady cursor (DECSCUSR 2): the terminal's own blink is one half of "the
+;; cursor keeps flashing". The other half is that the renderer used to hide and
+;; show it around every repaint -- `?25l`/`?25h` is not invisible on Konsole,
+;; which has no synchronized updates -- so it does neither any more, and `[0 q`
+;; on the way out restores whatever cursor style the profile had.
 (define terminal-enter-sequence
   (string-append esc "[?2004h"
-                 esc "[?25l"))
+                 esc "[2 q"
+                 esc "[?25h"))
 
 (define terminal-leave-sequence
-  (string-append esc "[?25h"
+  (string-append esc "[0 q"
+                 esc "[?25h"
                  esc "[?2004l"))
 
 (define (terminal-enter! terminal)
@@ -234,23 +242,33 @@
 (define (terminal-position-cursor!
          terminal port target-row target-column)
   (let ((current-row (tui-terminal-cursor-row terminal))
+        (current-column (tui-terminal-cursor-column terminal))
         (viewport-top (tui-terminal-viewport-top terminal))
         (height (tui-terminal-previous-height terminal)))
     (when (and (>= target-row viewport-top)
                (< target-row (+ viewport-top height)))
-      (put-string
-       port
-       (string-append
-        (terminal-row-move (- target-row current-row))
-        (format "~a[~aG" esc (+ target-column 1))))
-      (tui-terminal-cursor-row-set!
-       terminal target-row))))
+      ;; Painting leaves the cursor at the end of the last line it wrote, so the
+      ;; tracked column is #f after a paint and this fires only when the cursor
+      ;; is genuinely elsewhere. A frame that changed nothing then emits nothing
+      ;; at all, instead of re-hiding and re-showing the cursor -- which is what
+      ;; made Konsole, which has no synchronized updates, blink on every repaint.
+      (unless (and (eqv? target-row current-row)
+                   (eqv? target-column current-column))
+        (put-string
+         port
+         (string-append
+          (terminal-row-move (- target-row current-row))
+          (format "~a[~aG" esc (+ target-column 1))))
+        (tui-terminal-cursor-row-set!
+         terminal target-row)
+        (tui-terminal-cursor-column-set!
+         terminal target-column)))))
 
 (define (terminal-append-snapshot!
          terminal lines cursor-row cursor-column width height)
   (let ((port (tui-terminal-output terminal))
         (previous (tui-terminal-previous-lines terminal)))
-    (put-string port (string-append esc "[?2026h" esc "[?25l"))
+    (put-string port (string-append esc "[?2026h"))
     (if (pair? previous)
         (put-string port (string-append esc "[999B\r\n"))
         (put-string port "\r"))
@@ -266,13 +284,26 @@
             (max 0 (- (length lines) height))))
       (tui-terminal-previous-lines-set! terminal lines)
       (tui-terminal-cursor-row-set! terminal last-row)
+      (tui-terminal-cursor-column-set! terminal #f)
       (tui-terminal-viewport-top-set! terminal viewport-top)
       (tui-terminal-previous-width-set! terminal width)
       (tui-terminal-previous-height-set! terminal height)
       (terminal-position-cursor!
        terminal port cursor-row cursor-column))
-    (put-string port (string-append esc "[?2026l" esc "[?25h"))
+    (put-string port (string-append esc "[?2026l"))
     (flush-output-port port)))
+
+;; A frame is written as one contiguous suffix of lines, which is what keeps the
+;; scrolling arithmetic and the viewport it tracks simple. But most frames change
+;; one or two of those lines -- a spinner, a streamed character, a keystroke --
+;; and rewriting an unchanged line erases and redraws it for nothing.
+
+;; True when the lines this frame writes run past the bottom of the screen, i.e.
+;; when writing them scrolls the terminal. A scrolling frame has to rewrite every
+;; line in its suffix: the scroll moves the already-written lines up, so a line
+;; left alone would sit at a position holding its predecessor's text.
+(define (terminal-frame-scrolls? line-count viewport-top height)
+  (> (- line-count 1) (+ viewport-top (- height 1))))
 
 (define (terminal-render-difference!
          terminal lines cursor-row cursor-column
@@ -284,15 +315,16 @@
           (min first-changed
                (max 0 (- line-count 1))))
          (current-row (tui-terminal-cursor-row terminal))
-         (viewport-top (tui-terminal-viewport-top terminal)))
+         (viewport-top (tui-terminal-viewport-top terminal))
+         (scrolls? (terminal-frame-scrolls? line-count viewport-top height)))
     (put-string
      port
      (string-append
       esc "[?2026h"
-      esc "[?25l"
       (terminal-row-move (- start current-row))
       "\r"))
     (let loop ((rest (drop-list start lines))
+               (was (drop-list start previous))
                (row start)
                (viewport-top viewport-top))
       (if (null? rest)
@@ -302,23 +334,25 @@
             (tui-terminal-previous-lines-set! terminal lines)
             (tui-terminal-cursor-row-set!
              terminal (max 0 (- line-count 1)))
+            (tui-terminal-cursor-column-set! terminal #f)
             (tui-terminal-viewport-top-set!
              terminal viewport-top)
             (tui-terminal-previous-width-set! terminal width)
             (tui-terminal-previous-height-set! terminal height)
             (terminal-position-cursor!
              terminal port cursor-row cursor-column)
-            (put-string
-             port
-             (string-append esc "[?2026l" esc "[?25h"))
+            (put-string port (string-append esc "[?2026l"))
             (flush-output-port port))
-          (begin
-            (put-string
-             port
-             (string-append
-              esc "[2K" (car rest) esc "[0m"))
+          (let* ((line (car rest))
+                 (same? (and (not scrolls?)
+                             (pair? was)
+                             (string=? line (car was)))))
+            (unless same?
+              (put-string
+               port
+               (string-append esc "[2K" line esc "[0m")))
             (if (null? (cdr rest))
-                (loop '() row viewport-top)
+                (loop '() '() row viewport-top)
                 (let* ((next-row (+ row 1))
                        (next-viewport
                         (if (>= (- row viewport-top)
@@ -328,6 +362,7 @@
                   (put-string port "\r\n")
                   (loop
                    (cdr rest)
+                   (if (pair? was) (cdr was) '())
                    next-row
                    next-viewport))))))))
 

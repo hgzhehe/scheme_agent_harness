@@ -160,7 +160,7 @@
       (string-append left space (ansi-dim right))
       width))))
 
-(define tui-animation-interval-ms 120)
+(define tui-animation-interval-ms 500)
 
 (define (tui-run-elapsed-ms app now)
   (let ((run (tui-app-active-run app)))
@@ -186,6 +186,12 @@
       ((eq? status 'tool-error) "Tool error")
       (else #f))))
 
+;; The elapsed time is whole seconds, not tenths, and the spinner glyph steps
+;; with it (tui-animation-interval-ms). A tenth-of-a-second field changes the
+;; visible content ten times a second, so the whole frame had to be repainted --
+;; and the terminal cursor hidden and shown -- that often just to keep a number
+;; moving: on Konsole, which does not implement synchronized updates, that reads
+;; as a cursor that never stops blinking, and it costs a full frame each time.
 (define (tui-activity-title app label now)
   (let* ((elapsed (tui-run-elapsed-ms app now))
          (spinner
@@ -194,11 +200,10 @@
            (modulo
             (tui-animation-index app now)
             4))))
-    (format "~a  ~a  ~a.~as"
+    (format "~a  ~a  ~as"
             label
             spinner
-            (quotient elapsed 1000)
-            (quotient (modulo elapsed 1000) 100))))
+            (quotient elapsed 1000))))
 
 (define (tui-activity-lines app width now)
   (let ((label
