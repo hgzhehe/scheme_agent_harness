@@ -150,7 +150,10 @@
                 (lambda ()
                   (guard (e (#t #t)) (close-port to))
                   (guard (e (#t #t)) (close-port from))
-                  (guard (e (#t #t)) (close-port err))))))
+                  (guard (e (#t #t)) (close-port err))
+                  ;; Closing the ports does not collect the child, so without a
+                  ;; sweep every command the model runs leaves a zombie.
+                  (reap-exited-children!)))))
         (when (run-control-cancelled-now? (current-run-control))
           (error 'cancelled "cancelled by user"))
         (if (eof-object? out) "" out)))))

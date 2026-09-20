@@ -174,6 +174,37 @@
                 (loop (cdr paths)))))
       (macos-process-executable-path)))
 
+;; --- child processes -------------------------------------------------------
+;;
+;; Chez offers no way to wait for a child opened with `open-process-ports`
+;; ((apropos "process") lists only get-process-id, open-process-ports and
+;; process), and a child nobody waits for stays a zombie: one live session had
+;; nine defunct curls, one per model request, because closing the ports does not
+;; collect the process. waitpid(2) is in libc, which the runtime already has
+;; mapped, so sweep the children that have already exited before starting
+;; another. It never blocks -- only exited children are collected -- and a child
+;; that exits after a sweep is collected by the next one.
+(define waitpid-procedure
+  (and (eq? machine-os 'unix)
+       (guard (e (#t #f))
+         (load-shared-object #f)
+         (foreign-procedure "waitpid" (int void* int) int))))
+
+(define WNOHANG 1)
+
+(define (reap-exited-children!)
+  (and waitpid-procedure
+       (let ((status (foreign-alloc 4)))
+         (dynamic-wind
+           (lambda () #t)
+           (lambda ()
+             (let loop ((collected 0))
+               (if (and (< collected 64)
+                        (> (waitpid-procedure -1 status WNOHANG) 0))
+                   (loop (+ collected 1))
+                   collected)))
+           (lambda () (foreign-free status))))))
+
 (define (terminate-process-tree! process-id)
   (when (and process-id (integer? process-id))
     (guard

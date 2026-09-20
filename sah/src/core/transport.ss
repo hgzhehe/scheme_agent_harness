@@ -20,6 +20,7 @@
 (define (http-post-json url headers body-string)
   (let* ((tmp (path-join (temp-dir) (string-append "sah-req-" (short-id) ".json")))
          (cmd (curl-common url headers tmp)))
+    (reap-exited-children!)
     (string->file tmp body-string)
     (dynamic-wind
       (lambda () #t)
@@ -35,6 +36,7 @@
                   (note (guard (e2 (#t "")) (get-string-all err))))
               (guard (e2 (#t #t)) (close-port from))
               (guard (e2 (#t #t)) (close-port err))
+              (reap-exited-children!)
               (when
                   (run-control-cancelled-now?
                    (current-run-control))
@@ -59,6 +61,7 @@
   (let* ((tmp (path-join (temp-dir) (string-append "sah-req-" (short-id) ".json")))
          (cmd (string-append (curl-common url (cons '("Accept" . "text/event-stream") headers) tmp)
                              " -N")))
+    (reap-exited-children!)
     (string->file tmp body-string)
     (dynamic-wind
       (lambda () #t)
@@ -78,6 +81,7 @@
             (let ((note (guard (e2 (#t "")) (get-string-all err))))
               (guard (e2 (#t #t)) (close-port from))
               (guard (e2 (#t #t)) (close-port err))
+              (reap-exited-children!)
               (when
                   (run-control-cancelled-now?
                    (current-run-control))
