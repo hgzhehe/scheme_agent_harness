@@ -68,10 +68,19 @@
               (foreign-free buffer)
               path))))))))
 
+;; POSIX platforms whose kernel can name the running image: Linux and the BSDs
+;; through /proc, macOS through _NSGetExecutablePath. `machine-os` separates the
+;; *mechanism* (Win32 API, libSystem, procfs), and this question cuts across it --
+;; macOS is not `'unix` but it is POSIX, and while this test said `'unix` a macOS
+;; boot fell through to argv[0], which a boot executable reports as "", so a
+;; bundle looked for its `plugins/` beside the working directory instead of
+;; beside itself.
+(define posix? (memq machine-os '(unix macos)))
+
 (define (process-executable-path)
   (or (and windows?
            (windows-process-executable-path))
-      (and (eq? machine-os 'unix)
+      (and posix?
            (unix-process-executable-path))
       (let ((line (command-line)))
         (and (pair? line) (car line)))))
@@ -85,13 +94,30 @@
 ;; kernel instead; argv[0] above stays as the last resort because a
 ;; `scheme --script` run really does put the script path there.
 
+;; The process image has to be visible before the first `foreign-procedure` that
+;; needs one of its symbols is created. This step is not optional, and the guards
+;; around those creations cannot save us from forgetting it: a missing foreign
+;; symbol is not a Scheme condition, it aborts the process. That is not theory --
+;; it is what happened on macOS while this file loaded the process image only
+;; under `machine-os = 'unix`, and macOS is `'macos`, so nothing was loaded and
+;; every boot executable died on startup with
+;;
+;;   Error in foreign-procedure: no entry for ~s ("_NSGetExecutablePath")
+;;
+;; before it even handled --usage. `#f` means the current process: libc/libSystem
+;; is already mapped, and naming it portably is impossible (libc.so.6 for glibc,
+;; libc.so for musl, libSystem.B.dylib for Darwin).
+(define process-image-loaded #f)
+
+(define (load-process-image!)
+  (unless process-image-loaded
+    (set! process-image-loaded #t)
+    (guard (e (#t #f)) (load-shared-object #f))))
+
 (define readlink-procedure
-  (and (eq? machine-os 'unix)
+  (and posix?
        (guard (e (#t #f))
-         ;; #f means the current process. libc is already mapped, and naming it
-         ;; portably is impossible -- the soname differs per libc (libc.so.6
-         ;; for glibc, libc.so for musl).
-         (load-shared-object #f)
+         (load-process-image!)
          (foreign-procedure "readlink" (string void* size_t) ssize_t))))
 
 ;; procfs spellings of "this process's image", in the order worth trying.
@@ -132,11 +158,13 @@
                   (foreign-free buffer)
                   resolved))))))))
 
-;; _NSGetExecutablePath lives in libSystem, which the runtime is linked
-;; against, so the (load-shared-object #f) above is enough to resolve it.
+;; _NSGetExecutablePath lives in libSystem, which the runtime is linked against,
+;; so the process image has to be made visible first -- on macOS too, which is
+;; why this asks for it here rather than relying on the `'unix` branch above.
 (define ns-get-executable-path
   (and (eq? machine-os 'macos)
        (guard (e (#t #f))
+         (load-process-image!)
          (foreign-procedure "_NSGetExecutablePath" (void* void*) int))))
 
 (define (c-string-length buffer)
@@ -187,7 +215,7 @@
 (define waitpid-procedure
   (and (eq? machine-os 'unix)
        (guard (e (#t #f))
-         (load-shared-object #f)
+         (load-process-image!)
          (foreign-procedure "waitpid" (int void* int) int))))
 
 (define WNOHANG 1)
