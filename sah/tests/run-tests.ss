@@ -39,8 +39,29 @@
      (thunk)
      #f)))
 
+;; Each section is timed. Most of this suite's wall time sits in a few of them,
+;; and knowing which is the difference between explaining a slow run and
+;; guessing at it.
+(define section-times '())          ; (NAME . MILLISECONDS), newest first
+(define section-open #f)
+(define section-start 0)
+
 (define (section name)
+  (when section-open
+    (set! section-times (cons (cons section-open (- (now-ms) section-start)) section-times)))
+  (set! section-open name)
+  (set! section-start (now-ms))
   (printf "~%== ~a ==~%" name))
+
+(define (report-section-times)
+  (when section-open
+    (set! section-times (cons (cons section-open (- (now-ms) section-start)) section-times))
+    (set! section-open #f))
+  (let ((slow (filter (lambda (entry) (>= (cdr entry) 50)) (reverse section-times))))
+    (when (pair? slow)
+      (printf "~%slow sections (>50 ms):~%")
+      (for-each (lambda (entry) (printf "  ~a ms  ~a~%" (cdr entry) (car entry)))
+                (sort (lambda (a b) (> (cdr a) (cdr b))) slow)))))
 
 (define (sleep-ms milliseconds)
   (sleep
@@ -336,6 +357,64 @@
           (and (member (path-join plugin-dir-probe "plugins") dirs) #t))))
 
 ;;----------------------------------------------------------------------------
+(section "child processes")
+
+;; Chez never waits for a child opened with `open-process-ports`, so sah notes the
+;; pids it spawns and sweeps the ones that have exited.  macOS used to take a
+;; different branch here and reap nothing at all, which is how the nine defunct
+;; curls in one live session survived the fix that was supposed to collect them.
+(define (spawn-detached command)
+  (let-values (((to from err pid)
+                (open-process-ports command 'block (native-transcoder))))
+    (close-port to)
+    (get-string-all from)
+    (close-port from)
+    (get-string-all err)
+    (close-port err)
+    pid))
+
+(define (short-nap! nanoseconds)
+  (sleep (make-time 'time-duration nanoseconds 0)))
+
+(define (wait-until-reaped! pid)
+  (let loop ((tries 0))
+    (cond ((not (memv pid own-child-pids)) #t)
+          ((> tries 40) #f)
+          (else (short-nap! 50000000) (reap-exited-children!) (loop (+ tries 1))))))
+
+(check-true "a noted child that exited is collected"
+            (let ((pid (spawn-detached "/bin/echo reaping")))
+              (note-child-process! pid)
+              (wait-until-reaped! pid)))
+
+(check-true "a noted child that is still running is kept"
+            ;; Not `spawn-detached`: draining stdout would block until the child
+            ;; exits, and by then it would be collectable and the check would be
+            ;; about nothing.
+            (let-values (((to from err pid)
+                          (open-process-ports "/bin/sleep 30" 'block (native-transcoder))))
+              (close-port to)
+              (note-child-process! pid)
+              (reap-exited-children!)
+              (let ((kept (and (memv pid own-child-pids) #t)))
+                (close-port from)
+                (close-port err)
+                (terminate-process-tree! pid)
+                kept)))
+
+;; The sweep is over our own pids, so a child nobody noted has to survive it:
+;; waitpid(-1, ...) would have collected this one, and whoever owns it would then
+;; get ECHILD instead of its status.
+(check-true "a child nobody noted is left for its owner"
+            (let ((pid (spawn-detached "/bin/echo bystander"))
+                  (status (foreign-alloc 4)))
+              (short-nap! 300000000)
+              (reap-exited-children!)
+              (let ((result (waitpid-procedure pid status WNOHANG)))
+                (foreign-free status)
+                (> result 0))))
+
+;;----------------------------------------------------------------------------
 (section "persistent journal")
 
 (define vector-sample
@@ -441,15 +520,23 @@
    (session-scope session-a)
    '(run* (q) (== q 5)))
   (session-count session-a)))
+(define (z3-version-contract v)
+  ;; `z3-version` is Z3's own `Z3_get_full_version`, so the banner is Z3's, not
+  ;; sah's: the official release reports "Z3 5.1.0.0" and Homebrew's build reports
+  ;; "5.1.0.0". What this tree contracts for is the 5.1.0 ABI (the plugin's
+  ;; upstream/VERSIONS.md pins it), not the spelling of the banner.
+  (and (string? v) (string-contains? "5.1.0" v)))
+
 (check
  "the preinstalled Z3 plugin solves inside the session eval scope"
- '(#t #t "Z3 5.1.0.0" (sat "11"))
+ '(#t #t #t (sat "11"))
  (list
   (scope-has? (session-scope session-a) 'z3-version)
   (scope-has?
    (session-scope session-a)
    'make-z3-sexpr-environment)
-  (scope-eval (session-scope session-a) '(z3-version))
+  (z3-version-contract
+   (scope-eval (session-scope session-a) '(z3-version)))
   (scope-eval
    (session-scope session-a)
    '(call-with-z3-context
@@ -1172,14 +1259,15 @@
                '((action . "mount") (name . "z3")))))
   (check
    "the model plugin tool remounts the Z3 session language"
-   '(#f mounted "Z3 5.1.0.0")
+   '(#f mounted #t)
    (list
     error?
     (plugin-slot-state
      (runtime-plugin-slot rt-dynamic-plugin 'z3))
-    (scope-eval
-     (session-scope dynamic-plugin-session)
-     '(z3-version)))))
+    (z3-version-contract
+     (scope-eval
+      (session-scope dynamic-plugin-session)
+      '(z3-version))))))
 (let-values (((output error?)
               (runtime-call-tool
                rt-dynamic-plugin 'plugin
@@ -2463,5 +2551,6 @@
        machine-session-value overflow-session
        recovered-session render-session-value fact-session))
 
+(report-section-times)
 (printf "~%---~%~a passed, ~a failed~%" passed failed)
 (if (> failed 0) (exit 1) (exit 0))

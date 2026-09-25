@@ -208,12 +208,26 @@
 ;; ((apropos "process") lists only get-process-id, open-process-ports and
 ;; process), and a child nobody waits for stays a zombie: one live session had
 ;; nine defunct curls, one per model request, because closing the ports does not
-;; collect the process. waitpid(2) is in libc, which the runtime already has
-;; mapped, so sweep the children that have already exited before starting
+;; collect the process. waitpid(2) is in libc/libSystem, so note the pids we
+;; spawn and sweep the children that have already exited before starting
 ;; another. It never blocks -- only exited children are collected -- and a child
 ;; that exits after a sweep is collected by the next one.
+;;
+;; The sweep is over OUR pids, not waitpid(-1, ...). -1 collects any exited
+;; child, including one that a Chez `process` object (ours, or an extension's)
+;; is about to wait for, and that wait then fails with ECHILD. The two mistakes
+;; are not symmetric: forgetting to note a pid costs a zombie, which is what
+;; happens today, while stealing a child costs a wrong answer somewhere else.
+(define own-child-pids '())
+
+;; Call this wherever a child is spawned that nobody will wait for.
+(define (note-child-process! pid)
+  (when (and (integer? pid) (> pid 0) (not (memv pid own-child-pids)))
+    (set! own-child-pids (cons pid own-child-pids)))
+  pid)
+
 (define waitpid-procedure
-  (and (eq? machine-os 'unix)
+  (and posix?
        (guard (e (#t #f))
          (load-process-image!)
          (foreign-procedure "waitpid" (int void* int) int))))
@@ -226,11 +240,21 @@
          (dynamic-wind
            (lambda () #t)
            (lambda ()
-             (let loop ((collected 0))
-               (if (and (< collected 64)
-                        (> (waitpid-procedure -1 status WNOHANG) 0))
-                   (loop (+ collected 1))
-                   collected)))
+             (let loop ((pids own-child-pids) (alive '()) (collected 0))
+               (cond
+                 ((null? pids)
+                  (set! own-child-pids (reverse alive))
+                  collected)
+                 (else
+                  (let ((pid (car pids))
+                        (result (waitpid-procedure (car pids) status WNOHANG)))
+                    (cond
+                      ;; still running: keep it for the next sweep
+                      ((= result 0) (loop (cdr pids) (cons pid alive) collected))
+                      ;; collected it
+                      ((> result 0) (loop (cdr pids) alive (+ collected 1)))
+                      ;; -1: already gone, or never ours. Either way, drop it.
+                      (else (loop (cdr pids) alive collected))))))))
            (lambda () (foreign-free status))))))
 
 (define (terminate-process-tree! process-id)
@@ -246,6 +270,7 @@
                           process-id process-id))
                      'block
                      (native-transcoder))))
+        (note-child-process! control-id)
         (close-port to)
         (get-string-all from)
         (get-string-all err)

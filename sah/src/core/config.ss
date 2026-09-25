@@ -108,6 +108,7 @@
   (guard (e (#t (error 'config (format "api-key command failed: ~a" (err->string e)))))
     (let-values (((to from err proc)
                   (open-process-ports command 'block (native-transcoder))))
+      (note-child-process! proc)
       (guard (e (#t #t)) (close-port to))
       (let* ((out0 (get-string-all from))
              (out (string-trim (if (eof-object? out0) "" out0))))

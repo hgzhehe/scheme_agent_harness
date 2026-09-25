@@ -136,6 +136,7 @@
   (call-with-values
     (lambda () (open-process-ports cmdline 'block (native-transcoder)))
     (lambda (to from err proc)
+      (note-child-process! proc)
       (let* ((cancel (lambda () (terminate-process-tree! proc)))
              (out
               (dynamic-wind

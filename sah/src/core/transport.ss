@@ -28,6 +28,7 @@
         (guard (e (#t (error 'transport (format "failed to run curl: ~a" (err->string e)))))
           (let-values (((to from err proc)
                         (open-process-ports cmd 'block (native-transcoder))))
+            (note-child-process! proc)
             (guard (e2 (#t #t)) (close-port to))
             (let ((out
                    (call-with-run-cancel-handler
@@ -69,6 +70,7 @@
         (guard (e (#t (error 'transport (format "failed to run curl: ~a" (err->string e)))))
           (let-values (((to from err proc)
                         (open-process-ports cmd 'line (native-transcoder))))
+            (note-child-process! proc)
             (guard (e2 (#t #t)) (close-port to))
             (call-with-run-cancel-handler
              (lambda () (terminate-process-tree! proc))
